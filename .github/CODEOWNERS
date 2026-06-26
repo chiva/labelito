@@ -1,0 +1,9 @@
+# Global owners — all PRs require review
+* @santi
+
+# Printer drivers — extra scrutiny
+app/drivers/ @santi
+app/transports/ @santi
+
+# CI / governance
+.github/ @santi

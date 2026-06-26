@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  type:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --group typing
+      - name: mypy (blocking)
+        run: uv run mypy app/
+      - name: ty (advisory)
+        run: uvx ty@0.0.1a14 check
+        continue-on-error: true
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install system fonts
+        run: sudo apt-get install -y fonts-dejavu-core
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv sync --group test
+      - name: Run tests
+        run: uv run pytest -m "not hardware" --cov --cov-report=xml --cov-fail-under=85
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+
+  docker:
+    name: Docker smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t labelito:ci .
+      - name: Smoke test
+        run: |
+          docker run -d --name label-test \
+            -e TRANSPORT=file \
+            -e PRINTER_URI=/tmp/output.bin \
+            -e API_TOKEN=ci-smoke-token \
+            -p 8765:8765 \
+            labelito:ci
+          sleep 5
+          curl --fail http://localhost:8765/health
+          # /preview is auth-protected: exercise the production auth path with a Bearer token.
+          curl --fail -X POST http://localhost:8765/preview \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ci-smoke-token" \
+            -d '{"template":"simple-text","fields":{"text":"CI Smoke"}}' \
+            --output /dev/null
+          docker stop label-test
+
+  template-validation:
+    name: Template validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --no-dev
+      - name: Validate all templates
+        run: |
+          uv run python -c "
+          from pathlib import Path
+          from app.loader import TemplateRegistry, TemplateLoadError
+          reg = TemplateRegistry(Path('templates'))
+          names = reg.load_all()
+          print(f'Loaded {len(names)} templates: {names}')
+          if not names:
+              raise SystemExit('No templates loaded!')
+          "
+
+  license-check:
+    name: License check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --group license --no-dev
+      - name: Check for AGPL and unclassified licenses
+        run: |
+          uv run pip-licenses --format=csv --output-file=/tmp/licenses.csv
+          uv run python -c "
+          import csv, sys
+          # brother_ql_next is GPL-3.0; allow it explicitly
+          ALLOWLIST = {'brother-ql-next'}
+          DENYLIST = ['GNU Affero General Public License v3 (AGPLv3)', 'AGPL', 'UNKNOWN']
+          failures = []
+          with open('/tmp/licenses.csv') as f:
+              for row in csv.DictReader(f):
+                  if row.get('Name', '').lower() in ALLOWLIST:
+                      continue
+                  lic = row.get('License', '')
+                  if any(d.lower() in lic.lower() for d in DENYLIST):
+                      failures.append(f\"{row['Name']} {row['Version']}: {lic}\")
+          if failures:
+              print('DENIED licenses found:')
+              for f in failures:
+                  print(f'  {f}')
+              sys.exit(1)
+          print('License check passed.')
+          "
+
+  commit-lint:
+    name: Conventional commit PR title
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

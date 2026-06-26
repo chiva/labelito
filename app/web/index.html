@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Labelito</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #f8f8f8; color: #222; }
+    h1 { font-size: 1.5rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+    h1 .logo { height: 1.4em; width: auto; }
+    .nav-link { font-size: .9rem; font-weight: 400; color: #0070f3; text-decoration: none; margin-left: .5rem; }
+    .nav-link:hover { text-decoration: underline; }
+    .card { background: #fff; border-radius: 8px; padding: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,.1); margin-bottom: 1rem; }
+    label { display: block; margin-bottom: .25rem; font-weight: 600; font-size: .9rem; }
+    input, select, textarea { width: 100%; padding: .5rem .75rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; margin-bottom: .75rem; }
+    select { cursor: pointer; }
+    .fields-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
+    .fields-grid label { font-weight: 500; }
+    .optional-tag { font-weight: 400; color: #777; font-size: .8rem; margin-left: .25rem; }
+    .btn { display: inline-block; padding: .6rem 1.4rem; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; font-weight: 600; }
+    .btn-preview { background: #0070f3; color: #fff; margin-right: .5rem; }
+    .btn-print  { background: #16a34a; color: #fff; }
+    .btn:hover { opacity: .88; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .row { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-top: .5rem; }
+    .copies-wrap { display: flex; align-items: center; gap: .5rem; }
+    .copies-wrap input { width: 4rem; margin-bottom: 0; }
+    #preview-section { margin-top: 1.5rem; }
+    #preview-img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; background: #fff; }
+    .status { margin-top: .75rem; padding: .5rem 1rem; border-radius: 4px; font-size: .9rem; }
+    .status.ok  { background: #dcfce7; color: #166534; }
+    .status.err { background: #fee2e2; color: #991b1b; }
+    .status .close { float: right; cursor: pointer; font-weight: 700; margin-left: 1rem; background: none; border: none; color: inherit; font-size: 1rem; line-height: 1; }
+    .dry-run-wrap { display: flex; align-items: center; gap: .5rem; font-size: .9rem; }
+    .dry-run-wrap input[type=checkbox] { width: auto; margin: 0; }
+    #template-desc { font-size: .85rem; color: #555; margin-bottom: .75rem; }
+    .status-head { display: flex; align-items: center; gap: .75rem; }
+    .state-badge { padding: .15rem .6rem; border-radius: 999px; font-size: .8rem; font-weight: 600; background: #e5e7eb; color: #555; }
+    .state-idle { background: #dcfce7; color: #166534; }
+    .state-printing { background: #dbeafe; color: #1e40af; }
+    .state-error { background: #fee2e2; color: #991b1b; }
+    .state-off { background: #e5e7eb; color: #555; }
+    .btn-refresh { margin-left: auto; padding: .25rem .6rem; border: 1px solid #ccc; background: #fff; border-radius: 4px; cursor: pointer; font-size: 1rem; line-height: 1; }
+    .btn-refresh:hover { background: #f0f0f0; }
+    .printer-detail { margin-top: .6rem; font-size: .85rem; color: #555; line-height: 1.5; }
+    .printer-detail .detail-err { color: #991b1b; }
+  </style>
+</head>
+<body>
+  <h1><img src="/favicon.svg" alt="" class="logo"> Labelito {% if editor_enabled %}<a href="/editor" class="nav-link">Editor →</a>{% endif %}{% if history_ui %} <a href="/history" class="nav-link">History →</a>{% endif %}</h1>
+
+  <div class="card" id="auth-card">
+    <label for="api-token">API token <span class="optional-tag">(saved in this browser only; leave blank if the server runs unauthenticated)</span></label>
+    <input type="password" id="api-token" placeholder="Bearer token" autocomplete="off">
+  </div>
+
+  <div class="card" id="status-card">
+    <div class="status-head">
+      <strong>Printer</strong>
+      <span id="printer-state" class="state-badge">…</span>
+      <button type="button" class="btn-refresh" onclick="refreshPrinterStatus()" title="Refresh printer status" aria-label="Refresh printer status">↻</button>
+    </div>
+    <div id="printer-detail" class="printer-detail"></div>
+  </div>
+
+  <div class="card">
+    <label for="template-select">Template</label>
+    <select id="template-select">
+      {% for t in templates %}
+      <option value="{{ t.name }}" data-required="{{ t.required | join(',') }}" data-optional="{{ t.optional | join(',') }}" data-desc="{{ t.description }}">{{ t.name }} — {{ t.description }}</option>
+      {% endfor %}
+    </select>
+    <div id="template-desc"></div>
+
+    <div id="fields-container" class="fields-grid"></div>
+
+    <div class="row">
+      <div class="copies-wrap">
+        <label style="margin:0">Copies</label>
+        <input type="number" id="copies" value="1" min="1" max="10" style="width:4rem;margin:0">
+      </div>
+      <div class="dry-run-wrap">
+        <input type="checkbox" id="dry-run">
+        <label for="dry-run" style="margin:0;font-weight:400">Dry run (no print)</label>
+      </div>
+      <div class="dry-run-wrap">
+        <input type="checkbox" id="dither"{% if default_dither %} checked{% endif %}>
+        <label for="dither" style="margin:0;font-weight:400">Dither (approximate greys) <span class="optional-tag">— affects the print only; the preview is not dithered</span></label>
+      </div>
+      <div class="dry-run-wrap">
+        <input type="checkbox" id="high-res"{% if default_high_res %} checked{% endif %}>
+        <label for="high-res" style="margin:0;font-weight:400">High-res (600 dpi) <span class="optional-tag">— improves small text &amp; dense QR; affects the print only</span></label>
+      </div>
+      {% if two_color %}
+      <div class="dry-run-wrap">
+        <input type="checkbox" id="red"{% if default_red %} checked{% endif %}>
+        <label for="red" style="margin:0;font-weight:400">Two-color (red/black) <span class="optional-tag">— renders <code>color: red</code> elements in red; needs black/red media; affects the print only</span></label>
+      </div>
+      {% endif %}
+      <div class="dry-run-wrap">
+        <label for="threshold" style="margin:0;font-weight:400">Threshold <span class="optional-tag" id="threshold-hint">— B/W cutoff % (blank = server default {{ default_threshold }})</span></label>
+        <input type="number" id="threshold" min="0.1" max="100" step="0.1" style="width:5rem;margin:0" placeholder="{{ default_threshold }}">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:1rem">
+      <button class="btn btn-preview" onclick="doPreview()">Preview</button>
+      <button class="btn btn-print" onclick="doPrint()">Print</button>
+    </div>
+  </div>
+
+  <div id="preview-section" style="display:none">
+    <div class="card">
+      <strong>Preview</strong>
+      <br><br>
+      <img id="preview-img" alt="Label preview">
+    </div>
+  </div>
+
+  <div id="status-area"></div>
+
+  <script>
+    const TEMPLATES = {{ templates | tojson }};
+    const templateMap = Object.fromEntries(TEMPLATES.map(t => [t.name, t]));
+
+    // ── Auth: the token is held only in this browser's localStorage and attached as a
+    //    Bearer header on protected requests. Blank token → no header (unauthenticated servers).
+    const TOKEN_KEY = 'labelito_api_token';
+    const tokenInput = document.getElementById('api-token');
+    tokenInput.value = localStorage.getItem(TOKEN_KEY) || '';
+    tokenInput.addEventListener('input', () => localStorage.setItem(TOKEN_KEY, tokenInput.value.trim()));
+
+    function authHeaders() {
+      const headers = {'Content-Type': 'application/json'};
+      const token = (localStorage.getItem(TOKEN_KEY) || '').trim();
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return headers;
+    }
+
+    function handleAuthError(res) {
+      if (res.status === 401) {
+        showStatus('Authentication required — enter your API token above.', 'err');
+        tokenInput.focus();
+        return true;
+      }
+      return false;
+    }
+
+    // ── Printer status card. Mirrors the backend PrinterState enum (off/idle/printing/error).
+    //    Refreshed on load, on demand via the ↻ button, and after each print. No background poll:
+    //    the server intentionally avoids a keep-alive ping, and every query opens a real
+    //    connection to the printer.
+    const STATE_LABELS = {off: 'Off', idle: 'Idle', printing: 'Printing', error: 'Error'};
+    const STATE_CLASS = {off: 'state-off', idle: 'state-idle', printing: 'state-printing', error: 'state-error'};
+
+    function setStateBadge(state, label) {
+      const badge = document.getElementById('printer-state');
+      badge.className = 'state-badge ' + (STATE_CLASS[state] || 'state-off');
+      badge.textContent = label || STATE_LABELS[state] || state || 'Unknown';
+    }
+
+    function renderPrinterStatus(data) {
+      setStateBadge(data.state);
+      const lines = [];
+      if (data.uri) lines.push(`<div>URI: <code>${data.uri}</code></div>`);
+      if (data.reachable) {
+        if (data.model) lines.push(`<div>Model: ${data.model}</div>`);
+        if (data.media_type) {
+          const len = data.media_length_mm ? `×${data.media_length_mm}mm` : '';
+          const w = data.media_width_mm != null ? `${data.media_width_mm}mm${len}` : '';
+          lines.push(`<div>Media: ${data.media_type}${w ? ' (' + w + ')' : ''}</div>`);
+        }
+      }
+      if (Array.isArray(data.errors) && data.errors.length) {
+        lines.push(`<div class="detail-err">${data.errors.join('; ')}</div>`);
+      }
+      document.getElementById('printer-detail').innerHTML = lines.join('');
+    }
+
+    async function refreshPrinterStatus() {
+      try {
+        const res = await fetch('/printer/status', {headers: authHeaders()});
+        if (res.status === 401) {
+          handleAuthError(res);
+          setStateBadge('off', 'Auth required');
+          document.getElementById('printer-detail').innerHTML = '';
+          return;
+        }
+        // Both 200 and 503 carry the same body shape (state/uri/reachable/errors).
+        const data = await res.json().catch(() => null);
+        if (!data) {
+          setStateBadge('off', 'Unknown');
+          document.getElementById('printer-detail').innerHTML = '';
+          return;
+        }
+        renderPrinterStatus(data);
+      } catch (e) {
+        setStateBadge('off', 'Unreachable');
+        document.getElementById('printer-detail').innerHTML =
+          `<div class="detail-err">Network error: ${e.message}</div>`;
+      }
+    }
+
+    function currentTemplate() {
+      const sel = document.getElementById('template-select');
+      return templateMap[sel.value] || TEMPLATES[0];
+    }
+
+    function renderFields() {
+      const t = currentTemplate();
+      document.getElementById('template-desc').textContent = t.description || '';
+      const container = document.getElementById('fields-container');
+      container.innerHTML = '';
+      const allFields = [
+        ...t.required.map(f => ({name: f, optional: false})),
+        ...t.optional.map(f => ({name: f, optional: true})),
+      ];
+      for (const {name, optional} of allFields) {
+        const wrap = document.createElement('div');
+        const lbl = document.createElement('label');
+        lbl.htmlFor = `field-${name}`;
+        lbl.innerHTML = name + (optional ? '<span class="optional-tag">(optional)</span>' : '');
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.id = `field-${name}`;
+        inp.name = name;
+        inp.placeholder = name;
+        inp.addEventListener('input', debounce(doPreview, 600));
+        wrap.appendChild(lbl);
+        wrap.appendChild(inp);
+        container.appendChild(wrap);
+      }
+    }
+
+    function gatherFields() {
+      const t = currentTemplate();
+      const fields = {};
+      for (const name of [...t.required, ...t.optional]) {
+        const el = document.getElementById(`field-${name}`);
+        if (el && el.value.trim()) fields[name] = el.value.trim();
+      }
+      return fields;
+    }
+
+    function buildPayload(extra = {}) {
+      return {
+        template: document.getElementById('template-select').value,
+        fields: gatherFields(),
+        copies: parseInt(document.getElementById('copies').value, 10) || 1,
+        dry_run: document.getElementById('dry-run').checked,
+        options: {
+          dither: document.getElementById('dither').checked,
+          high_res: document.getElementById('high-res').checked,
+          // The two-color toggle only renders on two-color-capable models; default to false when absent.
+          red: document.getElementById('red') ? document.getElementById('red').checked : false,
+          threshold: document.getElementById('threshold').value
+            ? parseFloat(document.getElementById('threshold').value)
+            : null,
+        },
+        ...extra,
+      };
+    }
+
+    async function doPreview() {
+      const payload = buildPayload();
+      try {
+        const res = await fetch('/preview', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          showStatus('Preview error: ' + JSON.stringify(err.detail || err), 'err');
+          return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        document.getElementById('preview-img').src = url;
+        document.getElementById('preview-section').style.display = '';
+        clearStatus();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    async function doPrint() {
+      const payload = buildPayload();
+      try {
+        const res = await fetch('/print', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          showStatus('Print error: ' + JSON.stringify(err.detail || err), 'err');
+          return;
+        }
+        const json = await res.json();
+        showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
+        await doPreview();
+        refreshPrinterStatus();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    // ── Status banner. Most messages are transient (replaced by the next status or wiped by
+    //    doPreview's clearStatus). A sticky banner survives the post-print preview refresh: it
+    //    carries a × button and an ~8s auto-dismiss, and only a forced clear can remove it.
+    let statusTimer = null;
+    const STATUS_STICKY_MS = 8000;
+
+    function showStatus(msg, type, {sticky} = {}) {
+      const area = document.getElementById('status-area');
+      if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
+      const close = sticky
+        ? '<button type="button" class="close" onclick="clearStatus({force: true})" aria-label="Dismiss">×</button>'
+        : '';
+      area.innerHTML = `<div class="status ${type}">${close}${msg}</div>`;
+      if (sticky) {
+        area.dataset.sticky = '1';
+        statusTimer = setTimeout(() => clearStatus({force: true}), STATUS_STICKY_MS);
+      } else {
+        delete area.dataset.sticky;
+      }
+    }
+    function clearStatus({force} = {}) {
+      const area = document.getElementById('status-area');
+      if (area.dataset.sticky && !force) return;
+      area.innerHTML = '';
+      delete area.dataset.sticky;
+      if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
+    }
+
+    function debounce(fn, ms) {
+      let t;
+      return function(...args) {
+        clearTimeout(t);
+        t = setTimeout(() => fn.apply(this, args), ms);
+      };
+    }
+
+    document.getElementById('template-select').addEventListener('change', () => {
+      renderFields();
+      doPreview();
+    });
+
+    // Disable threshold input when dither is on: threshold is a no-op under Floyd-Steinberg
+    // dithering in brother_ql, so greying it out signals it has no effect and prevents
+    // misleading idempotency fingerprint divergence from a value the driver ignores.
+    function syncThresholdToggledByDither() {
+      const ditherOn = document.getElementById('dither').checked;
+      const tInput = document.getElementById('threshold');
+      const tHint = document.getElementById('threshold-hint');
+      tInput.disabled = ditherOn;
+      tInput.style.opacity = ditherOn ? '0.4' : '';
+      tHint.textContent = ditherOn
+        ? '— ignored when dithering is on'
+        : '— B/W cutoff % (blank = server default {{ default_threshold }})';
+    }
+    document.getElementById('dither').addEventListener('change', syncThresholdToggledByDither);
+    syncThresholdToggledByDither();
+
+    // Init
+    renderFields();
+    refreshPrinterStatus();
+    if (TEMPLATES.length > 0) doPreview();
+  </script>
+</body>
+</html>

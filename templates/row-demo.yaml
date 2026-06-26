@@ -1,0 +1,15 @@
+name: row-demo
+description: Title on the left with a status glyph on the right (same line)
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [status]
+layout:
+  - type: row
+    align_items: center
+    children:
+      - {type: title, text: "{{title}}", align: left, max_lines: 2}
+      - {type: icon, name: check, collection: fontawesome, size: 64, width: 80, align: right}
+  - {type: line}
+  - {type: text, text: "{{status}}", size: 28, align: left}

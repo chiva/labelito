@@ -1,0 +1,13 @@
+name: cable-label
+description: Cable/patch label — identifier with both endpoints
+label: "62"
+rotate: 0
+fields:
+  required: [name]
+  optional: [endpoint_a, endpoint_b]
+layout:
+  - {type: spacer, size: 8}
+  - {type: title, text: "{{name}}", max_lines: 1, align: center, bold: true}
+  - {type: line}
+  - {type: text, text: "{{endpoint_a}}  →  {{endpoint_b}}", size: 30, align: center}
+  - {type: spacer, size: 8}

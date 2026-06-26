@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Labelito — History</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 1000px; margin: 2rem auto; padding: 0 1rem; background: #f8f8f8; color: #222; }
+    h1 { font-size: 1.5rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+    h1 .logo { height: 1.4em; width: auto; }
+    .nav-link { font-size: .9rem; font-weight: 400; color: #0070f3; text-decoration: none; margin-left: .5rem; }
+    .nav-link:hover { text-decoration: underline; }
+    .card { background: #fff; border-radius: 8px; padding: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,.1); margin-bottom: 1rem; }
+    label { display: block; margin-bottom: .25rem; font-weight: 600; font-size: .9rem; }
+    input { width: 100%; padding: .5rem .75rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; margin-bottom: .75rem; }
+    .optional-tag { font-weight: 400; color: #777; font-size: .8rem; margin-left: .25rem; }
+    .btn { display: inline-block; padding: .4rem 1rem; border: none; border-radius: 4px; cursor: pointer; font-size: .9rem; font-weight: 600; }
+    .btn-reprint { background: #16a34a; color: #fff; margin-right: .4rem; }
+    .btn-delete  { background: #dc2626; color: #fff; }
+    .btn-page    { background: #0070f3; color: #fff; }
+    .btn-copy    { background: #e5e7eb; color: #111; padding: .2rem .55rem; font-size: .8rem; margin-left: .4rem; }
+    .btn:hover { opacity: .88; }
+    .job-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    th, td { text-align: left; padding: .55rem .5rem; border-bottom: 1px solid #eee; vertical-align: top; }
+    th { font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; color: #666; }
+    .table-wrap { overflow-x: auto; }
+    .fields { font-size: .85rem; color: #444; }
+    .fields .pair { display: block; }
+    .fields .key { color: #888; }
+    .badge { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; }
+    .badge.printed { background: #dcfce7; color: #166534; }
+    .badge.dry-run { background: #dbeafe; color: #1e40af; }
+    .badge.failed  { background: #fee2e2; color: #991b1b; }
+    .tag-muted { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; background: #f1f5f9; color: #64748b; white-space: nowrap; margin-left: .4rem; }
+    .legend { color: #999; font-size: .8rem; margin-top: 1rem; }
+    .when { white-space: nowrap; color: #555; }
+    .pager { display: flex; align-items: center; gap: 1rem; margin-top: 1rem; flex-wrap: wrap; }
+    .pager .count { color: #666; font-size: .85rem; }
+    .status { margin-top: .75rem; padding: .5rem 1rem; border-radius: 4px; font-size: .9rem; }
+    .status.ok  { background: #dcfce7; color: #166534; }
+    .status.err { background: #fee2e2; color: #991b1b; }
+    .empty { color: #666; padding: 1rem 0; }
+    .empty small { display: block; margin-top: .5rem; color: #999; }
+  </style>
+</head>
+<body>
+  <h1><img src="/favicon.svg" alt="" class="logo"> Labelito — History <a href="/" class="nav-link">← Print</a></h1>
+
+  <div class="card" id="auth-card">
+    <label for="api-token">API token <span class="optional-tag">(saved in this browser only; leave blank if the server runs unauthenticated)</span></label>
+    <input type="password" id="api-token" placeholder="Bearer token" autocomplete="off">
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>When</th><th>Template</th><th>Fields</th><th>Copies</th><th>Status</th><th>Dither</th><th>Job ID</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </div>
+    <div id="empty-area"></div>
+    <div class="pager">
+      <button class="btn btn-page" id="prev-btn" onclick="prevPage()">← Prev</button>
+      <button class="btn btn-page" id="next-btn" onclick="nextPage()">Next →</button>
+      <span class="count" id="page-count"></span>
+    </div>
+    <p class="legend">Text, QR, barcode and icon labels can be reprinted from their saved fields (the result may differ if you've since edited the template or its icons).<br>Labels built from an uploaded image can't be reprinted — the image isn't stored; re-submit the original print.</p>
+  </div>
+
+  <div id="status-area"></div>
+
+  <script>
+    const PAGE_SIZE = 20;
+    let offset = 0;
+    let total = 0;
+
+    // ── Auth: shares the localStorage token with the print page; attached as a Bearer header. ──
+    const TOKEN_KEY = 'labelito_api_token';
+    const tokenInput = document.getElementById('api-token');
+    tokenInput.value = localStorage.getItem(TOKEN_KEY) || '';
+    tokenInput.addEventListener('input', () => localStorage.setItem(TOKEN_KEY, tokenInput.value.trim()));
+
+    function authHeaders() {
+      const headers = {'Content-Type': 'application/json'};
+      const token = (localStorage.getItem(TOKEN_KEY) || '').trim();
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return headers;
+    }
+
+    function handleAuthError(res) {
+      if (res.status === 401) {
+        showStatus('Authentication required — enter your API token above.', 'err');
+        tokenInput.focus();
+        return true;
+      }
+      return false;
+    }
+
+    function showStatus(msg, type) {
+      document.getElementById('status-area').innerHTML = `<div class="status ${type}">${msg}</div>`;
+    }
+    function clearStatus() {
+      document.getElementById('status-area').innerHTML = '';
+    }
+
+    function fmtWhen(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts);
+      return isNaN(d.getTime()) ? ts : d.toLocaleString();
+    }
+
+    // Build the Fields cell via DOM (textContent) — label contents are user-controlled, never innerHTML.
+    function fieldsCell(fields) {
+      const wrap = document.createElement('div');
+      wrap.className = 'fields';
+      const keys = Object.keys(fields || {});
+      if (keys.length === 0) {
+        wrap.textContent = '—';
+        return wrap;
+      }
+      for (const k of keys) {
+        const pair = document.createElement('span');
+        pair.className = 'pair';
+        const key = document.createElement('span');
+        key.className = 'key';
+        key.textContent = k + ': ';
+        pair.appendChild(key);
+        pair.appendChild(document.createTextNode(String(fields[k])));
+        wrap.appendChild(pair);
+      }
+      return wrap;
+    }
+
+    function statusBadge(rec) {
+      const span = document.createElement('span');
+      const kind = rec.status === 'failed' ? 'failed' : (rec.dry_run ? 'dry-run' : 'printed');
+      span.className = 'badge ' + kind;
+      span.textContent = kind;
+      return span;
+    }
+
+    function ditherCell(rec) {
+      const td = document.createElement('td');
+      const span = document.createElement('span');
+      const on = !!rec.dither;
+      span.className = 'badge ' + (on ? 'printed' : 'dry-run');
+      span.textContent = on ? 'on' : 'off';
+      td.appendChild(span);
+      return td;
+    }
+
+    // Job ID cell: short, monospace, selectable id (full id in title) plus a Copy button.
+    // navigator.clipboard is unavailable in non-secure contexts — degrade gracefully there.
+    function jobIdCell(rec) {
+      const td = document.createElement('td');
+      const jobId = rec.job_id || '';
+
+      const span = document.createElement('span');
+      span.className = 'job-id';
+      span.textContent = jobId ? jobId.slice(0, 8) : '—';
+      span.title = jobId;
+      td.appendChild(span);
+
+      if (!jobId) return td;
+
+      const copy = document.createElement('button');
+      copy.className = 'btn btn-copy';
+      copy.textContent = 'Copy';
+      copy.onclick = () => {
+        const flash = () => {
+          copy.textContent = 'Copied';
+          setTimeout(() => { copy.textContent = 'Copy'; }, 1200);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(jobId).then(flash).catch(selectFallback);
+        } else {
+          selectFallback();
+        }
+      };
+
+      // Non-secure context (no Clipboard API): select the span text so the user can copy manually.
+      function selectFallback() {
+        const range = document.createRange();
+        range.selectNodeContents(span);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+
+      td.appendChild(copy);
+      return td;
+    }
+
+    // Compute zero-padded sequence range label, mirroring str(value).zfill(padding) in Python.
+    function seqLabel(value, padding) {
+      const s = String(Math.abs(value));
+      const padded = padding > 0 ? s.padStart(padding, '0') : s;
+      return value < 0 ? '-' + padded : padded;
+    }
+
+    // For a sequence job return a cell showing e.g. "×40 (001..040)".
+    // For plain copies, return a text node with the count.
+    function copiesCell(rec) {
+      if (!rec.sequence) {
+        return document.createTextNode(String(rec.copies));
+      }
+      const { start, count, step, padding } = rec.sequence;
+      const last = start + (count - 1) * step;
+      const firstLabel = seqLabel(start, padding);
+      const lastLabel = seqLabel(last, padding);
+      const span = document.createElement('span');
+      span.title = `Sequence batch: ${count} labels, seq ${firstLabel}..${lastLabel}`;
+      span.textContent = `×${count} (${firstLabel}..${lastLabel})`;
+      return span;
+    }
+
+    // Threshold above which a reprint confirm dialog is shown.
+    const REPRINT_CONFIRM_THRESHOLD = 10;
+
+    function actionsCell(rec) {
+      const td = document.createElement('td');
+
+      const reprint = document.createElement('button');
+      reprint.className = 'btn btn-reprint';
+      reprint.textContent = 'Reprint';
+      if (rec.status === 'failed' || rec.image_stripped) {
+        reprint.disabled = true;
+        reprint.title = rec.status === 'failed'
+          ? 'This job failed to print and cannot be reprinted'
+          : 'This job carried an image, which is not retained — re-submit the original print';
+      } else {
+        reprint.onclick = () => {
+          if (rec.sequence && rec.sequence.count >= REPRINT_CONFIRM_THRESHOLD) {
+            const { start, count, step, padding } = rec.sequence;
+            const last = start + (count - 1) * step;
+            const firstLabel = seqLabel(start, padding);
+            const lastLabel = seqLabel(last, padding);
+            if (!confirm(`Reprint this job? It will print ${count} labels (${firstLabel}..${lastLabel}).`)) return;
+          }
+          doReprint(rec.job_id);
+        };
+      }
+
+      const del = document.createElement('button');
+      del.className = 'btn btn-delete';
+      del.textContent = 'Delete';
+      del.onclick = () => doDelete(rec.job_id);
+
+      td.appendChild(reprint);
+      td.appendChild(del);
+      // An image job's blob is dropped from history → not reprintable. Surface that inline
+      // (not just in the hover title) so the disabled button's reason is visible at a glance.
+      // Icon/text/QR/barcode jobs carry no stored blob and reprint normally, so get no tag.
+      if (rec.image_stripped) {
+        const tag = document.createElement('span');
+        tag.className = 'tag-muted';
+        tag.textContent = '🖼 image not retained';
+        td.appendChild(tag);
+      }
+      return td;
+    }
+
+    function renderRows(entries) {
+      const body = document.getElementById('history-body');
+      body.innerHTML = '';
+      for (const rec of entries) {
+        const tr = document.createElement('tr');
+
+        const when = document.createElement('td');
+        when.className = 'when';
+        when.textContent = fmtWhen(rec.timestamp);
+
+        const tmpl = document.createElement('td');
+        tmpl.textContent = rec.template;
+
+        const fields = document.createElement('td');
+        fields.appendChild(fieldsCell(rec.fields));
+
+        const copies = document.createElement('td');
+        copies.appendChild(copiesCell(rec));
+
+        const status = document.createElement('td');
+        status.appendChild(statusBadge(rec));
+
+        tr.appendChild(when);
+        tr.appendChild(tmpl);
+        tr.appendChild(fields);
+        tr.appendChild(copies);
+        tr.appendChild(status);
+        tr.appendChild(ditherCell(rec));
+        tr.appendChild(jobIdCell(rec));
+        tr.appendChild(actionsCell(rec));
+        body.appendChild(tr);
+      }
+    }
+
+    function renderEmpty(show) {
+      const area = document.getElementById('empty-area');
+      if (!show) { area.innerHTML = ''; return; }
+      area.innerHTML = '<div class="empty">No history yet.'
+        + '<small>If you expected entries: HISTORY_MODE=disabled keeps no history, and memory mode resets on restart.</small></div>';
+    }
+
+    function updatePager() {
+      const prev = document.getElementById('prev-btn');
+      const next = document.getElementById('next-btn');
+      prev.disabled = offset <= 0;
+      next.disabled = offset + PAGE_SIZE >= total;
+      const from = total === 0 ? 0 : offset + 1;
+      const to = Math.min(offset + PAGE_SIZE, total);
+      document.getElementById('page-count').textContent =
+        total === 0 ? '' : `showing ${from}–${to} of ${total}`;
+    }
+
+    async function loadPage() {
+      try {
+        const res = await fetch(`/history/list?offset=${offset}&limit=${PAGE_SIZE}`, {
+          headers: authHeaders(),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          showStatus('Error loading history: ' + JSON.stringify(err.detail || err), 'err');
+          return;
+        }
+        const data = await res.json();
+        total = data.total;
+        offset = data.offset;
+        // A page that lands past the end (e.g. after deleting the last row of the last page)
+        // steps back one page so the user is never stranded on an empty page.
+        if (offset > 0 && offset >= total) {
+          offset = Math.max(0, offset - PAGE_SIZE);
+          return loadPage();
+        }
+        renderRows(data.entries);
+        renderEmpty(total === 0);
+        updatePager();
+        clearStatus();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    function prevPage() { offset = Math.max(0, offset - PAGE_SIZE); loadPage(); }
+    function nextPage() { if (offset + PAGE_SIZE < total) { offset += PAGE_SIZE; loadPage(); } }
+
+    async function doReprint(jobId) {
+      try {
+        const res = await fetch(`/reprint/${jobId}`, {method: 'POST', headers: authHeaders()});
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          showStatus('Reprint error: ' + JSON.stringify(err.detail || err), 'err');
+          return;
+        }
+        const json = await res.json();
+        showStatus(`Reprinted! New job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok');
+        loadPage();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    async function doDelete(jobId) {
+      if (!confirm('Delete this history entry? This cannot be undone.')) return;
+      try {
+        const res = await fetch(`/history/${jobId}`, {method: 'DELETE', headers: authHeaders()});
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          showStatus('Delete error: ' + JSON.stringify(err.detail || err), 'err');
+          return;
+        }
+        showStatus('Entry deleted.', 'ok');
+        loadPage();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    loadPage();
+  </script>
+</body>
+</html>

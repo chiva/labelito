@@ -1,0 +1,15 @@
+name: freezer-icon
+description: Freezer label with storage date + snowflake icon (to-freeze)
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle]
+layout:
+  - type: row
+    align_items: center
+    children:
+      - {type: title, text: "{{title}}", align: left, max_lines: 2}
+      - {type: icon, name: snowflake, size: 90, width: 110, align: right}
+  - {type: subtitle, text: "{{subtitle}}"}
+  - {type: text, text: "[[frozen]]: {{date}}", size: 30}

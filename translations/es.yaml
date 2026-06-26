@@ -1,0 +1,6 @@
+# Spanish — authoritative catalog.
+frozen: "Congelado"
+stored: "Guardado"
+expires: "Caduca"
+_date_format: "%d/%m/%Y"
+_datetime_format: "%d/%m/%Y %H:%M"

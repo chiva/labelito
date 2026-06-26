@@ -1,0 +1,13 @@
+name: title-subtitle-qr
+description: Title, subtitle and a QR code (URL / text / wifi)
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle, qr]
+layout:
+  - {type: spacer, size: 8}
+  - {type: title, text: "{{title}}", max_lines: 2}
+  - {type: subtitle, text: "{{subtitle}}", max_lines: 2}
+  - {type: qr, data: "{{qr}}", size: 180, align: right}
+  - {type: spacer, size: 8}

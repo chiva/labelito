@@ -1,0 +1,95 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[project]
+name = "labelito"
+version = "0.1.0"
+description = "Labelito — self-hosted Brother QL label print service with Home Assistant integration"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+keywords = ["brother", "label", "printer", "home-assistant", "ql-810w"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "Pillow>=10.4.0",
+    "cairosvg>=2.7.0",
+    "qrcode[pil]>=8.0.0",
+    "python-barcode[images]>=0.15.1",
+    "brother_ql_next>=0.12.0",
+    "PyYAML>=6.0.2",
+    "Jinja2>=3.1.4",
+    "python-multipart>=0.0.9",
+    "prometheus-client>=0.21.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/chiva/labelito"
+Issues = "https://github.com/chiva/labelito/issues"
+
+[dependency-groups]
+# httpx2 is the backend starlette.testclient is built for (TestClient does `import httpx2 as httpx`).
+test = ["pytest>=8.3.0", "pytest-cov>=5.0.0", "pytest-asyncio>=0.24.0", "httpx2>=2.4.0"]
+lint = ["ruff>=0.6.0"]
+typing = ["mypy>=1.11.0", "types-PyYAML>=6.0.12", "types-Pillow>=10.2.0"]
+license = ["pip-licenses>=5.0.0"]
+# End-to-end harness: drives a real uvicorn process with a real browser. Opt-in (the e2e suite is
+# deselected by default via `-m "not e2e"`), and needs a one-time `uv run playwright install
+# chromium` to download the browser. Used by both `pytest -m e2e` and scripts/dev-harness.py.
+e2e = ["pytest-playwright>=0.5.0"]
+dev = [
+    "pre-commit>=3.8.0",
+    {include-group = "test"},
+    {include-group = "lint"},
+    {include-group = "typing"},
+    {include-group = "license"},
+    {include-group = "e2e"},
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "PTH", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true
+exclude = ["tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-v", "--tb=short"]
+markers = [
+    "hardware: requires physical Brother printer (deselect with -m 'not hardware')",
+    "e2e: end-to-end tests driving a real server + browser; opt-in via --e2e (needs playwright)",
+    "slow: slow tests",
+]
+filterwarnings = ["error", "ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/transports/usb.py", "app/transports/network.py"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true

@@ -1,0 +1,13 @@
+name: icon-collection
+description: Demo label rendering an icon from a bundled collection (FontAwesome)
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle]
+layout:
+  # collection icons are rasterized from bundled SVGs. FontAwesome also takes a `style`
+  # (solid/regular/brands); Material and Octicons need only `collection` + `name`.
+  - {type: icon, collection: fontawesome, style: solid, name: mug-hot, size: 90, align: right}
+  - {type: title, text: "{{title}}", max_lines: 2}
+  - {type: subtitle, text: "{{subtitle}}"}

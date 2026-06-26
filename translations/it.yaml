@@ -1,0 +1,6 @@
+# Italian — author-supplied seed; native review welcome (see CONTRIBUTING).
+frozen: "Congelato"
+stored: "Conservato"
+expires: "Scade"
+_date_format: "%d/%m/%Y"
+_datetime_format: "%d/%m/%Y %H:%M"

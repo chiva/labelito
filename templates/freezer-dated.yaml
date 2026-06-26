@@ -1,0 +1,15 @@
+name: freezer-dated
+description: Freezer label — always stamps storage date automatically
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle]
+layout:
+  - {type: spacer, size: 8}
+  - {type: title, text: "{{title}}", max_lines: 2, align: center, bold: true}
+  - {type: subtitle, text: "{{subtitle}}", max_lines: 1, align: center}
+  - {type: line}
+  - {type: text, text: "[[frozen]]: {{date}}", size: 28, align: center}
+  - {type: text, text: "[[expires]]: {{date+6m}}", size: 28, align: center}
+  - {type: spacer, size: 8}

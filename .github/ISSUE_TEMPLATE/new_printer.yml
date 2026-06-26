@@ -1,0 +1,55 @@
+name: New Printer Model / Driver
+description: Add support for a new printer model or connection type
+labels: [new-printer, enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting, please read the "Adding a printer" section in CONTRIBUTING.md.
+  - type: input
+    id: model
+    attributes:
+      label: Printer Model
+      placeholder: Brother QL-820NWB
+    validations:
+      required: true
+  - type: dropdown
+    id: driver_type
+    attributes:
+      label: Driver Type
+      options:
+        - New model for existing brother_ql driver (capability table entry)
+        - Entirely new driver (different protocol/brand)
+    validations:
+      required: true
+  - type: input
+    id: dpi
+    attributes:
+      label: DPI
+      placeholder: "300"
+  - type: checkboxes
+    id: capabilities
+    attributes:
+      label: Capabilities
+      options:
+        - label: Two-color (red/black)
+        - label: Auto-cut
+        - label: 600 DPI mode
+  - type: textarea
+    id: label_sizes
+    attributes:
+      label: Supported Label Sizes
+      description: List the supported DK label IDs (e.g. 12, 29, 62, 29x90...)
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Contributor Checklist
+      options:
+        - label: I have read CONTRIBUTING.md "Adding a printer"
+          required: true
+        - label: I will include a fixture-based byte-level driver test
+          required: true
+        - label: I confirm the driver implementation is GPL-3.0-compatible
+          required: true

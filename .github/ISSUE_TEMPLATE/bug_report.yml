@@ -1,0 +1,45 @@
+name: Bug Report
+description: Report a bug in Labelito
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out as much as possible.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `docker inspect ghcr.io/chiva/labelito --format '{{.Config.Labels}}'` or git tag
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: input
+    id: printer_model
+    attributes:
+      label: Printer Model
+      placeholder: QL-810W
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: What happened? What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. POST /print with ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Paste relevant container logs or error output
+      render: text

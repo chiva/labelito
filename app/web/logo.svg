@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" role="img" aria-label="Labelito">
+  <defs>
+    <linearGradient id="fold" x1="62" y1="30" x2="94" y2="6" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f9b52"/>
+      <stop offset="1" stop-color="#54bd82"/>
+    </linearGradient>
+    <clipPath id="clip">
+      <path d="M17 6 H83 A11 11 0 0 1 94 17 V63 A11 11 0 0 1 83 74 H17 A11 11 0 0 1 6 63 V17 A11 11 0 0 1 17 6 Z"/>
+    </clipPath>
+  </defs>
+  <!-- blue document face -->
+  <path d="M17 6 H83 A11 11 0 0 1 94 17 V63 A11 11 0 0 1 83 74 H17 A11 11 0 0 1 6 63 V17 A11 11 0 0 1 17 6 Z" fill="#0178ec"/>
+  <!-- green folded corner, clipped inside the silhouette so it can't poke past the border -->
+  <path d="M59 4 H98 V34 Z" fill="url(#fold)" clip-path="url(#clip)"/>
+  <!-- border on top, so it stays clean around the fold corner -->
+  <path d="M17 6 H83 A11 11 0 0 1 94 17 V63 A11 11 0 0 1 83 74 H17 A11 11 0 0 1 6 63 V17 A11 11 0 0 1 17 6 Z" fill="none" stroke="#015cb5" stroke-width="6" stroke-linejoin="round"/>
+  <!-- code braces -->
+  <g fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8,0 C4,0 4,4 4,8 L4,18 C4,22 0,24 0,24 C0,24 4,26 4,30 L4,40 C4,44 4,48 8,48" transform="translate(27,25) scale(0.42)"/>
+    <path d="M0,0 C4,0 4,4 4,8 L4,18 C4,22 8,24 8,24 C8,24 4,26 4,30 L4,40 C4,44 4,48 0,48" transform="translate(45,25) scale(0.42)"/>
+  </g>
+  <!-- prompt underscore -->
+  <rect x="56" y="42" width="13" height="4.6" rx="2.3" fill="#fff"/>
+  <!-- underline -->
+  <rect x="24" y="55" width="46" height="5.6" rx="2.8" fill="#fff"/>
+</svg>

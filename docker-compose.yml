@@ -1,0 +1,53 @@
+services:
+  labelito:
+    build: .
+    image: ghcr.io/chiva/labelito:latest
+    container_name: labelito
+    restart: unless-stopped
+    # Run non-root. The image already defaults to uid 1000 (the `app` user); this makes it explicit
+    # and overridable. The host ./data dir must be writable by this uid — uid 1000 matches the
+    # image's default. To run as the invoking host user instead:
+    #   UID=$(id -u) GID=$(id -g) docker compose up   (or set UID/GID in .env)
+    user: "${UID:-1000}:${GID:-1000}"
+    # Run a single worker only. Do not override the image CMD to add `--workers N`: print
+    # serialization is an in-process lock and de-duplication uses an in-process history store (a
+    # single SQLite connection), so multiple workers would race both and print duplicate labels.
+    # See the Dockerfile CMD note.
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./templates:/app/templates:ro
+      - ./translations:/app/translations:ro
+      - ./assets/icons:/app/assets/icons:ro
+      - ./fonts:/app/fonts:ro
+      - ./data:/app/data
+    environment:
+      MODEL: QL-810W
+      # Transport is inferred from the PRINTER_URI scheme: tcp:// → network, usb:// → usb.
+      PRINTER_URI: tcp://192.168.1.100:9100
+      LABEL_SIZE: "62"
+      DEFAULT_LANGUAGE: en  # label chrome language; per-request `language` overrides it
+      # Job history backs /reprint and idempotency de-dup. The code default is `memory` (resets on
+      # restart); `file` is selected here because this service has a persistent ./data bind and
+      # `restart: unless-stopped` would otherwise drop duplicate protection on every restart.
+      # Set `disabled` to turn off reprint + dedup entirely. See docs/known-limitations.md.
+      HISTORY_MODE: file  # durable SQLite at /app/data/history.db
+      # HISTORY_KEEP_ENTRIES: "1000"      # rows kept after a prune
+      # HISTORY_PRUNE_AT_ENTRIES: "1500"  # prune triggers once the table exceeds this
+      # HISTORY_UI: "false"  # hide the /history browse page + list/delete (reprint-by-id still works)
+      # In-browser template studio (all off/limited by default):
+      # EDITOR_ENABLED: "true"      # expose GET /editor + draft-preview/parse/load/save routes
+      # TEMPLATES_WRITABLE: "true"  # also allow POST /templates server-save (needs a writable templates mount)
+      # TEMPLATES_LOADABLE: "false" # default true: hide the "Load existing template" picker + 404 its source route
+      # Auth — no default secret is shipped; the service refuses to start unless ONE is set:
+      #   put API_TOKEN=<your-secret> in a .env file beside this compose file (auto-loaded), OR
+      #   comment the line below and uncomment ALLOW_UNAUTHENTICATED for trusted-intranet open mode.
+      # `${VAR:?msg}` makes `docker compose up` fail fast if API_TOKEN is unset or empty.
+      API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set ALLOW_UNAUTHENTICATED=true}
+      # ALLOW_UNAUTHENTICATED: "true"  # run open (trusted intranet only; token is sniffable over plain HTTP)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

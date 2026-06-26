@@ -1,0 +1,14 @@
+name: storage-box-qr
+description: Storage box label with contents list and QR code for inventory
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [contents, qr]
+layout:
+  - {type: spacer, size: 8}
+  - {type: title, text: "{{title}}", max_lines: 1, align: left, bold: true}
+  - {type: line}
+  - {type: text, text: "{{contents}}", size: 28, align: left, max_lines: 4}
+  - {type: qr, data: "{{qr}}", size: 140, align: right}
+  - {type: spacer, size: 8}

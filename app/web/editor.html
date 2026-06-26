@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Labelito — Template Studio</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; background: #f8f8f8; color: #222; }
+    h1 { font-size: 1.5rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+    h1 .logo { height: 1.4em; width: auto; }
+    .nav-link { font-size: .9rem; font-weight: 400; color: #0070f3; text-decoration: none; margin-left: .5rem; }
+    .nav-link:hover { text-decoration: underline; }
+    .card { background: #fff; border-radius: 8px; padding: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,.1); margin-bottom: 1rem; }
+    label { display: block; margin-bottom: .25rem; font-weight: 600; font-size: .9rem; }
+    input, select, textarea { width: 100%; padding: .5rem .75rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; margin-bottom: .75rem; }
+    textarea#yaml { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem; line-height: 1.45; min-height: 22rem; white-space: pre; tab-size: 2; resize: vertical; }
+    .studio { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
+    @media (max-width: 800px) { .studio { grid-template-columns: 1fr; } }
+    .fields-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
+    .fields-grid label { font-weight: 500; }
+    .optional-tag { font-weight: 400; color: #777; font-size: .8rem; margin-left: .25rem; }
+    .btn { display: inline-block; padding: .5rem 1.1rem; border: none; border-radius: 4px; cursor: pointer; font-size: .95rem; font-weight: 600; }
+    .btn-secondary { background: #e5e7eb; color: #111; margin-right: .5rem; }
+    .btn-primary { background: #0070f3; color: #fff; margin-right: .5rem; }
+    .btn:hover { opacity: .88; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .5rem; }
+    #preview-img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; background: #fff; }
+    .status { margin-top: .75rem; padding: .5rem 1rem; border-radius: 4px; font-size: .9rem; white-space: pre-wrap; }
+    .status.ok  { background: #dcfce7; color: #166534; }
+    .status.err { background: #fee2e2; color: #991b1b; }
+    .muted { font-size: .8rem; color: #666; margin-top: -.4rem; margin-bottom: .75rem; }
+    .section-title { font-weight: 700; margin-bottom: .5rem; }
+    dialog#confirm-dialog { border: none; border-radius: 8px; padding: 1.5rem; max-width: 26rem; color: #222; box-shadow: 0 4px 24px rgba(0,0,0,.25); }
+    dialog#confirm-dialog::backdrop { background: rgba(0,0,0,.35); }
+    dialog#confirm-dialog p { margin: 0; font-size: .95rem; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1><img src="/favicon.svg" alt="" class="logo"> Template Studio
+    <a href="/" class="nav-link">← Print</a>{% if history_ui %} <a href="/history" class="nav-link">History →</a>{% endif %}</h1>
+
+  <div class="card" id="auth-card">
+    <label for="api-token">API token <span class="optional-tag">(saved in this browser only; leave blank if the server runs unauthenticated)</span></label>
+    <input type="password" id="api-token" placeholder="Bearer token" autocomplete="off">
+  </div>
+
+  <div class="studio">
+    <!-- ── Left: YAML editor ───────────────────────────────────────────── -->
+    <div class="card">
+      <div class="section-title">Template YAML</div>
+      <p class="muted">Edit the YAML — the label preview and the sample-value form below update as you type. The YAML stays the source of truth (version-controllable).</p>
+      {% if templates_loadable %}
+      <div class="row" style="margin-bottom:.75rem">
+        <select id="load-select" aria-label="Load an existing template" style="flex:1; margin-bottom:0">
+          <option value="">Load an existing template…</option>
+        </select>
+        <button class="btn btn-secondary" type="button" onclick="loadSelected()">Load</button>
+      </div>
+      {% endif %}
+      <textarea id="yaml" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+      {% if not templates_writable %}
+      <p class="muted">Server-save is disabled (templates are read-only). Use Copy or Download, then commit the file to your templates directory.</p>
+      {% endif %}
+      <div class="row">
+        <button class="btn btn-secondary" type="button" onclick="copyYaml()">Copy YAML</button>
+        <button class="btn btn-secondary" type="button" onclick="downloadYaml()">Download YAML</button>
+        {% if templates_writable %}
+        <button class="btn btn-primary" type="button" onclick="saveToServer()">Save to server</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- ── Right: sample fields + live preview ─────────────────────────── -->
+    <div class="card">
+      <div class="section-title">Sample values</div>
+      <p class="muted" id="fields-empty">Auto-detected <code>{{ '{{placeholder}}' }}</code> fields appear here. Computed tokens (date/now/seq) and translations are excluded.</p>
+      <div id="fields-container" class="fields-grid"></div>
+
+      <div class="section-title" style="margin-top:1rem">Preview</div>
+      <img id="preview-img" alt="Label preview">
+    </div>
+  </div>
+
+  <div id="status-area"></div>
+
+  <!-- In-page confirm modal. A native confirm() opened by activating "Load" with the Enter key is
+       instantly auto-dismissed by that same keystroke's keyup (a Chromium quirk that defaults to OK),
+       which would silently bypass this guard and discard edits. A <dialog> submits on keydown only,
+       so the residual keyup can't dismiss it; Cancel is focused so a stray key can't confirm. -->
+  <dialog id="confirm-dialog" aria-labelledby="confirm-message">
+    <form method="dialog">
+      <p id="confirm-message"></p>
+      <div class="row" style="justify-content:flex-end; margin-top:1rem">
+        <button class="btn btn-secondary" id="confirm-cancel" type="submit" value="cancel">Cancel</button>
+        <button class="btn btn-primary" type="submit" value="confirm" style="margin-right:0">Replace YAML</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    // ── Auth: token held only in this browser's localStorage (shared key with the print page). ──
+    const TOKEN_KEY = 'labelito_api_token';
+    const tokenInput = document.getElementById('api-token');
+    tokenInput.value = localStorage.getItem(TOKEN_KEY) || '';
+    tokenInput.addEventListener('input', () => localStorage.setItem(TOKEN_KEY, tokenInput.value.trim()));
+
+    function authHeaders() {
+      const headers = {'Content-Type': 'application/json'};
+      const token = (localStorage.getItem(TOKEN_KEY) || '').trim();
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return headers;
+    }
+
+    function handleAuthError(res) {
+      if (res.status === 401) {
+        showStatus('Authentication required — enter your API token above.', 'err');
+        tokenInput.focus();
+        return true;
+      }
+      return false;
+    }
+
+    // Most-recent detected field contract, so the preview gathers exactly the auto-detected fields
+    // (mirrors index.html's gatherFields, driven by the parsed contract instead of <select> data).
+    let contract = {required: [], optional: []};
+
+    // The YAML last seeded or loaded, so "Load existing" can confirm before discarding edits.
+    let lastLoadedYaml = '';
+
+    // ── Field-input rendering — reused verbatim from the print page (index.html#renderFields):
+    //    one labelled text input per declared field, optional tagged, debounced re-preview on input.
+    function renderFields() {
+      const container = document.getElementById('fields-container');
+      const prev = gatherFields();  // preserve already-typed sample values across re-detection
+      container.innerHTML = '';
+      const allFields = [
+        ...contract.required.map(f => ({name: f, optional: false})),
+        ...contract.optional.map(f => ({name: f, optional: true})),
+      ];
+      document.getElementById('fields-empty').style.display = allFields.length ? 'none' : '';
+      for (const {name, optional} of allFields) {
+        const wrap = document.createElement('div');
+        const lbl = document.createElement('label');
+        lbl.htmlFor = `field-${name}`;
+        // The field NAME is server-supplied (parsed from user draft YAML), so never interpolate it
+        // into innerHTML — that would execute a name like `<img src=x onerror=...>` in this page,
+        // which holds the API token in localStorage. Use a text node for the name and a separate
+        // element node for the optional marker so neither path can inject markup.
+        lbl.appendChild(document.createTextNode(name));
+        if (optional) {
+          const tag = document.createElement('span');
+          tag.className = 'optional-tag';
+          tag.textContent = '(optional)';
+          lbl.appendChild(document.createTextNode(' '));
+          lbl.appendChild(tag);
+        }
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.id = `field-${name}`;
+        inp.name = name;
+        inp.placeholder = name;
+        if (prev[name] !== undefined) inp.value = prev[name];
+        inp.addEventListener('input', debounce(doPreview, 600));
+        wrap.appendChild(lbl);
+        wrap.appendChild(inp);
+        container.appendChild(wrap);
+      }
+    }
+
+    function gatherFields() {
+      const fields = {};
+      for (const name of [...contract.required, ...contract.optional]) {
+        const el = document.getElementById(`field-${name}`);
+        if (el && el.value.trim()) fields[name] = el.value.trim();
+      }
+      return fields;
+    }
+
+    function currentYaml() {
+      return document.getElementById('yaml').value;
+    }
+
+    // ── Parse → update the auto-detected field form. A 422 is surfaced inline; the preview call
+    //    that follows will also fail-and-report, so parse stays quiet on the happy path.
+    async function refreshFields() {
+      const yaml = currentYaml();
+      if (!yaml.trim()) { contract = {required: [], optional: []}; renderFields(); return false; }
+      try {
+        const res = await fetch('/templates/parse', {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify({yaml}),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return false;
+          return false;  // the preview call reports the validation error inline
+        }
+        const json = await res.json();
+        contract = json.fields || {required: [], optional: []};
+        renderFields();
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // ── Draft preview → swap the <img>. Validation errors (422) are shown inline. ──
+    async function doPreview() {
+      await refreshFields();
+      const yaml = currentYaml();
+      if (!yaml.trim()) { clearStatus(); return; }
+      const payload = {yaml, fields: gatherFields()};
+      try {
+        const res = await fetch('/preview/draft', {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          const d = err.detail || err;
+          const msg = (d && d.error) ? d.error : (typeof d === 'string' ? d : JSON.stringify(d));
+          showStatus('Preview error: ' + msg, 'err');
+          return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const img = document.getElementById('preview-img');
+        if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+        img.src = url;
+        img.dataset.url = url;
+        clearStatus();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    // ── Copy / Download — work everywhere, independent of the read-only mount. ──
+    function copyYaml() {
+      const yaml = currentYaml();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(yaml).then(
+          () => showStatus('YAML copied to clipboard.', 'ok'),
+          () => showStatus('Could not copy — select the text and copy manually.', 'err'),
+        );
+      } else {
+        showStatus('Clipboard unavailable — select the text and copy manually.', 'err');
+      }
+    }
+
+    function downloadYaml() {
+      const yaml = currentYaml();
+      const name = (extractName(yaml) || 'template') + '.yaml';
+      const blob = new Blob([yaml], {type: 'application/x-yaml'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    // Best-effort scan for the top-level `name:` so a download/save defaults to a sensible filename.
+    function extractName(yaml) {
+      const m = yaml.match(/^name:\s*['"]?([^'"\n]+)['"]?\s*$/m);
+      return m ? m[1].trim() : '';
+    }
+
+    async function saveToServer() {
+      const yaml = currentYaml();
+      const name = extractName(yaml);
+      if (!name) { showStatus('Add a top-level `name:` before saving.', 'err'); return; }
+      try {
+        const res = await fetch('/templates', {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify({name, yaml}),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          const d = err.detail || err;
+          const msg = (d && d.error) ? d.error : (typeof d === 'string' ? d : JSON.stringify(d));
+          showStatus('Save error: ' + msg, 'err');
+          return;
+        }
+        const json = await res.json();
+        showStatus(`Saved template "${json.saved}" and reloaded.`, 'ok');
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    // ── Load existing template (gated by TEMPLATES_LOADABLE) ──
+    // Populate the picker from the public /templates list. Build options with textContent (never
+    // innerHTML) so a server-supplied name/description can never inject markup into this token-bearing
+    // page — same XSS discipline as renderFields/showStatus.
+    async function populateLoadSelect() {
+      const sel = document.getElementById('load-select');
+      if (!sel) return;  // control absent when TEMPLATES_LOADABLE=false
+      try {
+        const res = await fetch('/templates');
+        if (!res.ok) return;
+        const templates = await res.json();
+        for (const t of templates) {
+          const opt = document.createElement('option');
+          opt.value = t.name;
+          opt.textContent = t.description ? `${t.name} — ${t.description}` : t.name;
+          sel.appendChild(opt);
+        }
+      } catch (e) { /* offline / no templates — leave the placeholder option */ }
+    }
+
+    // Promise-based replacement for native confirm() — resolves true only when the user explicitly
+    // chooses "Replace YAML". The message is set via textContent (never innerHTML) so a server-supplied
+    // template name can't inject markup into this token-bearing page — same XSS discipline as showStatus.
+    function confirmDiscard(message) {
+      const dlg = document.getElementById('confirm-dialog');
+      document.getElementById('confirm-message').textContent = message;
+      return new Promise((resolve) => {
+        function onClose() {
+          dlg.removeEventListener('close', onClose);
+          resolve(dlg.returnValue === 'confirm');
+        }
+        dlg.returnValue = 'cancel';  // default when dismissed via Esc or backdrop
+        dlg.addEventListener('close', onClose);
+        dlg.showModal();
+        document.getElementById('confirm-cancel').focus();  // safe default — a stray key can't confirm
+      });
+    }
+
+    async function loadSelected() {
+      const sel = document.getElementById('load-select');
+      if (!sel || !sel.value) return;
+      const name = sel.value;
+      // Guard against silently discarding unsaved edits.
+      if (currentYaml().trim() && currentYaml() !== lastLoadedYaml &&
+          !(await confirmDiscard(`Replace the current YAML with template "${name}"? Unsaved edits will be lost.`))) {
+        return;
+      }
+      try {
+        const res = await fetch(`/templates/${encodeURIComponent(name)}/source`, {
+          headers: authHeaders(),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          const d = err.detail || err;
+          const msg = (d && d.error) ? d.error : (typeof d === 'string' ? d : JSON.stringify(d));
+          showStatus('Load error: ' + msg, 'err');
+          return;
+        }
+        const json = await res.json();
+        document.getElementById('yaml').value = json.yaml;
+        lastLoadedYaml = json.yaml;
+        clearStatus();
+        doPreview();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    function showStatus(msg, type) {
+      // `msg` can carry API-derived strings (validation errors echoing the user's YAML, including a
+      // malicious field name). Build the node with textContent so no markup in `msg` can execute —
+      // never innerHTML with interpolated server content.
+      const area = document.getElementById('status-area');
+      area.replaceChildren();
+      const div = document.createElement('div');
+      div.className = `status ${type === 'ok' ? 'ok' : 'err'}`;
+      div.textContent = msg;
+      area.appendChild(div);
+    }
+    function clearStatus() {
+      document.getElementById('status-area').replaceChildren();
+    }
+
+    function debounce(fn, ms) {
+      let t;
+      return function(...args) { clearTimeout(t); t = setTimeout(() => fn.apply(this, args), ms); };
+    }
+
+    document.getElementById('yaml').addEventListener('input', debounce(doPreview, 600));
+
+    // Seed with a minimal, valid starter template so the studio renders something immediately.
+    document.getElementById('yaml').value =
+`name: my-label
+description: A new label
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle]
+layout:
+  - {type: title, text: "{{title}}"}
+  - {type: subtitle, text: "{{subtitle}}"}
+`;
+    lastLoadedYaml = document.getElementById('yaml').value;  // seed counts as "not dirty"
+    populateLoadSelect();
+    doPreview();
+  </script>
+</body>
+</html>

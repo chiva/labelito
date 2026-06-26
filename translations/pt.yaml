@@ -1,0 +1,6 @@
+# Portuguese — author-supplied seed; native review welcome (see CONTRIBUTING).
+frozen: "Congelado"
+stored: "Guardado"
+expires: "Validade"
+_date_format: "%d/%m/%Y"
+_datetime_format: "%d/%m/%Y %H:%M"

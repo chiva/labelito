@@ -74,22 +74,22 @@ MAX_TEXT_LINES = 200
 # elements.py so the guard and the renderer can never drift apart.
 
 # A few attributes are NOT 1-D pixel counts and so need a tighter cap than MAX_ELEMENT_DIMENSION.
-# `qr.size` and `icon.size` both render as a size×size SQUARE (PIL `resize((size, size))`), so the
-# allocation is quadratic, not linear: at the linear cap (10000) that is 100M px, and ×scale² (4 at
+# `qr.size` and `icon.size` both render as a sizexsize SQUARE (PIL `resize((size, size))`), so the
+# allocation is quadratic, not linear: at the linear cap (10000) that is 100M px, and xscale² (4 at
 # 600 dpi high_res) ≈ 400M px — a multi-hundred-MB image that can OOM the worker straight off
 # /preview/draft or a saved template that otherwise validates. 2000 px is already far larger than any
 # thermal label QR/icon (the largest shipped value is a 180 px QR), and bounds the worst case at
-# 2000²×4 ≈ 16M px ≈ 16 MB — generous yet safe on a home box.
+# 2000²x4 ≈ 16M px ≈ 16 MB — generous yet safe on a home box.
 MAX_SQUARE_DIMENSION = 2000
 
 # `text.size` is a font POINT size, not a pixel count: it scales the rendered glyph height AND
-# (multiplied by max_lines) the strip height, so size×max_lines drives a quadratic allocation. A
+# (multiplied by max_lines) the strip height, so sizexmax_lines drives a quadratic allocation. A
 # 512 pt font is already absurd for a label; cap it well below the linear ceiling.
 MAX_FONT_SIZE = 512
 
 # Guard the text strip's AREA, not just the two scalars: even within MAX_FONT_SIZE and MAX_TEXT_LINES
-# the product size×max_lines can compose a multi-thousand-px-tall strip (line height ≈ 1.3×size).
-# Bound the product so 1.3×size×lines stays a few-thousand-px strip. Only the `text` element carries
+# the product sizexmax_lines can compose a multi-thousand-px-tall strip (line height ≈ 1.3xsize).
+# Bound the product so 1.3xsizexlines stays a few-thousand-px strip. Only the `text` element carries
 # an author-controlled `size`; title/subtitle have fixed default sizes (60/40 pt) and only max_lines
 # is bounded, so at 200 lines their strip is already bounded and needs no extra product guard.
 MAX_TEXT_STRIP_PRODUCT = 4000
@@ -99,7 +99,7 @@ MAX_TEXT_STRIP_PRODUCT = 4000
 # Any other value is either a no-op tilt that mis-renders or — for an unbounded int — an OverflowError
 # in PIL at render time, so the loader rejects anything outside this set.
 # Per-element caps bound ONE element's allocation, but not the WHOLE layout: hundreds of individually
-# valid elements (e.g. {spacer, size: 10000} ×N, or box height: 10000 ×N) compose into hundreds of MB
+# valid elements (e.g. {spacer, size: 10000} xN, or box height: 10000 xN) compose into hundreds of MB
 # of strips BEFORE the engine's final raster-row clamp ever runs (engine clamps the composed canvas,
 # but each strip is allocated full-size first). Two cheap validation guards bound the layout as a
 # whole without a compose refactor:
@@ -191,8 +191,7 @@ def _validate_icon(file_name: str, label: str, el: dict[str, Any]) -> None:
     style = el.get("style")
     if str(collection) == "fontawesome" and style is not None and str(style) not in FA_STYLES:
         raise TemplateLoadError(
-            f"{file_name}: {label} unknown fontawesome style {style!r}; "
-            f"valid: {sorted(FA_STYLES)}"
+            f"{file_name}: {label} unknown fontawesome style {style!r}; valid: {sorted(FA_STYLES)}"
         )
     name = el.get("name")
     if isinstance(name, str) and "{{" not in name and _safe_icon_name(name) is None:
@@ -224,17 +223,11 @@ def _require_int(
     PIL. Rejecting it here bounds the allocation BEFORE any render/save.
     """
     if isinstance(value, bool) or not isinstance(value, int):
-        raise TemplateLoadError(
-            f"{file_name}: {label} '{key}' must be an integer, got {value!r}"
-        )
+        raise TemplateLoadError(f"{file_name}: {label} '{key}' must be an integer, got {value!r}")
     if value < minimum:
-        raise TemplateLoadError(
-            f"{file_name}: {label} '{key}' must be >= {minimum}, got {value}"
-        )
+        raise TemplateLoadError(f"{file_name}: {label} '{key}' must be >= {minimum}, got {value}")
     if maximum is not None and value > maximum:
-        raise TemplateLoadError(
-            f"{file_name}: {label} '{key}' must be <= {maximum}, got {value}"
-        )
+        raise TemplateLoadError(f"{file_name}: {label} '{key}' must be <= {maximum}, got {value}")
 
 
 # Per-element render-affecting numeric attributes: (key, minimum, maximum). Every value here feeds a
@@ -245,7 +238,7 @@ _ELEMENT_NUMERIC_BOUNDS: dict[str, tuple[tuple[str, int, int], ...]] = {
     "title": (("max_lines", 1, MAX_TEXT_LINES),),
     "subtitle": (("max_lines", 1, MAX_TEXT_LINES),),
     # `text` size is a font point size (MAX_FONT_SIZE), additionally area-guarded against max_lines
-    # in _validate_element_numerics; qr/icon size render as a size×size square (MAX_SQUARE_DIMENSION).
+    # in _validate_element_numerics; qr/icon size render as a sizexsize square (MAX_SQUARE_DIMENSION).
     "text": (("size", 1, MAX_FONT_SIZE), ("max_lines", 1, MAX_TEXT_LINES)),
     "qr": (("size", 1, MAX_SQUARE_DIMENSION),),
     "barcode": (("height", 1, MAX_ELEMENT_DIMENSION),),
@@ -296,7 +289,7 @@ def _validate_element_numerics(file_name: str, label: str, el: dict[str, Any]) -
 
     # Strip-area guard: `text` is the one element whose font `size` is author-controlled, so even
     # with size ≤ MAX_FONT_SIZE and max_lines ≤ MAX_TEXT_LINES their PRODUCT can compose a giant
-    # strip (height ≈ 1.3×size×lines). Bound the product so the worst-case strip stays a few-thousand
+    # strip (height ≈ 1.3xsizexlines). Bound the product so the worst-case strip stays a few-thousand
     # px tall. After the absent-vs-null check above, `size`/`max_lines` are each either ABSENT (→ the
     # in-bounds dataclass default applies) or a finite in-range int — an explicit null was already
     # rejected. So the effective value is the present int when present, else the default: `size`
@@ -305,15 +298,20 @@ def _validate_element_numerics(file_name: str, label: str, el: dict[str, Any]) -
     if str(el_type) == "text":
         size = el.get("size")
         max_lines = el.get("max_lines")
-        effective_size = size if isinstance(size, int) and not isinstance(size, bool) else FONT_SIZES["text"]
+        effective_size = (
+            size if isinstance(size, int) and not isinstance(size, bool) else FONT_SIZES["text"]
+        )
         effective_lines = (
-            max_lines if isinstance(max_lines, int) and not isinstance(max_lines, bool)
+            max_lines
+            if isinstance(max_lines, int) and not isinstance(max_lines, bool)
             else DEFAULT_TEXT_MAX_LINES
         )
         if effective_size * effective_lines > MAX_TEXT_STRIP_PRODUCT:
-            shown_lines = max_lines if isinstance(max_lines, int) else f"{DEFAULT_TEXT_MAX_LINES} (default)"
+            shown_lines = (
+                max_lines if isinstance(max_lines, int) else f"{DEFAULT_TEXT_MAX_LINES} (default)"
+            )
             raise TemplateLoadError(
-                f"{file_name}: {label} text 'size' × 'max_lines' ({effective_size} × {shown_lines} "
+                f"{file_name}: {label} text 'size' x 'max_lines' ({effective_size} x {shown_lines} "
                 f"= {effective_size * effective_lines}) must be <= {MAX_TEXT_STRIP_PRODUCT}; reduce "
                 f"the font size or set a smaller max_lines so the rendered text strip stays bounded"
             )
@@ -355,9 +353,7 @@ def _validate_row_child_sizing(file_name: str, label: str, child: dict[str, Any]
         _require_choice(file_name, label, "valign", valign, VALIGN_CHOICES)
 
 
-def _validate_element(
-    file_name: str, label: str, el: Any, *, allow_row: bool = True
-) -> None:
+def _validate_element(file_name: str, label: str, el: Any, *, allow_row: bool = True) -> None:
     """Validate one layout element's type (and icon/row specifics), recursing into row children.
 
     ``allow_row`` is cleared for a row's children so a nested ``row`` is rejected loudly rather
@@ -416,9 +412,7 @@ def _validate_element(
         # image/token walkers would still descend into it — so an ignored child could mark a text
         # field as an image, bypassing the text-size cap and corrupting history. Reject it so
         # validation, rendering, and history all traverse exactly the same element tree.
-        raise TemplateLoadError(
-            f"{file_name}: {label} only a 'row' element may have 'children'"
-        )
+        raise TemplateLoadError(f"{file_name}: {label} only a 'row' element may have 'children'")
 
 
 # Conservative per-type fallback defaults for the cumulative height estimate. These mirror the
@@ -437,7 +431,7 @@ _HEIGHT_DEFAULTS: dict[str, int] = {
 }
 # Default vertical insets present on EVERY element (ElementBase.padding_top/padding_bottom == 4).
 _DEFAULT_PADDING = 4
-# Text line height is ≈1.3×font size (an 8 px line gap atop the glyph height); round up to 2× so the
+# Text line height is ≈1.3xfont size (an 8 px line gap atop the glyph height); round up to 2x so the
 # per-element estimate is a comfortable upper bound on the rendered text strip.
 _TEXT_LINE_HEIGHT_FACTOR = 2
 # Default wrapped-line counts for title/subtitle (TitleElement/SubtitleElement.max_lines == 2).
@@ -464,41 +458,56 @@ def _estimate_element_height(el: dict[str, Any]) -> int:
     budget guard (:data:`MAX_TOTAL_STRIP_HEIGHT`); it is intentionally an upper bound, not exact.
     """
     el_type = str(el.get("type"))
-    padding = (
-        _int_attr(el, "padding_top", _DEFAULT_PADDING)
-        + _int_attr(el, "padding_bottom", _DEFAULT_PADDING)
+    padding = _int_attr(el, "padding_top", _DEFAULT_PADDING) + _int_attr(
+        el, "padding_bottom", _DEFAULT_PADDING
     )
 
     if el_type == "row":
         children = el.get("children")
         child_max = 0
         if isinstance(children, list):
-            child_max = max((_estimate_element_height(c) for c in children if isinstance(c, dict)), default=0)
+            child_max = max(
+                (_estimate_element_height(c) for c in children if isinstance(c, dict)), default=0
+            )
         return padding + child_max
 
     if el_type == "text":
-        # size × effective max_lines (the finite default when omitted) × the line-height
+        # size x effective max_lines (the finite default when omitted) x the line-height
         # factor. This is the same product the strip-area guard bounds, here turned into pixels.
         size = _int_attr(el, "size", FONT_SIZES["text"])
         max_lines = _int_attr(el, "max_lines", DEFAULT_TEXT_MAX_LINES)
         return padding + size * max_lines * _TEXT_LINE_HEIGHT_FACTOR
 
     if el_type in ("title", "subtitle"):
-        # Fixed font size (FONT_SIZES) × max_lines (default 2). Author cannot enlarge the font.
+        # Fixed font size (FONT_SIZES) x max_lines (default 2). Author cannot enlarge the font.
         max_lines = _int_attr(el, "max_lines", _TITLE_DEFAULT_MAX_LINES)
         return padding + FONT_SIZES[el_type] * max_lines * _TEXT_LINE_HEIGHT_FACTOR
 
     if el_type == "box":
         # height + the border drawn on top and bottom edges.
-        return padding + _int_attr(el, "height", _HEIGHT_DEFAULTS["box"]) + 2 * _int_attr(el, "border", 2)
+        return (
+            padding
+            + _int_attr(el, "height", _HEIGHT_DEFAULTS["box"])
+            + 2 * _int_attr(el, "border", 2)
+        )
 
     if el_type == "line":
         # thickness + the margin above and below the rule.
-        return padding + _int_attr(el, "thickness", _HEIGHT_DEFAULTS["line"]) + 2 * _int_attr(el, "margin", 8)
+        return (
+            padding
+            + _int_attr(el, "thickness", _HEIGHT_DEFAULTS["line"])
+            + 2 * _int_attr(el, "margin", 8)
+        )
 
     if el_type in _HEIGHT_DEFAULTS:
         # spacer/image/qr/icon/barcode: a single height-driving attribute.
-        attr = {"spacer": "size", "image": "max_height", "qr": "size", "icon": "size", "barcode": "height"}[el_type]
+        attr = {
+            "spacer": "size",
+            "image": "max_height",
+            "qr": "size",
+            "icon": "size",
+            "barcode": "height",
+        }[el_type]
         return padding + _int_attr(el, attr, _HEIGHT_DEFAULTS[el_type])
 
     # Unknown type (already rejected by _validate_element, so unreachable in practice): fall back to

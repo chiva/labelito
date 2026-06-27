@@ -861,10 +861,10 @@ def test_usb_busy_error_raised_when_prior_worker_still_stuck(
     Module-level USB state (_usb_busy, _USB_DEVICE_LOCK) is reset by the _reset_usb_module_state
     autouse fixture in conftest.py so this test starts with a clean device.
     """
+    import brother_ql.backends.helpers as helpers_mod
+
     import app.transports.usb as usb_mod
     from app.transports.usb import USBBusyError, USBTimeoutError, USBTransport
-
-    import brother_ql.backends.helpers as helpers_mod
 
     monkeypatch.setattr(usb_mod, "USB_TIMEOUT", 0.05)
 
@@ -925,10 +925,10 @@ def test_usb_send_succeeds_after_orphaned_worker_releases_lock(
     """
     import time
 
+    import brother_ql.backends.helpers as helpers_mod
+
     import app.transports.usb as usb_mod
     from app.transports.usb import USBTransport
-
-    import brother_ql.backends.helpers as helpers_mod
 
     monkeypatch.setattr(usb_mod, "USB_TIMEOUT", 0.05)
 

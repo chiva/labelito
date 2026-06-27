@@ -43,7 +43,7 @@ def _brother_ql_model_max_rows(model_identifier: str) -> int:
 
     Uses ``ModelsManager()[identifier].min_max_length_dots[1]`` — the per-model upper bound
     that ``BrotherQLRaster.add_raster_data`` enforces at conversion time.  Wide/long-format
-    models (QL-1050/1060/1100-class) accept up to 35433–35434 rows, roughly 3x the sub-1050
+    models (QL-1050/1060/1100-class) accept up to 35433-35434 rows, roughly 3x the sub-1050
     limit.  Using the global minimum for those models silently clips continuous labels longer
     than ~500 mm at 600 dpi even though the printer would accept them.
 

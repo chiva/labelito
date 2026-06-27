@@ -205,7 +205,7 @@ def test_valid_rotations_load(tmp_path: Path) -> None:
 
 
 def test_oversized_qr_size_raises(tmp_path: Path) -> None:
-    """A `qr.size` of 10000 (above MAX_SQUARE_DIMENSION) is rejected — it renders as a size×size
+    """A `qr.size` of 10000 (above MAX_SQUARE_DIMENSION) is rejected — it renders as a sizexsize
     square (PIL resize((size, size))), so the allocation is quadratic and can OOM the worker."""
     path = write_yaml(
         tmp_path / "qr-big.yaml",
@@ -255,8 +255,8 @@ def test_oversized_text_font_size_raises(tmp_path: Path) -> None:
 
 
 def test_text_strip_product_cap_raises(tmp_path: Path) -> None:
-    """`text` size × max_lines over MAX_TEXT_STRIP_PRODUCT is rejected even when each scalar is in
-    bounds (size 500 ≤ 512, max_lines 100 ≤ 200, but 500×100 = 50000 ≫ 4000)."""
+    """`text` size x max_lines over MAX_TEXT_STRIP_PRODUCT is rejected even when each scalar is in
+    bounds (size 500 ≤ 512, max_lines 100 ≤ 200, but 500x100 = 50000 ≫ 4000)."""
     path = write_yaml(
         tmp_path / "txt-strip.yaml",
         """\
@@ -294,7 +294,7 @@ def test_in_bounds_render_dimensions_load(tmp_path: Path) -> None:
 
 def test_text_strip_product_cap_applies_without_max_lines(tmp_path: Path) -> None:
     """A large `text.size` with NO `max_lines` is bounded by the product guard against the
-    implicit DEFAULT_TEXT_MAX_LINES, not waved through. size 512 × 10 (default) = 5120 > 4000."""
+    implicit DEFAULT_TEXT_MAX_LINES, not waved through. size 512 x 10 (default) = 5120 > 4000."""
     path = write_yaml(
         tmp_path / "txt-nolines.yaml",
         """\
@@ -328,7 +328,7 @@ def test_text_strip_product_cap_applies_with_null_max_lines(tmp_path: Path) -> N
 
 def test_text_without_max_lines_within_product_cap_loads(tmp_path: Path) -> None:
     """An ordinary uncapped body text (size 48, no max_lines) stays well under the product cap
-    (48 × 10 default = 480 ≤ 4000) and loads — the shipped templates rely on this."""
+    (48 x 10 default = 480 ≤ 4000) and loads — the shipped templates rely on this."""
     path = write_yaml(
         tmp_path / "txt-ok.yaml",
         """\
@@ -485,7 +485,7 @@ def test_row_height_uses_tallest_child_not_sum(tmp_path: Path) -> None:
           - {{type: row, children: [{children}]}}
     """,
     )
-    # 6 children × 5000 = 30000 if summed (under budget either way), but the row contributes only the
+    # 6 children x 5000 = 30000 if summed (under budget either way), but the row contributes only the
     # tallest child (~5000), so this comfortably loads — proving children are not summed.
     t = load_template(path)
     assert len(t.layout) == 1
@@ -604,8 +604,8 @@ def test_registry_skips_symlinked_template(
     """
     outside = tmp_path / "outside.yaml"
     outside.write_text(
-        "name: sneaky\ndescription: external\nlabel: \"62\"\n"
-        "fields:\n  required: [title]\nlayout:\n  - {type: title, text: \"{{title}}\"}\n"
+        'name: sneaky\ndescription: external\nlabel: "62"\n'
+        'fields:\n  required: [title]\nlayout:\n  - {type: title, text: "{{title}}"}\n'
     )
     link = templates_dir / "sneaky.yaml"
     link.symlink_to(outside)
@@ -658,9 +658,7 @@ def test_registry_rejects_duplicate_internal_name(templates_dir: Path) -> None:
     assert reg.get("shared") is not None
     assert reg.get("shared").source_path.name == "aaa.yaml"
     # The duplicate is reported, with both filenames and the shared name in the message.
-    assert any(
-        "zzz.yaml" in err and "aaa.yaml" in err and "shared" in err for err in reg.errors
-    )
+    assert any("zzz.yaml" in err and "aaa.yaml" in err and "shared" in err for err in reg.errors)
 
 
 # ── Row container validation ─────────────────────────────────────────────────────

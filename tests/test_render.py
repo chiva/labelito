@@ -26,8 +26,8 @@ from app.render.elements import (
     _wrap_text,
 )
 from app.render.engine import (
-    RenderEngine,
     _BROTHER_QL_MAX_RASTER_ROWS,
+    RenderEngine,
     _add_months,
     _apply_offset,
     _brother_ql_model_max_rows,
@@ -1405,8 +1405,7 @@ def test_high_res_fixed_length_min_equals_max_capped_at_model_ceiling(
         png = model_engine.render_to_png(layout, {}, CANVAS_W, None, high_res=True)
         img = Image.open(io.BytesIO(png))
         assert img.height == ql810w_max, (
-            f"fixed-length high_res must clamp the scaled minimum to {ql810w_max}, "
-            f"got {img.height}"
+            f"fixed-length high_res must clamp the scaled minimum to {ql810w_max}, got {img.height}"
         )
         # Real conversion must not raise now that height ≤ the model ceiling.
         qlr = BrotherQLRaster("QL-810W")

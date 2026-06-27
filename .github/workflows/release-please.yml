@@ -11,7 +11,77 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      # JSON for the open release PR (empty when there is none) — consumed by update-lock.
+      pr: ${{ steps.release.outputs.pr }}
+      # "true" only on the push that actually publishes a release — gates the docker job.
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           release-type: python
+
+  # release-please bumps pyproject.toml's version but never regenerates uv.lock, so the lockfile's
+  # own package entry drifts behind the release. Re-lock on the release PR branch so the version bump
+  # and the lockfile land in the same PR (and the CI `lock` guard stays green on merge).
+  update-lock:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.pr }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+      - uses: astral-sh/setup-uv@v6
+      - run: uv lock
+      - name: Commit refreshed lockfile
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          git diff --staged --quiet || git commit -m "chore: sync uv.lock for release"
+          git push
+
+  # When release-please publishes a release, build and push the image in the SAME run. The default
+  # GITHUB_TOKEN cannot trigger a separate release-triggered workflow (GitHub suppresses events from
+  # the built-in token to prevent loops), but it CAN push to GHCR — so building here needs no PAT or
+  # App token. metadata-action is fed the release tag explicitly because this job runs on a push to
+  # `main`, where the ref carries no tag to derive the version from.
+  docker:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

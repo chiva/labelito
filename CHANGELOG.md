@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/chiva/labelito/compare/v0.1.2...v0.1.3) (2026-06-27)
+
+
+### Bug Fixes
+
+* docker buildx for cache ([#20](https://github.com/chiva/labelito/issues/20)) ([d1a9a73](https://github.com/chiva/labelito/commit/d1a9a7348036d39359ae2dee295a52f3d48bcb19))
+
 ## [0.1.2](https://github.com/chiva/labelito/compare/v0.1.1...v0.1.2) (2026-06-27)
 
 

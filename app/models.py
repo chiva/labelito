@@ -25,7 +25,7 @@ class RenderOptions(BaseModel):
     # silently printing the wrong thing — a free-form dict would lose that.
     model_config = ConfigDict(extra="forbid")
 
-    # Floyd–Steinberg dithering for the print raster. Nullable on purpose: None inherits the
+    # Floyd-Steinberg dithering for the print raster. Nullable on purpose: None inherits the
     # DEFAULT_DITHER env default; an explicit true/false overrides it either way (a plain bool with
     # `or` could never turn a True default back off). On PrintRequest this is the nullable request
     # value; on PrintJobRecord it is the resolved effective value persisted for reprint.
@@ -33,7 +33,7 @@ class RenderOptions(BaseModel):
         default=None,
         examples=[None],
         description=(
-            "Approximate greys with Floyd–Steinberg dithering on the print raster. null inherits "
+            "Approximate greys with Floyd-Steinberg dithering on the print raster. null inherits "
             "the DEFAULT_DITHER server default; true/false overrides it. Affects /print and "
             "/reprint only — /preview accepts this field for a shared request shape but ignores "
             "it (the preview is a pre-driver render and is never dithered). Inert when red=true: "

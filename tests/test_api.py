@@ -2465,7 +2465,9 @@ def test_editor_gate_precedes_auth(client: TestClient, monkeypatch: pytest.Monke
     assert client.post("/templates", json={"name": "x", "yaml": ""}).status_code == 404
 
 
-def test_editor_disabled_hides_nav_link(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_editor_disabled_hides_nav_link(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """When EDITOR_ENABLED=false, the index page must not render the Editor → nav link."""
     import app.main as main_mod
 
@@ -2937,7 +2939,7 @@ def test_preview_draft_normal_dimensions_still_200(client: TestClient) -> None:
 
 # ── quadratic/area render shapes are bounded tighter than the 1-D cap ───────────
 def test_preview_draft_square_and_font_caps_are_422(client: TestClient) -> None:
-    """qr/icon size render as a size×size square and text size is a font point size: each has a
+    """qr/icon size render as a sizexsize square and text size is a font point size: each has a
     tighter cap (MAX_SQUARE_DIMENSION / MAX_FONT_SIZE) than the linear MAX_ELEMENT_DIMENSION, so a
     value of 10000 — under the old linear cap — is now rejected before any quadratic allocation."""
     for layout in (
@@ -2952,8 +2954,8 @@ def test_preview_draft_square_and_font_caps_are_422(client: TestClient) -> None:
 
 
 def test_preview_draft_text_strip_product_is_422(client: TestClient) -> None:
-    """A text whose size×max_lines exceeds the strip-area cap is rejected even though each scalar is
-    in bounds (size 500 ≤ MAX_FONT_SIZE, max_lines 100 ≤ MAX_TEXT_LINES, but 500×100 ≫ 4000)."""
+    """A text whose sizexmax_lines exceeds the strip-area cap is rejected even though each scalar is
+    in bounds (size 500 ≤ MAX_FONT_SIZE, max_lines 100 ≤ MAX_TEXT_LINES, but 500x100 ≫ 4000)."""
     yaml = _draft_with_layout("{type: text, text: hi, size: 500, max_lines: 100}")
     resp = client.post("/preview/draft", json={"yaml": yaml, "fields": {"title": "x"}})
     assert resp.status_code == 422

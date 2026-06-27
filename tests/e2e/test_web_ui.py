@@ -61,7 +61,7 @@ def test_print_dry_run_round_trip(authed_page: Page) -> None:
     Two things are checked: the network response from /print, and the on-page success banner.
     The banner is now sticky/persistent — doPrint() renders it with ``{sticky: true}``, and the
     post-print doPreview() refresh deliberately does NOT clear a sticky banner — so ".status.ok"
-    stays visible (until the × button or its ~8s auto-dismiss fires) rather than racing away.
+    stays visible (until the x button or its ~8s auto-dismiss fires) rather than racing away.
     """
     authed_page.goto("/")
     authed_page.select_option("#template-select", SAMPLE_TEMPLATE)

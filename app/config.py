@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     model: str = "QL-810W"
     printer_uri: str = "tcp://192.168.1.100:9100"
     label_size: str = "62"
-    # Floyd–Steinberg dithering default for the print raster. Per-request `dither` overrides it;
+    # Floyd-Steinberg dithering default for the print raster. Per-request `dither` overrides it;
     # None inherits this. Settable via env var DEFAULT_DITHER. Print-only — /preview never dithers.
     default_dither: bool = False
     # B/W threshold default (percentage 0-100, exclusive of 0). Per-request `threshold` overrides

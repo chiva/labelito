@@ -7,7 +7,7 @@ packages = ["app"]
 
 [project]
 name = "labelito"
-version = "0.1.1"
+version = "0.1.2"
 description = "Labelito — self-hosted Brother QL label print service with Home Assistant integration"
 readme = "README.md"
 license = { file = "LICENSE" }

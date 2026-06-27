@@ -68,8 +68,7 @@ jobs:
       - name: Smoke test
         run: |
           docker run -d --name label-test \
-            -e TRANSPORT=file \
-            -e PRINTER_URI=/tmp/output.bin \
+            -e PRINTER_URI=file:///tmp/output.bin \
             -e API_TOKEN=ci-smoke-token \
             -p 8765:8765 \
             labelito:ci

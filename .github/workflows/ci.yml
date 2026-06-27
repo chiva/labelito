@@ -21,6 +21,20 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
 
+  lock:
+    name: Lockfile up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # Fails if uv.lock is out of sync with pyproject.toml (e.g. a version bump or dependency
+      # change that forgot to re-lock). release-please bumps pyproject.toml but not the lockfile;
+      # the release-please workflow re-locks on its PR branch, and this guard catches every other
+      # source of drift.
+      - run: uv lock --check
+
   type:
     name: Type check
     runs-on: ubuntu-latest

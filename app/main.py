@@ -140,13 +140,17 @@ OPENAPI_TAGS = [
 
 # Reused documented error responses, keyed by the status codes the routes actually return. Kept
 # terse — Swagger shows them under each operation so a client knows the failure modes up front.
-RESPONSE_401 = {401: {"description": "Invalid or missing API token"}}
-RESPONSE_413 = {413: {"description": "Request body exceeds the size limit"}}
+# Annotated with the key/value type FastAPI's `responses=` parameter expects so the `**`-spread in
+# the route decorators does not trip mypy's dict-item inference (a bare literal infers as the
+# narrower dict[int, dict[str, str]], which strict mypy rejects against the wider expected type).
+RESPONSE_401: dict[int | str, dict[str, Any]] = {
+    401: {"description": "Invalid or missing API token"}
+}
+RESPONSE_413: dict[int | str, dict[str, Any]] = {
+    413: {"description": "Request body exceeds the size limit"}
+}
 
-# Pre-typed response maps for the studio routes. Declared with the explicit key/value type
-# FastAPI's `responses=` parameter expects so the `**`-spread in the new route decorators does not
-# trip mypy's dict-item inference (the older RESPONSE_401/RESPONSE_413 constants are inferred as
-# dict[int, dict[str, str]] and are intentionally left as-is). New routes compose from these.
+# Pre-typed response maps for the studio routes, composed from the same explicit type as above.
 _DRAFT_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"description": "Invalid or missing API token"},
     413: {"description": "Request body exceeds the size limit"},
@@ -941,11 +945,11 @@ def get_template_source(name: str) -> TemplateSourceResponse:
     if tmpl is None:
         raise HTTPException(404, f"No template named {name!r}")
 
-    real_dir = os.path.realpath(settings.templates_dir)
-    real_src = os.path.realpath(tmpl.source_path)
+    real_dir = settings.templates_dir.resolve()
+    real_src = tmpl.source_path.resolve()
     if (
-        os.path.islink(tmpl.source_path)
-        or os.path.dirname(real_src) != real_dir
+        tmpl.source_path.is_symlink()
+        or real_src.parent != real_dir
         or tmpl.source_path.suffix != ".yaml"
     ):
         # A registered template whose file is not a plain .yaml directly under templates_dir should
@@ -953,11 +957,11 @@ def get_template_source(name: str) -> TemplateSourceResponse:
         raise HTTPException(404, f"No template named {name!r}")
 
     try:
-        if os.path.getsize(real_src) > MAX_TEMPLATE_SOURCE_BYTES:
+        if real_src.stat().st_size > MAX_TEMPLATE_SOURCE_BYTES:
             raise HTTPException(
                 413,
                 f"Template {name!r} is too large to load "
-                f"({os.path.getsize(real_src)} bytes, max {MAX_TEMPLATE_SOURCE_BYTES})",
+                f"({real_src.stat().st_size} bytes, max {MAX_TEMPLATE_SOURCE_BYTES})",
             )
         yaml_text = tmpl.source_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
@@ -1484,11 +1488,11 @@ def _atomic_write_template_bytes(path: Path, data: bytes) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
+        Path(tmp_name).replace(path)
     except OSError:
         # mkstemp created the temp file; remove it so a failed write never leaks a partial sibling.
         try:
-            os.unlink(tmp_name)
+            Path(tmp_name).unlink()
         except OSError:
             pass
         raise
@@ -1593,7 +1597,7 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
                         "Save failed AND rollback failed: the templates directory may be in an "
                         "inconsistent state on disk — inspect it manually"
                     ),
-                    "errors": rollback_reasons + [f"rollback error: {exc}"],
+                    "errors": [*rollback_reasons, f"rollback error: {exc}"],
                     "saved": None,
                 },
             ) from exc

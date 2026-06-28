@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 # Digest-pinned like the builder/runtime stages: this stage runs pnpm and bakes the normalized SVGs
 # into the final image, so an unpinned tag could change the toolchain or assets with no source diff.
 # Renovate's dockerfile manager bumps the tag and digest together.
-FROM node:24-slim@sha256:862263c612aa437e3037674b85419622a9d93bff80aa1eee5398dfe686375532 AS icons
+FROM node:24-slim@sha256:b31e7a42fdf8b8aa5f5ed477c72d694301273f1069c5a2f71d53c6482e99a2fc AS icons
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

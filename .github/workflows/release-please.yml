@@ -41,7 +41,7 @@ jobs:
         with:
           ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
       - run: uv lock

@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:dbabc35ae87836369ca9a2052a4f0bd3c76135b1cf32c33d8ec149927135019d AS builder
+FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:dc6831ca75771711b69e2fcaf47f2b4938bcfd7721daf254c1131791249d000d AS builder
 
 LABEL org.opencontainers.image.title="Labelito"
 LABEL org.opencontainers.image.description="Self-hosted label printing for Brother QL printers"

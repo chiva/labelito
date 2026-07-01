@@ -3376,10 +3376,16 @@ def test_print_snmp_unreachable_fails_open(
     _arm_network_snmp(monkeypatch, main_mod, PrinterSNMPStatus.unreachable())
     monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
 
+    before = main_mod.PREFLIGHT_SNMP_UNREACHABLE._value.get()
     resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
 
     assert resp.status_code == 200, f"Expected 200 (fail-open), got {resp.status_code}: {resp.text}"
     assert main_mod._driver.render_payload.call_count == 1
+    # The fail-open path must be observable: a print that skipped the guard increments the counter.
+    after = main_mod.PREFLIGHT_SNMP_UNREACHABLE._value.get()
+    assert after == before + 1, (
+        "an unverified (fail-open) print must increment the SNMP-unreachable counter"
+    )
 
 
 def test_print_printer_fault_returns_409(

@@ -91,6 +91,14 @@ logging.basicConfig(level=logging.INFO)
 LABELS_PRINTED = Counter("labels_printed_total", "Total labels printed", ["template", "dry_run"])
 LABEL_ERRORS = Counter("label_errors_total", "Print errors", ["reason"])
 LAST_PRINT_TS = Gauge("last_print_timestamp_seconds", "Unix timestamp of last print")
+# A real network print that proceeded WITHOUT the SNMP media/fault preflight because SNMP was enabled
+# but unreachable (timeout / filtered UDP 161 / wrong community / unsupported critical OID). The guard
+# fails open by design — SNMP is opportunistic, not required — but a rising count means prints are
+# going out unverified, i.e. the phantom-success class is unguarded until SNMP becomes reachable.
+PREFLIGHT_SNMP_UNREACHABLE = Counter(
+    "print_preflight_snmp_unreachable_total",
+    "Real prints allowed without an SNMP media/fault check because SNMP was unreachable",
+)
 
 # ── Image upload limits ──────────────────────────────────────────────────────────
 # A label is a small thermal print (≤ ~696 px wide at 300 dpi, downscaled before printing),
@@ -316,7 +324,15 @@ def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> No
     when the template's label is unknown to brother_ql (the downstream render surfaces that). Raises
     :class:`HTTPException` 409 otherwise, incrementing the matching ``label_errors_total`` series."""
     if not loaded.reachable:
-        log.warning("SNMP preflight: printer unreachable; allowing print (fail-open)")
+        # Fail open by design: SNMP is opportunistic (it may be disabled on the printer or blocked
+        # in transit), so an unreachable agent must not block printing. But a print then goes out
+        # WITHOUT the media/fault check — so count it, making a silently-unguarded run observable
+        # (a rising counter means the phantom-success class is unguarded until SNMP recovers).
+        PREFLIGHT_SNMP_UNREACHABLE.inc()
+        log.warning(
+            "SNMP preflight: printer unreachable; allowing print without a media/fault check "
+            "(fail-open). Fix SNMP reachability to re-enable the guard, or set SNMP_ENABLED=false."
+        )
         return
 
     # A non-zero hrPrinterDetectedErrorState is a hard fault (cover open, no media, jam): the job

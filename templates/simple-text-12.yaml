@@ -1,0 +1,9 @@
+name: simple-text-12
+description: Tiny single-line label for 12 mm continuous tape (keys, asset tags)
+label: "12"
+rotate: 0
+fields:
+  required: [text]
+  optional: []
+layout:
+  - {type: text, text: "{{text}}", size: 24, align: center, max_lines: 1}

@@ -158,6 +158,296 @@ def test_print_page_status_poll_recovers_from_hung_fetch(authed_page_snmp: Page)
     expect(authed_page_snmp.locator("#printer-state")).to_have_text("Unreachable", timeout=12000)
 
 
+def _status_body(**media: object) -> str:
+    """A /printer/status JSON body for a reachable network printer with the given loaded media."""
+    import json
+
+    return json.dumps(
+        {
+            "state": "idle",
+            "uri": "tcp://192.0.2.10:9100",
+            "reachable": True,
+            "model": "Brother QL-810W",
+            "errors": [],
+            **media,
+        }
+    )
+
+
+def test_print_page_groups_templates_by_size(authed_page: Page) -> None:
+    """With the loaded roll unknown (non-SNMP / file:// deployment), the picker still groups templates
+    into <optgroup>s by size denomination and shows every group — there's nothing to filter against, so
+    no group is focused and the size-filter control stays hidden."""
+    authed_page.goto("/")
+    groups = authed_page.locator("#template-select optgroup")
+    # The shipped catalog spans several sizes (12/29/62mm continuous + 17x54/29x90/62x29 die-cut).
+    expect(groups).not_to_have_count(0)
+    labels = authed_page.eval_on_selector_all(
+        "#template-select optgroup", "els => els.map(e => e.label)"
+    )
+    assert any("62mm continuous" in label for label in labels), labels
+    assert len(labels) >= 4, f"expected templates grouped across several sizes, got {labels}"
+    # Unknown roll → nothing focused, so no ✓ marker and the show-all/focus control is hidden.
+    assert not any(label.startswith("✓") for label in labels), labels
+    expect(authed_page.locator("#size-filter")).to_be_hidden()
+
+
+def test_print_page_focuses_matching_size_group(authed_page_snmp: Page) -> None:
+    """When the loaded roll is known (SNMP), the picker FOCUSES the matching size group and collapses
+    the rest behind a "Show all sizes" toggle — so a 62mm roll surfaces only 62mm templates. Clicking
+    the toggle reveals every size again."""
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(media_width_mm=62, media_type="continuous", media_length_mm=None),
+        ),
+    )
+    authed_page_snmp.goto("/")
+
+    groups = authed_page_snmp.locator("#template-select optgroup")
+    # Focus mode: only the matching 62mm continuous group remains, marked with a ✓.
+    expect(groups).to_have_count(1, timeout=8000)
+    assert groups.first.get_attribute("label") == "✓ 62mm continuous"
+    # The hidden-count hint and the reveal toggle are shown.
+    expect(authed_page_snmp.locator("#size-filter")).to_be_visible()
+    expect(authed_page_snmp.locator("#size-filter-hint")).to_contain_text("hidden")
+    toggle = authed_page_snmp.locator("#size-filter-toggle")
+    expect(toggle).to_have_text("Show all sizes")
+
+    toggle.click()
+    # Show-all: every size group reappears (the 62mm one stays ✓-marked and first).
+    labels = authed_page_snmp.eval_on_selector_all(
+        "#template-select optgroup", "els => els.map(e => e.label)"
+    )
+    assert len(labels) >= 4, f"show-all should reveal every size group, got {labels}"
+    assert any(label.startswith("✓") for label in labels), labels
+
+
+def test_print_page_refocuses_when_media_changes_mid_session(authed_page_snmp: Page) -> None:
+    """A roll swap AFTER the page is open is detected by the background poll (SNMP deployments): the
+    picker re-focuses to the newly-loaded size and lands on a usable template, with no page reload or
+    manual ↻. Serve 62mm first, then 29mm on later polls; assert the focused group follows the roll."""
+    calls = {"n": 0}
+
+    def handle(route: object) -> None:
+        calls["n"] += 1
+        # First (init) fetch = 62mm; every later background poll = 29mm (the swapped-in roll).
+        width = 62 if calls["n"] == 1 else 29
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(media_width_mm=width, media_type="continuous", media_length_mm=None),
+        )
+
+    authed_page_snmp.route("**/printer/status", handle)
+    authed_page_snmp.goto("/")
+
+    groups = authed_page_snmp.locator("#template-select optgroup")
+    expect(groups).to_have_count(1, timeout=8000)
+    expect(groups.first).to_have_attribute("label", "✓ 62mm continuous")
+
+    # No reload, no ↻ — a later background poll sees the new 29mm roll and re-focuses on its own.
+    expect(groups.first).to_have_attribute("label", "✓ 29mm continuous", timeout=15000)
+    assert authed_page_snmp.locator("#template-select").input_value() == "simple-text-29", (
+        "the roll swap should land the selection on a 29mm template"
+    )
+
+
+def test_late_status_does_not_discard_typed_input(authed_page_snmp: Page) -> None:
+    """A slow /printer/status reply must not silently change the template or wipe entered values. The
+    roll-driven refocus only lands a fresh page on a usable template — once the user has typed, a late
+    status arrival (the roll becoming known) must keep their selection and their input. Regression for
+    the Codex finding that auto-refocus could discard in-progress form data."""
+    phase = {"reachable": False}
+
+    def handle(route: object) -> None:
+        if phase["reachable"]:
+            body = _status_body(media_width_mm=62, media_type="continuous", media_length_mm=None)
+        else:
+            # Roll unknown at first (reachable=false) → no focus, initial selection stands.
+            body = (
+                '{"state": "off", "uri": "tcp://192.0.2.10:9100", "reachable": false, "errors": []}'
+            )
+        route.fulfill(status=200, content_type="application/json", body=body)  # type: ignore[attr-defined]
+
+    authed_page_snmp.route("**/printer/status", handle)
+    authed_page_snmp.goto("/")
+
+    template_before = authed_page_snmp.locator("#template-select").input_value()
+    field = authed_page_snmp.locator("#fields-container input").first
+    expect(field).to_be_visible()
+    field.fill("DONOTLOSE")  # fires 'input' → marks the form touched
+
+    # The roll becomes known late; force the refresh the background poll would do.
+    phase["reachable"] = True
+    authed_page_snmp.evaluate("async () => { await refreshPrinterStatus(); }")
+
+    # Late status must NOT change the template or discard the typed value.
+    assert authed_page_snmp.locator("#template-select").input_value() == template_before, (
+        "a late status reply must not change the selected template after the user has typed"
+    )
+    expect(field).to_have_value("DONOTLOSE")
+
+
+def test_roll_swap_after_print_still_refocuses(authed_page_snmp: Page) -> None:
+    """The dirty-input guard is scoped, not a permanent latch: after a user fills and prints a label,
+    swapping the roll must still re-focus the picker to a template for the new size (the input was
+    consumed by the print). Regression for the Codex finding that a permanent touch-latch disabled
+    refocus forever after the first interaction — breaking the core roll-swap workflow."""
+    phase = {"width": 29}
+
+    def handle(route: object) -> None:
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(
+                media_width_mm=phase["width"], media_type="continuous", media_length_mm=None
+            ),
+        )
+
+    authed_page_snmp.route("**/printer/status", handle)
+    authed_page_snmp.goto("/")
+
+    # Loaded 29mm roll → focus the 29mm group and land on its template.
+    sel = authed_page_snmp.locator("#template-select")
+    expect(authed_page_snmp.locator("#template-select optgroup").first).to_have_attribute(
+        "label", "✓ 29mm continuous", timeout=8000
+    )
+    expect(sel).to_have_value("simple-text-29")
+
+    # Fill its field and dry-run print — this consumes the input (clears the dirty guard).
+    authed_page_snmp.locator("#fields-container input").first.fill("done")
+    authed_page_snmp.check("#dry-run")
+    with authed_page_snmp.expect_response(
+        lambda r: r.url.endswith("/print") and r.request.method == "POST"
+    ):
+        authed_page_snmp.click("button.btn-print")
+    expect(authed_page_snmp.locator(".status.ok")).to_be_visible()
+
+    # Swap to a 62mm roll; the next poll must re-focus to a 62mm template (input already consumed).
+    phase["width"] = 62
+    authed_page_snmp.evaluate("async () => { await refreshPrinterStatus(); }")
+    expect(authed_page_snmp.locator("#template-select optgroup").first).to_have_attribute(
+        "label", "✓ 62mm continuous"
+    )
+    assert sel.input_value() != "simple-text-29", (
+        "a roll swap after a print should refocus off the 29mm template, not stay latched"
+    )
+
+
+def test_late_status_does_not_override_manual_template_choice(authed_page_snmp: Page) -> None:
+    """A manual template pick is an explicit choice that a late status reply must not override — even
+    with no typing. Pick a 62mm template while the roll is unknown, then have a 29mm roll arrive late;
+    the selection must stand (otherwise Print would silently submit a different template). Regression
+    for the Codex finding that selection-only interaction wasn't covered by the refocus guard."""
+    phase = {"reachable": False}
+
+    def handle(route: object) -> None:
+        if phase["reachable"]:
+            body = _status_body(media_width_mm=29, media_type="continuous", media_length_mm=None)
+        else:
+            body = (
+                '{"state": "off", "uri": "tcp://192.0.2.10:9100", "reachable": false, "errors": []}'
+            )
+        route.fulfill(status=200, content_type="application/json", body=body)  # type: ignore[attr-defined]
+
+    authed_page_snmp.route("**/printer/status", handle)
+    authed_page_snmp.goto("/")
+
+    sel = authed_page_snmp.locator("#template-select")
+    # Explicitly pick a 62mm template while the roll is still unknown — no typing.
+    sel.select_option("title-subtitle")
+    expect(sel).to_have_value("title-subtitle")
+
+    # A 29mm roll becomes known late; the explicit pick must NOT be auto-replaced.
+    phase["reachable"] = True
+    authed_page_snmp.evaluate("async () => { await refreshPrinterStatus(); }")
+    expect(sel).to_have_value("title-subtitle")
+
+
+def test_edit_during_in_flight_print_is_not_wiped_by_stale_completion(
+    authed_page_snmp: Page,
+) -> None:
+    """Stale-completion race: a /print reply that lands AFTER the user has started editing the next
+    label must not clear the refocus guard and let a later status refresh wipe the newer input. Hold
+    /print in flight, edit during the delay, release it, then a roll change must NOT refocus. Regression
+    for the Codex finding that doPrint cleared userOverride unconditionally."""
+    phase = {"width": 62}
+
+    def status_handler(route: object) -> None:
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(
+                media_width_mm=phase["width"], media_type="continuous", media_length_mm=None
+            ),
+        )
+
+    authed_page_snmp.route("**/printer/status", status_handler)
+
+    held: dict[str, object] = {}
+
+    def print_handler(route: object) -> None:
+        held["route"] = route  # hold the response in flight; the test fulfils it later
+
+    authed_page_snmp.route("**/print", print_handler)
+
+    authed_page_snmp.goto("/")
+    sel = authed_page_snmp.locator("#template-select")
+    expect(authed_page_snmp.locator("#template-select optgroup").first).to_have_attribute(
+        "label", "✓ 62mm continuous", timeout=8000
+    )
+    template_before = sel.input_value()
+
+    field = authed_page_snmp.locator("#fields-container input").first
+    field.fill("first")
+    with authed_page_snmp.expect_request(lambda r: r.url.endswith("/print")):
+        authed_page_snmp.click("button.btn-print")
+
+    # The user edits the NEXT label while the print is still in flight.
+    field.fill("EDITED-IN-FLIGHT")
+
+    # The stale print now completes — must not clear the guard the new edit re-raised.
+    held["route"].fulfill(  # type: ignore[attr-defined]
+        status=200,
+        content_type="application/json",
+        body=f'{{"job_id": "j1", "template": "{template_before}", "copies": 1, "dry_run": true}}',
+    )
+
+    # A roll change arrives; the guard must hold (edited after send) → no refocus, no wipe.
+    phase["width"] = 29
+    authed_page_snmp.evaluate("async () => { await refreshPrinterStatus(); }")
+    expect(field).to_have_value("EDITED-IN-FLIGHT")
+    expect(sel).to_have_value(template_before)
+
+
+def test_print_page_shows_all_when_loaded_roll_has_no_templates(authed_page_snmp: Page) -> None:
+    """Empty-state guard: if the loaded roll has no matching template (e.g. a 50mm continuous roll we
+    ship nothing for), the picker must not collapse to an empty matching group — it falls back to
+    showing every size with a note, so the user always has something to pick."""
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(media_width_mm=50, media_type="continuous", media_length_mm=None),
+        ),
+    )
+    authed_page_snmp.goto("/")
+
+    # No 50mm template exists → fall back to all sizes with an explanatory note.
+    hint = authed_page_snmp.locator("#size-filter-hint")
+    expect(hint).to_contain_text("No templates for the loaded", timeout=8000)
+    labels = authed_page_snmp.eval_on_selector_all(
+        "#template-select optgroup", "els => els.map(e => e.label)"
+    )
+    assert len(labels) >= 4, f"empty-match fallback must show every size group, got {labels}"
+    # Nothing matched, so no group is ✓-focused.
+    assert not any(label.startswith("✓") for label in labels), labels
+
+
 def test_editor_download_yaml_uses_yaml_extension(authed_page: Page) -> None:
     """The studio's "Download YAML" button names the file ``<template-name>.yaml``.
 
@@ -235,7 +525,7 @@ def test_media_compatibility_badges_are_advisory(authed_page: Page) -> None:
             media_width_mm:62, media_type:'continuous', media_length_mm:null};
           document.getElementById('template-select').value = '__dc';
           renderFields();
-          applyMediaCompat();
+          updateMediaBadge();
         }"""
     )
     # Mismatch → red ✗ badge, but NOTHING is disabled: advisory only.
@@ -258,7 +548,7 @@ def test_media_compatibility_badges_are_advisory(authed_page: Page) -> None:
         """() => {
           printerStatus = {state:'idle', uri:'tcp://192.168.5.14:9100', reachable:true,
             media_width_mm:62, media_type:'die_cut', media_length_mm:29};
-          applyMediaCompat();
+          updateMediaBadge();
         }"""
     )
     expect(authed_page.locator("#media-badge")).to_have_class(re.compile(r"media-ok"))

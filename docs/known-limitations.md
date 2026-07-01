@@ -89,6 +89,34 @@ a dedicated status GET, or promote them to the critical read — both trade a ro
 fail-open robustness on firmware that does not implement those OIDs. Same root cause as the latch
 guard's fail-open seam; deferred together pending a decision to restructure the SNMP batching.
 
+## Loaded-roll awareness (media badge + picker size-focus) requires SNMP
+
+The print page badges the selected template ✓/✗ against the loaded roll and groups the picker by label
+size, focusing the group that matches the loaded media (see [docs/template-format.md](template-format.md)
+and [docs/snmp-status.md](snmp-status.md)). All of this needs to know the **physically loaded roll**,
+which only the SNMP channel reports in a normalized form. On any **non-SNMP** path the client treats the
+loaded media as *unknown*: the badge is neutral (`media: …`, no ✓/✗), no size group is focused (every
+size is shown, just grouped), and there is no roll-driven re-focus. The `409` media-mismatch **print
+guard** is likewise SNMP-only (see the back-channel section above).
+
+This is broader than it strictly needs to be. For a **network printer with `SNMP_ENABLED=false`**,
+`/printer/status` still falls back to the ESC i S status frame, which *does* decode the loaded media
+width/length and a media type — but as brother_ql's raw human string (`"Continuous length tape"` /
+`"Die-cut labels"`), not the normalized `continuous`/`die_cut` the compat rule compares. `loadedMedia()`
+(`app/web/index.html`) therefore discards it as uncomparable, so even the **advisory** badge and
+size-focus go dark on a printer that is in fact reporting usable media. (`file://`/`usb://` genuinely
+cannot report a roll, so they stay unknown regardless.)
+
+**Why this is acceptable here:** the QL-810W target runs with SNMP on, where all of it works; the
+non-SNMP fallback is the documented opt-out, and an unavailable advisory hint is a soft degradation, not
+a fault — the print still goes out, just without the loaded-vs-template badge and auto-focus.
+
+**Future improvement:** normalize the ESC i S media-type string to `continuous`/`die_cut` (a small map
+in the status decode) so the **advisory** badge and picker size-focus light up on the network+SNMP-off
+path too. The `409` **guard** should stay SNMP-only — ESC i S shares the `:9100` print socket and cannot
+be safely re-queried at preflight the way SNMP can — so this would improve the *hint*, not the
+enforcement.
+
 ## Reprint replays the *current* template, not the original
 
 `/reprint/{job_id}` re-renders the named template from the live registry using the original

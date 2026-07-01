@@ -17,7 +17,7 @@ This document is the authoritative reference for every parameter. It is sourced 
 | Key | Required | Type | Notes |
 |---|---|---|---|
 | `name` | **yes** | string | Internal id and the registry key. Must be unique across all template files; two files with the same `name` is a load error. Also the default download/save filename in the studio. |
-| `description` | **yes** | string | Human-readable summary shown in the template picker. |
+| `description` | **yes** | string | Human-readable summary shown in the template picker. The picker groups templates by the `label` size denomination and, on an SNMP printer, focuses the group matching the loaded roll. |
 | `label` | **yes** | string | The brother_ql label id the template prints on (e.g. `"62"`, `"62x29"`). Quote it so `62` is not parsed as an integer. See [Choosing a label](#choosing-a-label). |
 | `layout` | **yes** | list | Non-empty list of [layout elements](#layout-elements), rendered top-to-bottom. |
 | `rotate` | no | int | Quarter-turn orientation applied to the whole label. One of `0`, `90`, `180`, `270` (default `0`). Any other value is rejected. |

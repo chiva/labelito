@@ -2409,6 +2409,10 @@ async def web_ui(request: Request) -> HTMLResponse:
             "description": t.description,
             "required": t.required_fields,
             "optional": t.optional_fields,
+            # Raw brother_ql label id (e.g. "62", "62x29"). Drives the client-side size grouping of
+            # the template picker and is the human-readable denomination fallback for the "Other"
+            # bucket when `media` is None (label unknown to brother_ql).
+            "label": t.label,
             # Required media per template (None when the label is unknown to brother_ql) so the page
             # can badge each template against the loaded roll from GET /printer/status. Same source
             # as TemplateInfo.media, serialised for the inline TEMPLATES JSON.

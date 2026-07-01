@@ -173,6 +173,14 @@ def test_index_embeds_template_media(client: TestClient) -> None:
     assert '"media_type": "continuous"' in resp.text or '"media_type":"continuous"' in resp.text
 
 
+def test_index_embeds_template_label(client: TestClient) -> None:
+    """The index route serialises each template's brother_ql label into the inline TEMPLATES JSON so
+    the page can group the picker by size denomination client-side without another round-trip."""
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert '"label": "62"' in resp.text or '"label":"62"' in resp.text
+
+
 def test_index_disables_background_poll_without_snmp(client: TestClient) -> None:
     """The default client fixture uses a file:// transport (non-SNMP), where /printer/status takes
     the print lock — so the page must render with LIVE_STATUS_POLL=false to keep the background poll
@@ -190,6 +198,53 @@ def test_index_enables_background_poll_with_snmp(
     monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://192.168.5.14:9100")
     monkeypatch.setattr(main_mod.settings, "snmp_enabled", True)
     assert "const LIVE_STATUS_POLL = true;" in client.get("/").text
+
+
+# ── Seeded non-62mm example templates ────────────────────────────────────────────────────────────
+# The shipped templates/ dir bulks on 62mm continuous plus one die-cut example; these four seed the
+# other common QL-810W sizes so a printer with a different roll isn't an empty picker. They are loaded
+# from the REAL templates/ dir (not the client fixture's temp dir) to validate the files we ship.
+SEEDED_TEMPLATE_MEDIA = {
+    # name: (label, width_mm, media_type, length_mm)
+    "simple-text-12": ("12", 12.0, "continuous", None),
+    "simple-text-29": ("29", 29.0, "continuous", None),
+    "address-17x54": ("17x54", 17.0, "die_cut", 54.0),
+    "address-29x90": ("29x90", 29.0, "die_cut", 90.0),
+}
+
+
+def _repo_templates_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "templates"
+
+
+@pytest.mark.parametrize("name", sorted(SEEDED_TEMPLATE_MEDIA))
+def test_seeded_template_loads_and_resolves_media(name: str) -> None:
+    """Each seeded example loads cleanly and resolves to its declared geometry, so a 12/29mm or
+    17x54/29x90 roll has matching templates out of the box."""
+    from app.loader import TemplateRegistry
+    from app.media import required_media_for
+
+    registry = TemplateRegistry(_repo_templates_dir())
+    loaded = registry.load_all()
+    assert not registry.errors, registry.errors
+    assert name in loaded
+    label, width, media_type, length = SEEDED_TEMPLATE_MEDIA[name]
+    tmpl = registry.get(name)
+    assert tmpl is not None
+    assert tmpl.label == label
+    media = required_media_for(tmpl.label)
+    assert (media.width_mm, media.media_type, media.length_mm) == (width, media_type, length)
+
+
+@pytest.mark.parametrize("name", sorted(SEEDED_TEMPLATE_MEDIA))
+def test_seeded_template_label_supported_by_target_model(name: str) -> None:
+    """Each seeded label must be printable on the QL-810W (target hardware, ≤62mm) — a guard against
+    shipping a template the model can never print, which would only ever badge as a mismatch."""
+    from app.drivers.brother_ql import BrotherQLDriver
+
+    driver_cls = BrotherQLDriver.for_model("QL-810W")
+    label = SEEDED_TEMPLATE_MEDIA[name][0]
+    assert label in driver_cls.CAPABILITY.supported_labels
 
 
 def test_preview_returns_png(client: TestClient) -> None:

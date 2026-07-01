@@ -50,7 +50,9 @@ Highlights:
   so callers don't pass dates (ideal for food-storage labels).
 - **Pluggable drivers & transports** — adding a Brother QL model is a single capability-table
   entry; the transport layer (network / USB / file) is a registry of small classes.
-- **Web UI** — template picker with dynamic field inputs, live preview, and a print button at `/`.
+- **Web UI** — template picker with dynamic field inputs, live preview, and a print button at `/`. The
+  picker groups templates by label size and, on SNMP printers, focuses the group matching the loaded
+  roll (re-focusing automatically if you swap rolls), with a "Show all sizes" toggle.
 - **Observability** — opt-in Prometheus metrics at `/metrics` (set `METRICS_ENABLED=true`) and a `/health` endpoint for container
   health checks.
 - **Fail-closed auth** — set `API_TOKEN` to require a bearer token on all write/preview

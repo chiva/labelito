@@ -58,6 +58,8 @@
     .media-ok { background: #dcfce7; color: #166534; }
     .media-bad { background: #fee2e2; color: #991b1b; }
     .media-unknown { background: #e5e7eb; color: #555; }
+    .size-filter { font-size: .8rem; color: #777; margin: 0 0 .6rem; }
+    .size-filter-toggle { background: none; border: none; padding: 0; margin-left: .4rem; font: inherit; color: #0070f3; cursor: pointer; text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -87,6 +89,10 @@
       {% endfor %}
     </select>
     <div id="media-badge" class="media-badge"></div>
+    <div id="size-filter" class="size-filter" style="display:none">
+      <span id="size-filter-hint"></span>
+      <button type="button" id="size-filter-toggle" class="size-filter-toggle"></button>
+    </div>
     <div id="template-desc"></div>
 
     <div id="fields-container" class="fields-grid"></div>
@@ -169,6 +175,30 @@
     // fallback (USB/file, or SNMP disabled) the status read takes the print lock, so a background poll
     // would sit on the lock and delay a later print; there we leave manual ↻ + post-print refresh only.
     const LIVE_STATUS_POLL = {{ live_status_poll | tojson }};
+
+    // ── Template size grouping. The picker is grouped into <optgroup>s by each template's declared
+    //    media denomination (continuous width, or die-cut W×L). When the loaded roll is known we FOCUS
+    //    the matching group and collapse the rest behind a "Show all sizes" toggle, so a printer with a
+    //    non-62mm roll lands on usable templates instead of a wall of red mismatches. Everything needed
+    //    is already on the client (each template's `media` + the loaded roll from /printer/status) — no
+    //    extra server call. The user's show-all preference persists like TOKEN_KEY (see below).
+    const SHOW_ALL_SIZES_KEY = 'labelito_show_all_sizes';
+    let showAllSizes = localStorage.getItem(SHOW_ALL_SIZES_KEY) === '1';
+    let lastLoadedMediaKey = undefined;  // detects a roll swap to drive a one-time refocus (vs every poll)
+    let lastShowAllSizes = undefined;    // with the above, lets a no-op poll skip the <select> rebuild
+    // True once the user has made an explicit, not-yet-printed choice — typed a field OR manually
+    // picked a template. It suppresses the roll-driven auto-SELECT below so a late/slow
+    // /printer/status reply (or a roll-change poll) can't silently change the selected template and
+    // discard typed input or override an explicit pick. Scoped, not a permanent latch: a successful
+    // print "consumes" the choice and clears it, so a roll swap AFTER a print still re-focuses to a
+    // matching template. Deliberately NOT reset by renderFields — a programmatic refocus rebuilds the
+    // fields too, and resetting there would defeat the guard for a manual pick.
+    let userOverride = false;
+    // Monotonic token bumped on every field input / manual pick. doPrint captures it at send time and
+    // clears userOverride on completion ONLY if it is unchanged — so a print reply that lands AFTER the
+    // user has started the next label can't clear a guard that newer input has re-raised (stale-completion
+    // race).
+    let formRevision = 0;
 
     function authHeaders() {
       const headers = {'Content-Type': 'application/json'};
@@ -265,7 +295,7 @@
         }
         detail.appendChild(det);
       }
-      applyMediaCompat();
+      rebuildTemplatePicker();
     }
 
     async function refreshPrinterStatus() {
@@ -285,7 +315,7 @@
           setStateBadge('off', 'Auth required');
           document.getElementById('printer-detail').replaceChildren();
           printerStatus = null;
-          applyMediaCompat();
+          rebuildTemplatePicker();
           return;
         }
         // Both 200 and 503 carry the same body shape (state/uri/reachable/errors).
@@ -294,7 +324,7 @@
           setStateBadge('off', 'Unknown');
           document.getElementById('printer-detail').replaceChildren();
           printerStatus = null;
-          applyMediaCompat();
+          rebuildTemplatePicker();
           return;
         }
         renderPrinterStatus(data);
@@ -308,7 +338,7 @@
         div.textContent = `Network error: ${e.message}`;
         detail.appendChild(div);
         printerStatus = null;
-        applyMediaCompat();
+        rebuildTemplatePicker();
       } finally {
         clearTimeout(abortTimer);
         statusInFlight = false;
@@ -410,26 +440,161 @@
       }
     }
 
-    // Re-evaluate compatibility for the loaded roll: badge the current template and annotate
-    // mismatching options with a "(needs …)" hint. Purely ADVISORY — it never disables anything.
-    // The button is deliberately not blocked from this cached status: /print does a fresh SNMP check
-    // on every call and 409s a real mismatch (and exempts dry runs), so it is the authoritative,
-    // never-stale guard. Disabling Print from last-known status would block a valid print after a
-    // roll swap until a manual refresh — the status card is never background-polled. 'unknown' (SNMP
-    // down / non-network) shows a neutral badge. Called on status refresh and template change.
-    function applyMediaCompat() {
+    // Badge the CURRENT selection ✓/✗/? for the loaded roll. Purely ADVISORY — it never disables
+    // anything. The Print button is deliberately not blocked from this cached status: /print does a
+    // fresh SNMP check on every call and 409s a real mismatch (and exempts dry runs), so it is the
+    // authoritative, never-stale guard. 'unknown' (SNMP down / non-network) shows a neutral badge.
+    // Split out of rebuildTemplatePicker so a plain template change (groups unchanged) refreshes just
+    // the badge.
+    function updateMediaBadge() {
       const loaded = loadedMedia();
-      const sel = document.getElementById('template-select');
-      for (const opt of sel.options) {
-        const t = templateMap[opt.value];
-        if (!t) continue;
-        const base = `${t.name} — ${t.description || ''}`.replace(/ — $/, '');
-        opt.textContent = mediaCompat(t.media, loaded) === 'mismatch'
-          ? `${base}  (needs ${mediaDesc(t.media)})`
-          : base;
-      }
       const t = currentTemplate();
       renderMediaBadge(t ? t.media : null, t ? mediaCompat(t.media, loaded) : 'unknown', loaded);
+    }
+
+    // Stable group key for a {width_mm, media_type, length_mm} media object (null → 'other'). Used to
+    // bucket templates AND to detect when the loaded roll changes between polls.
+    function groupKeyOf(media) {
+      if (!media || media.width_mm == null) return 'other';
+      if (media.media_type === 'die_cut') return `d:${media.width_mm}x${media.length_mm}`;
+      return `c:${media.width_mm}`;
+    }
+    function groupTitleOf(media, fallbackLabel) {
+      if (!media || media.width_mm == null) {
+        return fallbackLabel ? `Other — ${fallbackLabel}` : 'Other / unknown size';
+      }
+      if (media.media_type === 'die_cut') return `${media.width_mm}×${media.length_mm}mm die-cut`;
+      return `${media.width_mm}mm continuous`;
+    }
+    // Sort order: continuous (by width), then die-cut (by width, then length), then 'other'.
+    function groupSortKey(media) {
+      if (!media || media.width_mm == null) return [2, 0, 0];
+      if (media.media_type === 'die_cut') return [1, media.width_mm, media.length_mm || 0];
+      return [0, media.width_mm, 0];
+    }
+
+    // Rebuild the <optgroup>-grouped picker for the current loaded roll + show-all preference. Called on
+    // init, on every status refresh (the loaded roll may change), and when the show-all toggle flips.
+    // DOM nodes + textContent only (never innerHTML): the loaded-media strings are device-supplied.
+    function rebuildTemplatePicker() {
+      const sel = document.getElementById('template-select');
+      const loaded = loadedMedia();
+      const loadedKey = loaded ? groupKeyOf(loaded) : null;
+      const rollChanged = loadedKey !== lastLoadedMediaKey;
+      // Skip the <select> rebuild when neither the loaded roll nor the show-all preference changed: a
+      // background poll fires every few seconds, and replaceChildren() on the picker would snap a
+      // user-opened dropdown shut. The badge still refreshes (it's cheap and never moves focus).
+      if (!rollChanged && showAllSizes === lastShowAllSizes && sel.options.length) {
+        updateMediaBadge();
+        return;
+      }
+      lastLoadedMediaKey = loadedKey;
+      lastShowAllSizes = showAllSizes;
+
+      // Bucket templates by media group, keeping a representative media + label per group.
+      const groups = new Map();  // key -> {media, label, items: [t]}
+      for (const t of TEMPLATES) {
+        const key = groupKeyOf(t.media);
+        let g = groups.get(key);
+        if (!g) { g = {media: t.media || null, label: t.label, items: []}; groups.set(key, g); }
+        g.items.push(t);
+      }
+      const ordered = [...groups.entries()].sort((a, b) => {
+        const ka = groupSortKey(a[1].media), kb = groupSortKey(b[1].media);
+        return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
+      });
+      for (const [, g] of ordered) g.items.sort((x, y) => x.name.localeCompare(y.name));
+
+      // The group whose media matches the loaded roll (tolerance-aware, via mediaCompat).
+      let matchKey = null;
+      if (loaded) {
+        for (const [key, g] of ordered) {
+          if (g.items.length && mediaCompat(g.items[0].media, loaded) === 'match') { matchKey = key; break; }
+        }
+      }
+      const matchGroup = matchKey ? groups.get(matchKey) : null;
+
+      // Decide the selection BEFORE choosing visible groups, so a roll-driven refocus lands in the
+      // matching group without also having to reveal the previously-selected group.
+      const prevVal = sel.value;
+      let desiredVal = prevVal;
+      if (!showAllSizes && matchGroup && matchGroup.items.length && rollChanged && !userOverride) {
+        const prevT = templateMap[prevVal];
+        // Only auto-move when the current pick isn't already usable on the loaded roll — never yank an
+        // already-compatible choice, and never override an explicit user choice (userOverride gates this:
+        // a late status reply can't change a typed-into or manually-picked template — but a post-print
+        // roll swap still refocuses, since a successful print clears the override).
+        if (!prevT || mediaCompat(prevT.media, loaded) !== 'match') {
+          desiredVal = matchGroup.items[0].name;
+        }
+      }
+
+      // Focus mode = a loaded roll with a matching group, and the user hasn't asked to see all sizes.
+      const focus = !showAllSizes && !!(matchGroup && matchGroup.items.length);
+      const desiredKey = templateMap[desiredVal] ? groupKeyOf(templateMap[desiredVal].media) : null;
+      const visibleKeys = focus
+        ? new Set([matchKey, desiredKey].filter(k => k !== null))
+        : new Set(ordered.map(([k]) => k));
+
+      sel.replaceChildren();
+      let hiddenCount = 0;
+      for (const [key, g] of ordered) {
+        if (!visibleKeys.has(key)) { hiddenCount += g.items.length; continue; }
+        const og = document.createElement('optgroup');
+        const title = groupTitleOf(g.media, g.label);
+        og.label = key === matchKey ? `✓ ${title}` : title;
+        for (const t of g.items) {
+          const opt = document.createElement('option');
+          opt.value = t.name;
+          const base = `${t.name} — ${t.description || ''}`.replace(/ — $/, '');
+          // In show-all mode a mismatching option stays listed with a "(needs …)" hint; in focus mode
+          // only matching/selected groups show, so the hint would be redundant there.
+          opt.textContent = (!focus && mediaCompat(t.media, loaded) === 'mismatch')
+            ? `${base}  (needs ${mediaDesc(t.media)})`
+            : base;
+          og.appendChild(opt);
+        }
+        sel.appendChild(og);
+      }
+
+      // Apply the selection. Programmatic .value changes don't fire 'change', so when the selection
+      // actually moved (roll-driven refocus, or the old pick is now hidden) re-render fields + preview.
+      const flatValues = [...sel.options].map(o => o.value);
+      const finalVal = flatValues.includes(desiredVal) ? desiredVal
+        : (flatValues.includes(prevVal) ? prevVal : (flatValues[0] || ''));
+      sel.value = finalVal;
+      const selectionChanged = finalVal !== prevVal;
+
+      renderSizeFilterControl(loaded, matchGroup, focus, hiddenCount);
+
+      if (selectionChanged) renderFields();
+      updateMediaBadge();
+      if (selectionChanged) doPreview();
+    }
+
+    // The "Show all sizes" / "Show only matching size" toggle + hidden-count hint under the picker.
+    // Hidden entirely when the loaded roll is unknown (nothing to filter against).
+    function renderSizeFilterControl(loaded, matchGroup, focus, hiddenCount) {
+      const wrap = document.getElementById('size-filter');
+      const hint = document.getElementById('size-filter-hint');
+      const toggle = document.getElementById('size-filter-toggle');
+      if (!wrap || !hint || !toggle) return;
+      if (!loaded) { wrap.style.display = 'none'; return; }
+      wrap.style.display = '';
+      if (focus) {
+        hint.textContent = hiddenCount
+          ? `${hiddenCount} template${hiddenCount === 1 ? '' : 's'} on other sizes hidden`
+          : '';
+        toggle.textContent = 'Show all sizes';
+      } else if (showAllSizes && matchGroup && matchGroup.items.length) {
+        hint.textContent = '';
+        toggle.textContent = 'Show only matching size';
+      } else {
+        // Known roll but no matching template — we fell back to showing every size.
+        hint.textContent = `No templates for the loaded ${mediaDesc(loaded)} roll — showing all sizes`;
+        toggle.textContent = '';
+      }
+      toggle.style.display = toggle.textContent ? '' : 'none';
     }
 
     function renderFields() {
@@ -451,6 +616,7 @@
         inp.id = `field-${name}`;
         inp.name = name;
         inp.placeholder = name;
+        inp.addEventListener('input', () => { userOverride = true; formRevision++; });
         inp.addEventListener('input', debounce(doPreview, 600));
         wrap.appendChild(lbl);
         wrap.appendChild(inp);
@@ -513,6 +679,11 @@
 
     async function doPrint() {
       const payload = buildPayload();
+      // Snapshot the form revision at send time. On completion we only clear userOverride if it is
+      // unchanged — so if the user starts editing the next label while this request is in flight, the
+      // stale reply won't clear a guard their newer input has re-raised (and won't let the post-print
+      // refresh refocus over it).
+      const printRevision = formRevision;
       // Optimistic feedback: a print is sub-second and may finish between polls, so reflect "Printing…"
       // the instant the job is sent. The post-print refresh and the background poll converge the badge
       // back to the printer's real state; failure paths below reconcile it so it can never stick.
@@ -531,6 +702,10 @@
           return;
         }
         const json = await res.json();
+        // Choice submitted (incl. dry run) → a later roll swap may refocus again — but only if the user
+        // hasn't started a NEW choice since this print was sent (else we'd clear a guard newer input
+        // re-raised and let the post-print refresh wipe it).
+        if (formRevision === printRevision) userOverride = false;
         showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
         await doPreview();
         refreshPrinterStatus();
@@ -591,9 +766,16 @@
     }
 
     document.getElementById('template-select').addEventListener('change', () => {
+      userOverride = true;  // an explicit pick must not be overridden by a later roll-driven refocus
+      formRevision++;
       renderFields();
-      applyMediaCompat();
+      updateMediaBadge();
       doPreview();
+    });
+    document.getElementById('size-filter-toggle').addEventListener('click', () => {
+      showAllSizes = !showAllSizes;
+      localStorage.setItem(SHOW_ALL_SIZES_KEY, showAllSizes ? '1' : '0');
+      rebuildTemplatePicker();  // not a roll change → rollChanged false → no refocus, just regroup
     });
 
     // Disable threshold input when dither is on: threshold is a no-op under Floyd-Steinberg
@@ -614,7 +796,7 @@
 
     // Init
     renderFields();
-    applyMediaCompat();      // badge from required media immediately; refreshed once status loads
+    rebuildTemplatePicker();  // group the picker + badge from required media; refreshed once status loads
     refreshPrinterStatus();
     if (LIVE_STATUS_POLL) scheduleNextStatusPoll(STATUS_POLL_MS);  // visible-tab poll, SNMP only
     if (TEMPLATES.length > 0) doPreview();

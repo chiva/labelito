@@ -862,7 +862,7 @@ def test_all_template_tokens_exist_in_default_catalog() -> None:
             None,
         ),
         ("asset-tag", {"title": "Server 01", "asset_id": "SRV-0001", "location": "Rack B-2"}, None),
-        ("address", {"name": "Santi", "line1": "Calle Mayor 1", "line2": "28013 Madrid"}, 271),
+        ("address", {"name": "Alex", "line1": "Calle Mayor 1", "line2": "28013 Madrid"}, 271),
         ("freezer-dated", {"title": "Caldo"}, None),  # exercises [[…]] + {{date+6m}}
         (
             "row-demo",

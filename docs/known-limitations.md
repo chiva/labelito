@@ -142,8 +142,8 @@ answer the `:9100` back-channel):
 - **Gate it behind an explicit opt-in** — a per-printer/model flag or a `NETWORK_STATUS_MODE` setting —
   rather than making it the automatic SNMP-disabled fallback again, so a QL-810W-class NIC that swallows
   the frame does not silently re-introduce the deadline-burning dead path.
-- Add coverage for `query_status` with `SNMP_ENABLED=false` against a working TCP status reply (the
-  regression Codex specifically asked for), plus a timeout case proving the deadline is bounded.
+- Add coverage for `query_status` with `SNMP_ENABLED=false` against a working TCP status reply, plus a
+  timeout case proving the deadline is bounded.
 
 Until a model is actually confirmed to return the frame, this stays removed: **no SNMP ⇒ no network
 status.**

@@ -184,7 +184,7 @@ def test_index_embeds_template_label(client: TestClient) -> None:
 def test_index_disables_background_poll_without_snmp(client: TestClient) -> None:
     """The default client fixture uses a file:// transport (non-SNMP), where /printer/status takes
     the print lock — so the page must render with LIVE_STATUS_POLL=false to keep the background poll
-    OFF and avoid lock contention with /print (Codex review of the live-status change)."""
+    OFF and avoid lock contention with /print."""
     assert "const LIVE_STATUS_POLL = false;" in client.get("/").text
 
 
@@ -1702,8 +1702,8 @@ def test_printer_status_locked_snmp_surfaces_fault_as_error(
 ) -> None:
     """A real HARD fault (non-zero hrPrinterDetectedErrorState) reported by the SNMP read DURING a
     print must surface as state=error, not be masked behind the in-flight "printing" override.
-    Masking a mid-print fault is the phantom-success failure mode this feature exists to close (Codex
-    review of the live-status change). Built through the real from_snmp mapping so raw carries the bits."""
+    Masking a mid-print fault is the phantom-success failure mode this feature exists to close.
+    Built through the real from_snmp mapping so raw carries the bits."""
     from app.transports.base import PrinterStatus
     from app.transports.snmp import PrinterSNMPStatus
 
@@ -1733,7 +1733,7 @@ def test_printer_status_locked_snmp_transient_console_stays_printing(
 ) -> None:
     """A normal mid-print poll reads a non-READY console (e.g. "PRINTING") with hrPrinterStatus=
     printing(4) and a 00 error bitmask. That is NOT a fault — it must report state=printing, not
-    error. Regression for the Codex finding that keying the fault precedence on the raw errors list
+    error. Keying the fault precedence on the raw errors list
     (which echoes the console line) would false-alarm a healthy print as an error."""
     from app.transports.base import PrinterStatus
     from app.transports.snmp import PrinterSNMPStatus
@@ -1766,7 +1766,7 @@ def test_printer_status_snmp_busy_without_local_lock_is_printing(
     """When the SNMP read itself reports hrPrinterStatus=printing(4) but THIS server holds no print
     lock (an external job, or the printer still finishing after our send returned), the endpoint must
     report state=printing from the SNMP signal — not fall through to idle, which would let a client
-    treat a busy printer as ready (Codex review of the live-status change)."""
+    treat a busy printer as ready."""
     from app.transports.base import PrinterStatus
     from app.transports.snmp import PrinterSNMPStatus
 
@@ -1824,7 +1824,7 @@ def test_printer_status_locked_snmp_unreachable_returns_503(
 ) -> None:
     """An unreachable SNMP read DURING a print must still return 503 state=off, not a confident
     200 state=printing — the held lock alone must not fabricate a reachable-looking print state when
-    we could not actually confirm the printer (Codex review of the live-status change)."""
+    we could not actually confirm the printer."""
     from app.transports.base import PrinterStatus
 
     _snmp_status_endpoint(
@@ -3981,8 +3981,7 @@ def test_print_usb_status_timeout_busy_device_returns_503_not_failopen(
 ) -> None:
     """When the USB status read is unreachable BECAUSE a prior/orphaned transfer still owns the device
     (e.g. a status query that timed out), a send() would raise USBBusyError. The preflight must return
-    a clean 503 — NOT fail open into a hard 500 — and must NOT count it as an unverified print.
-    Regression for the Codex finding on the timeout/busy interaction."""
+    a clean 503 — NOT fail open into a hard 500 — and must NOT count it as an unverified print."""
     import app.main as main_mod
     import app.transports.usb as usb_mod
     from app.transports.base import PrinterStatus
@@ -4205,7 +4204,7 @@ def test_print_snmp_unreachable_sets_printer_down(
 def test_label_lifecount_resets_to_unknown_when_missing_after_success() -> None:
     """A previously-observed life-count must not linger as if current when the OID later drops out.
 
-    Regression for the Codex finding: record a reachable printer reporting count 42, then a reachable
+    Record a reachable printer reporting count 42, then a reachable
     printer whose optional prtMarkerLifeCount is absent — the gauge must become NaN (unknown), not
     keep showing 42 with a freshly-refreshed query timestamp.
     """
@@ -4274,7 +4273,7 @@ def test_metrics_disabled_returns_404_for_all_methods(
 ) -> None:
     """METRICS_ENABLED=false makes the path TRULY absent — every method 404s like a missing path.
 
-    Regression for the Codex finding: a per-route dependency would 404 GET but 405 (Allow: GET) a
+    A per-route dependency would 404 GET but 405 (Allow: GET) a
     POST, leaking that the (possibly relocated) path exists. The middleware gate must 404 uniformly,
     matching a genuinely-missing path's status for the same methods.
     """
@@ -4293,7 +4292,7 @@ def test_metrics_disabled_returns_404_for_all_methods(
 def test_unknown_snmp_error_bits_surface_as_unknown_condition(client: TestClient) -> None:
     """A nonzero-but-unrecognized fault bit surfaces as condition="unknown"=1, not a silent healthy.
 
-    Regression for the Codex finding: an ``unknownErrorBits:*`` fault (firmware skew / nonstandard
+    An ``unknownErrorBits:*`` fault (firmware skew / nonstandard
     bit) would otherwise leave every known condition at 0 and read as healthy while the print guard
     rejects. Built from the real ``b"\\x00\\x01"`` unknown-bit fixture through the production decoder.
     """
@@ -4315,7 +4314,7 @@ def test_metrics_path_is_literal_not_a_prefix(client: TestClient) -> None:
 
 
 def test_metrics_path_collision_is_rejected() -> None:
-    """A METRICS_PATH equal to an existing route is rejected fail-fast (Codex finding).
+    """A METRICS_PATH equal to an existing route is rejected fail-fast.
 
     /metrics is already registered at import, so re-running the registration detects the collision —
     exercising the guard without re-importing the module.
@@ -4329,7 +4328,7 @@ def test_metrics_path_collision_is_rejected() -> None:
 def test_metrics_path_shadowed_by_dynamic_route_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A literal METRICS_PATH captured by a DYNAMIC route is rejected (Codex finding).
+    """A literal METRICS_PATH captured by a DYNAMIC route is rejected.
 
     /templates/foo/source is a literal string that no exact-match guard would flag, yet the earlier
     GET /templates/{name}/source route fully matches it — so a scrape would silently hit the template
@@ -4343,7 +4342,7 @@ def test_metrics_path_shadowed_by_dynamic_route_is_rejected(
 
 
 def test_metrics_route_absent_from_openapi_schema(client: TestClient) -> None:
-    """The metrics route is not advertised in /openapi.json (even when enabled) — Codex finding.
+    """The metrics route is not advertised in /openapi.json (even when enabled).
 
     Otherwise the unauthenticated schema would disclose a relocated METRICS_PATH, undermining the
     point of moving telemetry off a well-known URL.

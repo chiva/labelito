@@ -127,7 +127,7 @@ def test_print_page_does_not_background_poll_without_snmp(authed_page: Page) -> 
     """On the non-SNMP (file:// / ESC i S) deployment, background polling must be OFF: there the
     status read takes the print lock, so a timer poll would risk delaying a print. Count /printer/status
     hits — only the single init fetch may fire; no further hits after waiting well past a poll interval.
-    Regression guard for the Codex finding that unconditional polling reintroduces lock contention."""
+    Guards against unconditional polling reintroducing lock contention."""
     calls = {"n": 0}
 
     def handle(route: object) -> None:
@@ -149,8 +149,8 @@ def test_print_page_does_not_background_poll_without_snmp(authed_page: Page) -> 
 
 def test_print_page_status_poll_recovers_from_hung_fetch(authed_page_snmp: Page) -> None:
     """A hung /printer/status fetch must not wedge the UI: the client-side abort timeout fires, resets
-    the in-flight guard, and the badge resolves to Unreachable instead of freezing forever. Regression
-    for the Codex finding that a hung request could pin statusInFlight and stall the whole poll loop."""
+    the in-flight guard, and the badge resolves to Unreachable instead of freezing forever. A hung request must not pin
+    statusInFlight and stall the whole poll loop."""
     # Never fulfil the request — the browser fetch hangs until the page's AbortController aborts it.
     authed_page_snmp.route("**/printer/status", lambda route: None)
     authed_page_snmp.goto("/")
@@ -258,8 +258,8 @@ def test_print_page_refocuses_when_media_changes_mid_session(authed_page_snmp: P
 def test_late_status_does_not_discard_typed_input(authed_page_snmp: Page) -> None:
     """A slow /printer/status reply must not silently change the template or wipe entered values. The
     roll-driven refocus only lands a fresh page on a usable template — once the user has typed, a late
-    status arrival (the roll becoming known) must keep their selection and their input. Regression for
-    the Codex finding that auto-refocus could discard in-progress form data."""
+    status arrival (the roll becoming known) must keep their selection and their input — auto-refocus
+    must not discard in-progress form data."""
     phase = {"reachable": False}
 
     def handle(route: object) -> None:
@@ -294,8 +294,8 @@ def test_late_status_does_not_discard_typed_input(authed_page_snmp: Page) -> Non
 def test_roll_swap_after_print_still_refocuses(authed_page_snmp: Page) -> None:
     """The dirty-input guard is scoped, not a permanent latch: after a user fills and prints a label,
     swapping the roll must still re-focus the picker to a template for the new size (the input was
-    consumed by the print). Regression for the Codex finding that a permanent touch-latch disabled
-    refocus forever after the first interaction — breaking the core roll-swap workflow."""
+    consumed by the print). A permanent touch-latch must not disable
+    refocus forever after the first interaction — that would break the core roll-swap workflow."""
     phase = {"width": 29}
 
     def handle(route: object) -> None:
@@ -340,8 +340,8 @@ def test_roll_swap_after_print_still_refocuses(authed_page_snmp: Page) -> None:
 def test_late_status_does_not_override_manual_template_choice(authed_page_snmp: Page) -> None:
     """A manual template pick is an explicit choice that a late status reply must not override — even
     with no typing. Pick a 62mm template while the roll is unknown, then have a 29mm roll arrive late;
-    the selection must stand (otherwise Print would silently submit a different template). Regression
-    for the Codex finding that selection-only interaction wasn't covered by the refocus guard."""
+    the selection must stand (otherwise Print would silently submit a different template).
+    Selection-only interaction must also be covered by the refocus guard, not just typing."""
     phase = {"reachable": False}
 
     def handle(route: object) -> None:
@@ -372,8 +372,8 @@ def test_edit_during_in_flight_print_is_not_wiped_by_stale_completion(
 ) -> None:
     """Stale-completion race: a /print reply that lands AFTER the user has started editing the next
     label must not clear the refocus guard and let a later status refresh wipe the newer input. Hold
-    /print in flight, edit during the delay, release it, then a roll change must NOT refocus. Regression
-    for the Codex finding that doPrint cleared userOverride unconditionally."""
+    /print in flight, edit during the delay, release it, then a roll change must NOT refocus —
+    doPrint must not clear userOverride unconditionally."""
     phase = {"width": 62}
 
     def status_handler(route: object) -> None:
@@ -589,7 +589,7 @@ def test_editor_label_reference_lists_labels_and_use_button_sets_yaml(authed_pag
 def test_editor_label_reference_renders_when_status_never_resolves(authed_page: Page) -> None:
     """The static label table must not be gated on the (optional) live printer-status fetch.
 
-    Regression for the Codex finding that rows only appeared after /printer/status resolved: a stuck
+    Rows must not appear only after /printer/status resolves: a stuck
     SNMP/TCP query would otherwise hide the core picker. Hang the status request so it never returns,
     then assert the reference rows still populate from the server-embedded LABELS.
     """
@@ -606,7 +606,7 @@ def test_editor_label_reference_renders_when_status_never_resolves(authed_page: 
 def test_editor_use_button_replaces_noncanonical_label_key(authed_page: Page) -> None:
     """ "Use" replaces a non-canonical top-level ``label`` key in place — never duplicates it.
 
-    Regression for the Codex finding: ``label : "62"`` (whitespace before the colon) is valid YAML but
+    Regression for the finding: ``label : "62"`` (whitespace before the colon) is valid YAML but
     the old exact-match regex missed it and inserted a second ``label`` key. Seed that form, click Use
     for 62x29, and assert exactly one top-level label key remains and it is the selected id.
     """
@@ -661,7 +661,7 @@ def test_editor_label_reference_refetches_status_on_token_entry(anon_page: Page)
 
     On a secured deployment the first visitor lands tokenless, so the initial /printer/status load
     401s and the "Your Printer" highlight stays blank. Typing the token must trigger a fresh status
-    fetch (the fix for the Codex first-run finding) — asserted by waiting for a /printer/status
+    fetch (the fix for the first-run finding) — asserted by waiting for a /printer/status
     request after the field is filled. The e2e server's file:// transport can't produce a real
     highlight, so this asserts the refetch wiring, not the highlight content.
     """
@@ -680,7 +680,7 @@ def test_editor_label_reference_refetches_status_on_token_entry(anon_page: Page)
 
 
 def test_editor_red_label_is_geometry_only_match(authed_page: Page) -> None:
-    """A red/black label is shown as a geometry-only match, not a definite one (Step 8 / Codex iter 3).
+    """A red/black label is shown as a geometry-only match, not a definite one.
 
     62 and 62red share the same 62mm-continuous geometry, but SNMP can't prove the loaded roll is red.
     With a plain 62mm-continuous roll, the plain ``62`` row must be a definite match (``tr.match``)
@@ -712,7 +712,7 @@ def test_editor_red_label_is_geometry_only_match(authed_page: Page) -> None:
 def test_editor_use_collapses_duplicate_label_keys(authed_page: Page) -> None:
     """ "Use" collapses a duplicate-key draft to exactly one ``label`` so no stale value survives.
 
-    Regression for the Codex finding: PyYAML keeps the LAST of duplicate mapping keys, so leaving any
+    Regression for the finding: PyYAML keeps the LAST of duplicate mapping keys, so leaving any
     duplicate ``label:`` (even with equal values) keeps the template structurally ambiguous — a later
     edit to only the first line would silently revert preview/save to the stale later key. Seed two
     top-level ``label`` keys, click Use, and assert exactly one ``label`` key remains with the id.
@@ -737,7 +737,7 @@ rotate: 0
 
 
 def test_editor_use_preserves_indented_root_mapping(authed_page: Page) -> None:
-    """ "Use" edits the label at the document's root indentation, not always column 0 (Codex iter 5).
+    """ "Use" edits the label at the document's root indentation, not always column 0.
 
     PyYAML accepts a uniformly-indented root mapping, so a column-0 label insert would mix indentation
     levels and turn valid YAML into a parse error. Seed a 2-space-indented root mapping, click Use,
@@ -769,7 +769,7 @@ def test_editor_use_preserves_indented_root_mapping(authed_page: Page) -> None:
 
 
 def test_editor_use_handles_document_marker_and_indented_root(authed_page: Page) -> None:
-    """ "Use" edits in place under a `---` document marker + indented root mapping (Codex iter 6).
+    """ "Use" edits in place under a `---` document marker + indented root mapping.
 
     Regression: a valid template that opens with `---` followed by a uniformly indented root mapping
     must not make the edit derive an empty indent and prepend a column-0 `label:` before the marker
@@ -1076,7 +1076,7 @@ def test_history_does_not_probe_status_on_non_snmp(authed_page: Page) -> None:
     must NEVER fetch /printer/status: there the read serializes through the server's print lock, so a
     probe could delay a concurrent /reprint — and the media type reads as unknown anyway, so the gate
     could never fire. Assert zero status hits, that rows render, and that nothing is gated (fail-open).
-    Regression for the Codex finding that the unconditional init probe reintroduced lock contention."""
+    An unconditional init probe would reintroduce lock contention here."""
     status_hits = {"n": 0}
 
     def count_status(route: object) -> None:
@@ -1178,7 +1178,7 @@ def test_history_reprint_error_detail_renders_inert(authed_page: Page) -> None:
     """A hostile /reprint 409 detail (e.g. a spoofed SNMP media_name carrying markup) must render as
     INERT TEXT in the status banner, never as live DOM. #status-area is on a token-bearing page, so an
     innerHTML sink here would let a printer-/SNMP-controlled string run script and exfiltrate the API
-    token from localStorage. Regression for the Codex finding on history.html showStatus."""
+    token from localStorage. Covers the history.html showStatus render path."""
     import json
 
     _route_history_lists(authed_page)  # non-SNMP page → every row reprintable

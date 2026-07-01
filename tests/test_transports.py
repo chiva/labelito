@@ -1368,8 +1368,8 @@ def test_usb_transport_query_status_retries_after_read_timeout(
 ) -> None:
     """A USB read TIMEOUT raises usb.core.USBError (the backend does not return b'' on no-data), so the
     frame reader must catch it and keep polling until the deadline — a frame that arrives after the
-    first read timeout must still be read, NOT fail the guard open. Regression for the Codex finding
-    that a transient read timeout skipped the media/fault check and printed unverified."""
+    first read timeout must still be read, NOT fail the guard open: a transient read timeout must not
+    skip the media/fault check and let an unverified label print."""
     import brother_ql.backends.pyusb as pyusb_mod
     import usb.core
 
@@ -1411,8 +1411,8 @@ def test_usb_transport_query_status_times_out_without_pinning_caller(
 ) -> None:
     """A wedged libusb call (here _write blocks) must NOT pin the caller: query_status runs the whole
     transaction in a worker joined with USB_TIMEOUT and returns unreachable promptly, so the caller can
-    release _print_lock. Regression for the Codex finding that only the frame-drain loop was bounded,
-    letting an open/write/dispose hang stall every later print."""
+    release _print_lock. Bounding only the frame-drain loop would let an
+    open/write/dispose hang stall every later print."""
     import threading
     import time as _time
 

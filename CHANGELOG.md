@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/chiva/labelito/compare/v0.1.3...v0.2.0) (2026-07-01)
+
+
+### Features
+
+* SNMP + USB printer status, media guards, and template studio UI ([#29](https://github.com/chiva/labelito/issues/29)) ([79433a6](https://github.com/chiva/labelito/commit/79433a6b9d83eb14b6529027293f7f4a680e0db5))
+
 ## [0.1.3](https://github.com/chiva/labelito/compare/v0.1.2...v0.1.3) (2026-06-27)
 
 

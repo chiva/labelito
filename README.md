@@ -557,6 +557,10 @@ Voice: *"imprime etiqueta de congelador salsa boloñesa"* → the freezer label 
 The project uses [**uv**](https://docs.astral.sh/uv/) for dependency management and
 [hatchling](https://hatch.pypa.io/) for builds. Python **3.12+** is required.
 
+> **New here?** [docs/development.md](docs/development.md) is the full onboarding guide, and a VS
+> Code / Codespaces **dev container** (`.devcontainer/`) provisions Python + uv + system libs in one
+> click.
+
 ```bash
 # Install uv (https://docs.astral.sh/uv/getting-started/installation/), then:
 uv sync                       # create .venv and install all dependency groups

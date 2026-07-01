@@ -117,6 +117,37 @@ few seconds would contend with printing. A USB roll swap is therefore reflected 
 drives the one-shot read + reprint gating, while `_snmp_guard_applies()` (`live_status_poll`, SNMP only)
 drives the background poll.
 
+## The TCP ESC i S status query was removed — network status needs SNMP
+
+Earlier revisions had `NetworkTransport` fall back to a standalone **ESC i S** status query over the
+`:9100` TCP back-channel when SNMP was disabled (invalidate prefix + `1b 69 53`, then read a 32-byte
+status frame). That fallback was **removed**: on the only network hardware we have — the **QL-810W**
+(`Brother NC-36002w` NIC) — the back-channel **accepts the request but never returns the status frame**
+(`recv` times out). So the query could not succeed; it only burned the full read deadline before also
+reporting the printer unreachable. Over **USB** the *same* printer answers a standalone ESC i S query
+cleanly (verified live 2026-07-01), which is why the query lives on the USB transport and not the
+network one — the asymmetry is in the NIC's back-channel, not the ESC i S protocol.
+
+**Consequence:** a **network** printer with `SNMP_ENABLED=false` has **no status channel** — no media
+badge, no size-focus, no pre-flight media guard (fail-open), status reads `unreachable`. SNMP (UDP 161)
+is the only network status path. This is deliberate for our hardware, not an oversight.
+
+**What we'd need to re-support TCP ESC i S** (only worth doing if a *different* model is confirmed to
+answer the `:9100` back-channel):
+
+- Restore a bounded `_query_status_esc_i_s` on `NetworkTransport` (invalidate + `1b6953`, then a
+  deadline-bounded `recv` loop to a full 32-byte frame → `interpret_response` → `from_parsed`), mirroring
+  the USB `_read_status_frame` shape but over the socket. The old `STATUS_*` frame constants that the
+  print-readback path (`_read_status`) still uses are a starting point.
+- **Gate it behind an explicit opt-in** — a per-printer/model flag or a `NETWORK_STATUS_MODE` setting —
+  rather than making it the automatic SNMP-disabled fallback again, so a QL-810W-class NIC that swallows
+  the frame does not silently re-introduce the deadline-burning dead path.
+- Add coverage for `query_status` with `SNMP_ENABLED=false` against a working TCP status reply (the
+  regression Codex specifically asked for), plus a timeout case proving the deadline is bounded.
+
+Until a model is actually confirmed to return the frame, this stays removed: **no SNMP ⇒ no network
+status.**
+
 ## Reprint replays the *current* template, not the original
 
 `/reprint/{job_id}` re-renders the named template from the live registry using the original

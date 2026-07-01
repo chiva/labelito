@@ -317,7 +317,8 @@
       } else if (compat === 'mismatch') {
         badge.classList.add('media-bad');
         badge.textContent = `✗ needs ${mediaDesc(required)} — loaded ${mediaDesc(loaded)}`;
-        badge.title = 'The loaded roll does not match this template; printing is blocked.';
+        badge.title = 'The loaded roll does not match this template; the server will reject a real '
+          + 'print with a 409. Preview and dry run still work; refresh ↻ after changing the roll.';
       } else {
         badge.classList.add('media-unknown');
         badge.textContent = `media: ${mediaDesc(required)}`;
@@ -325,16 +326,16 @@
       }
     }
 
-    // Re-evaluate compatibility for the loaded roll: badge the current template, annotate (but never
-    // disable) mismatching options, and disable ONLY a real-print of a mismatching template. Called
-    // on status refresh, template change, and dry-run toggle. 'unknown' (SNMP down / non-network)
-    // leaves everything enabled — the server stays authoritative via its 409.
+    // Re-evaluate compatibility for the loaded roll: badge the current template and annotate
+    // mismatching options with a "(needs …)" hint. Purely ADVISORY — it never disables anything.
+    // The button is deliberately not blocked from this cached status: /print does a fresh SNMP check
+    // on every call and 409s a real mismatch (and exempts dry runs), so it is the authoritative,
+    // never-stale guard. Disabling Print from last-known status would block a valid print after a
+    // roll swap until a manual refresh — the status card is never background-polled. 'unknown' (SNMP
+    // down / non-network) shows a neutral badge. Called on status refresh and template change.
     function applyMediaCompat() {
       const loaded = loadedMedia();
       const sel = document.getElementById('template-select');
-      // Annotate mismatching options with a "(needs …)" hint but keep every template selectable:
-      // previewing a label meant for another roll is legitimate, and the server SKIPS the media
-      // guard for dry runs — disabling the option would lock out both. The print button is the guard.
       for (const opt of sel.options) {
         const t = templateMap[opt.value];
         if (!t) continue;
@@ -344,19 +345,7 @@
           : base;
       }
       const t = currentTemplate();
-      const compat = t ? mediaCompat(t.media, loaded) : 'unknown';
-      renderMediaBadge(t ? t.media : null, compat, loaded);
-      // Block only a real (non-dry-run) print of a mismatching template — mirrors the server, which
-      // 409s a mismatch but exempts dry_run. Preview is never blocked.
-      const dryRun = document.getElementById('dry-run').checked;
-      const printBtn = document.querySelector('.btn-print');
-      if (printBtn) {
-        const block = compat === 'mismatch' && !dryRun;
-        printBtn.disabled = block;
-        printBtn.title = block
-          ? `Loaded media (${mediaDesc(loaded)}) does not match this template (needs ${mediaDesc(t.media)}). Load the matching roll, pick a compatible template, or tick “Dry run”.`
-          : '';
-      }
+      renderMediaBadge(t ? t.media : null, t ? mediaCompat(t.media, loaded) : 'unknown', loaded);
     }
 
     function renderFields() {
@@ -532,10 +521,6 @@
     }
     document.getElementById('dither').addEventListener('change', syncThresholdToggledByDither);
     syncThresholdToggledByDither();
-
-    // Toggling Dry run flips whether a media mismatch blocks the Print button (a dry run is exempt,
-    // matching the server), so re-evaluate the guard whenever it changes.
-    document.getElementById('dry-run').addEventListener('change', applyMediaCompat);
 
     // Init
     renderFields();

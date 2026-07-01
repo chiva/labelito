@@ -131,14 +131,14 @@ def test_status_banner_does_not_execute_injected_markup(authed_page: Page) -> No
     )
 
 
-def test_media_compatibility_badges_and_guards(authed_page: Page) -> None:
-    """The print page badges each template against the loaded roll and blocks a mismatched real print.
+def test_media_compatibility_badges_are_advisory(authed_page: Page) -> None:
+    """The print page badges each template against the loaded roll — advisory only (Step 7).
 
     Drives the client-side compatibility consumer deterministically: seed a continuous + a die-cut
     template, set the loaded roll over a network (tcp://) printer, and assert the badge reflects ✓/✗
-    (the same width/form rule the server-side 409 guard applies), the Print button is blocked for a
-    mismatched real print, the mismatching option stays SELECTABLE (preview/dry-run must work), the
-    dry-run checkbox lifts the block (server exempts dry runs), and Preview is never blocked."""
+    (the same width/form rule the server-side 409 guard applies). The badge NEVER disables Print or
+    the dropdown — /print does a fresh SNMP check and is the authoritative guard, so blocking from
+    cached status would wrongly lock out a print after a roll swap. Preview is never blocked either."""
     authed_page.goto("/")
     # Seed two known templates with explicit required media and options for them.
     authed_page.evaluate(
@@ -162,46 +162,36 @@ def test_media_compatibility_badges_and_guards(authed_page: Page) -> None:
           printerStatus = {state:'idle', uri:'tcp://192.168.5.14:9100', reachable:true,
             media_width_mm:62, media_type:'continuous', media_length_mm:null};
           document.getElementById('template-select').value = '__dc';
-          document.getElementById('dry-run').checked = false;
           renderFields();
           applyMediaCompat();
         }"""
     )
-    # Mismatch: real print blocked, badge ✗ — but the template stays selectable (preview/dry-run).
-    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") is True, (
-        "a mismatched real print must be blocked"
+    # Mismatch → red ✗ badge, but NOTHING is disabled: advisory only.
+    badge = authed_page.locator("#media-badge")
+    expect(badge).to_have_class(re.compile(r"media-bad"))
+    expect(badge).to_contain_text("✗")
+    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") in (False, None), (
+        "Print must NOT be disabled from cached status — /print is the authoritative guard"
+    )
+    assert authed_page.eval_on_selector(".btn-preview", "b => b.disabled") in (False, None), (
+        "Preview must never be blocked by a media mismatch"
     )
     assert (
         authed_page.eval_on_selector("#template-select option[value='__dc']", "o => o.disabled")
         is False
-    ), "the mismatching template must stay SELECTABLE so it can be previewed / dry-run"
-    assert authed_page.eval_on_selector(".btn-preview", "b => b.disabled") in (False, None), (
-        "Preview must never be blocked by a media mismatch"
-    )
-    badge = authed_page.locator("#media-badge")
-    expect(badge).to_have_class(re.compile(r"media-bad"))
-    expect(badge).to_contain_text("✗")
+    ), "the mismatching template must stay selectable"
 
-    # Ticking Dry run lifts the block — the server skips the media guard for dry runs.
-    authed_page.evaluate(
-        "() => { document.getElementById('dry-run').checked = true; applyMediaCompat(); }"
-    )
-    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") is False, (
-        "a dry run of a mismatching template must be allowed"
-    )
-
-    # Untick dry-run and swap the loaded roll to die-cut 62x29: now it matches → Print enabled, ✓.
+    # Swap the loaded roll to die-cut 62x29: the badge flips ✗ → ✓ for the same template.
     authed_page.evaluate(
         """() => {
-          document.getElementById('dry-run').checked = false;
           printerStatus = {state:'idle', uri:'tcp://192.168.5.14:9100', reachable:true,
             media_width_mm:62, media_type:'die_cut', media_length_mm:29};
           applyMediaCompat();
         }"""
     )
-    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") is False
     expect(authed_page.locator("#media-badge")).to_have_class(re.compile(r"media-ok"))
     expect(authed_page.locator("#media-badge")).to_contain_text("✓")
+    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") in (False, None)
 
 
 def test_unauthenticated_preview_shows_auth_error(anon_page: Page) -> None:

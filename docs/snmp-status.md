@@ -138,9 +138,10 @@ and file transports ignore SNMP entirely.
   `503` (same body) when a print holds the lock or the printer is unreachable.
 - **Pre-flight media guard.** `/print` and `/reprint` query SNMP before sending and reject a
   loaded-vs-required media mismatch with **`409 Conflict`** (the detail names both), incrementing
-  `label_errors_total{reason="media_mismatch"}`. The web UI disables mismatching templates in the
-  print dropdown and disables the Print button. The editor is untouched — every label stays
-  selectable there.
+  `label_errors_total{reason="media_mismatch"}`. The web UI is **advisory only**: a mismatching
+  template shows a red **✗** media badge and a `(needs …)` suffix on its dropdown option, but the
+  option and the Print button stay enabled (preview/dry-run still work, and a stale client status
+  must never hard-block) — the server's 409 is the authoritative gate. The editor is untouched.
 - **Fail-open.** SNMP unreachable or `SNMP_ENABLED=false` ⇒ the guard logs a warning and proceeds;
   the UI badges status unknown (`?`). See the [accepted residuals](known-limitations.md#the-network-back-channel-is-silent--snmp-is-the-status-channel).
 - **Telemetry** (opt-in, `METRICS_ENABLED=true`). SNMP-derived gauges — `printer_up`,

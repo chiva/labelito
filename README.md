@@ -307,8 +307,10 @@ hardware answers instantly:
   console line, and identity — instead of the unreliable `:9100` readback.
 - **Pre-flight media guard.** `/print` and `/reprint` query SNMP before sending and reject a
   media mismatch with **`409 Conflict`** (the detail names the loaded vs. required media), so the
-  hardware rejection surfaces as an error rather than a phantom success. The web UI mirrors this:
-  mismatching templates are disabled in the print dropdown and the Print button is disabled.
+  hardware rejection surfaces as an error rather than a phantom success. The web UI flags this
+  advisorily: a mismatching template shows a red **✗** media badge and a `(needs …)` suffix on its
+  dropdown option, but nothing is disabled — preview and dry-run stay available, and the server's
+  409 is the authoritative gate (client-side status can be stale, so it never hard-blocks).
 - **Fail-open.** If SNMP is unreachable or `SNMP_ENABLED=false`, the guard does **not** block — it
   logs a warning and proceeds, and the status badges as unknown (`?`). The guard only ever *adds*
   certainty; it never turns a previously-working print into a hard failure because the status

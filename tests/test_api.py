@@ -2896,6 +2896,13 @@ def test_editor_embeds_label_reference(client: TestClient) -> None:
     assert red_by_id.get("62red") is True, "the two-colour 62red label must be flagged red"
 
 
+def test_editor_includes_template_format_help(client: TestClient) -> None:
+    """The studio carries the template-format cheatsheet pointing at the full doc (Step 9)."""
+    page = client.get("/editor").text
+    assert "Template format reference" in page
+    assert "docs/template-format.md" in page
+
+
 # ── Load an existing template's source (GET /templates/{name}/source) ──
 def test_template_source_happy_path(client: TestClient) -> None:
     """A known template's raw YAML loads and round-trips back through the draft parser."""

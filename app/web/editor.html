@@ -49,6 +49,12 @@
     .your-printer { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: .6rem .8rem; margin-bottom: .9rem; font-size: .9rem; }
     .your-printer code { background: #dbeafe; padding: .1rem .4rem; border-radius: 3px; }
     .your-printer .yp-matches { margin-top: .3rem; color: #1e3a8a; }
+    .help-ref summary { cursor: pointer; font-weight: 700; }
+    .help-ref { font-size: .88rem; line-height: 1.5; }
+    .help-ref h3 { font-size: .92rem; margin: 1rem 0 .3rem; }
+    .help-ref code { background: #f1f5f9; padding: .1rem .35rem; border-radius: 3px; }
+    .help-ref table { width: 100%; border-collapse: collapse; margin-top: .25rem; }
+    .help-ref th, .help-ref td { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid #eee; vertical-align: top; }
   </style>
 </head>
 <body>
@@ -106,6 +112,38 @@
       <thead><tr><th>id</th><th>media</th><th></th></tr></thead>
       <tbody id="label-ref-body"></tbody>
     </table>
+  </div>
+
+  <!-- ── Template format cheatsheet — a quick reference; docs/template-format.md is authoritative ── -->
+  <div class="card help-ref">
+    <details>
+      <summary>Template format reference</summary>
+      <p class="muted">A quick cheatsheet. The full reference (every parameter, defaults, and bounds) lives in <code>docs/template-format.md</code> in the repo.</p>
+
+      <h3>Top-level keys</h3>
+      <p><code>name</code> (unique id), <code>description</code>, <code>label</code> (a label id from the reference above), and <code>layout</code> are required. <code>rotate</code> (0/90/180/270) and <code>fields</code> are optional.</p>
+
+      <h3>Fields &amp; tokens</h3>
+      <p>Declare <code>fields.required</code>/<code>fields.optional</code> (names: letters, digits, <code>_</code>). Reference each with <code>{{name}}</code> in an element's <code>text</code>, <code>data</code>, or <code>name</code>. Computed tokens are always available: <code>{{date}}</code>, <code>{{now}}</code> (with <code>±Nd/w/m/y</code> offset and <code>:strftime</code> format), and <code>{{seq}}</code> (sequence batches). Translation words use <code>[[key]]</code>.</p>
+
+      <h3>Element types</h3>
+      <table>
+        <thead><tr><th>type</th><th>key attributes</th></tr></thead>
+        <tbody>
+          <tr><td><code>title</code> / <code>subtitle</code></td><td><code>text</code>, <code>align</code>, <code>max_lines</code>, <code>bold</code></td></tr>
+          <tr><td><code>text</code></td><td><code>text</code>, <code>size</code>, <code>align</code>, <code>bold</code>, <code>max_lines</code></td></tr>
+          <tr><td><code>qr</code></td><td><code>data</code>, <code>size</code>, <code>align</code></td></tr>
+          <tr><td><code>barcode</code></td><td><code>data</code>, <code>symbology</code>, <code>height</code>, <code>align</code></td></tr>
+          <tr><td><code>image</code></td><td><code>field</code>, <code>max_height</code>, <code>align</code></td></tr>
+          <tr><td><code>icon</code></td><td><code>name</code>, <code>size</code>, <code>align</code>, <code>collection</code>, <code>style</code></td></tr>
+          <tr><td><code>line</code></td><td><code>thickness</code>, <code>margin</code></td></tr>
+          <tr><td><code>box</code></td><td><code>height</code>, <code>border</code></td></tr>
+          <tr><td><code>spacer</code></td><td><code>size</code></td></tr>
+          <tr><td><code>row</code></td><td><code>children</code>, <code>align_items</code>, <code>spacing</code> (children take <code>width</code>/<code>weight</code>/<code>valign</code>)</td></tr>
+        </tbody>
+      </table>
+      <p>Every element also takes <code>padding_top</code>/<code>padding_bottom</code> and <code>color</code> (<code>red</code> on two-color models).</p>
+    </details>
   </div>
 
   <div id="status-area"></div>

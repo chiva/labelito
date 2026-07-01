@@ -47,5 +47,8 @@ docker-compose.override.yml
 # digest would silently freeze the uv Feature. Letting it resolve fresh each build keeps it current.
 .devcontainer/devcontainer-lock.json
 
+# Local merge artifacts: numbered per-commit zips staged for the manual merge workflow, never repo content
+commit-zips/
+
 # OS / editor
 .DS_Store

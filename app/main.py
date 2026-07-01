@@ -88,6 +88,7 @@ from app.transports.network import NetworkTransport  # noqa: F401 — registers 
 from app.transports.snmp import (
     CONSOLE_READY,
     HR_PRINTER_ERROR_BITS,
+    HR_PRINTER_STATUS_BUSY,
     HR_PRINTER_STATUS_OTHER,
     PrinterSNMPStatus,
     query_snmp_status,
@@ -1181,85 +1182,60 @@ def capabilities() -> CapabilityResponse:
     )
 
 
-@app.get(
-    "/printer/status",
-    response_model=PrinterStatusResponse,
-    tags=["System"],
-    responses={
-        401: {"description": "Invalid or missing API token"},
-        503: {"description": "Printer unreachable, busy, or status query not supported"},
-    },
-)
-async def printer_status(
-    _auth: Annotated[None, Depends(check_token)],
-) -> PrinterStatusResponse | JSONResponse:
-    """Query the physical printer via ESC i S and return its current state.
+def _build_status_request() -> bytes:
+    """Model-correct ESC i S status-request payload: a model-sized invalidate (NUL) prefix before
+    the status-information command. Without the prefix, a printer whose command buffer is dirty after
+    an interrupted job treats ESC i S as raster data and never replies with the 32-byte status frame.
+    Consumed only on the ESC i S fallback path; the SNMP status read ignores it (see NetworkTransport
+    .query_status), but it is cheap and the transport API takes a request either way."""
+    from brother_ql.raster import BrotherQLRaster
 
-    Sends the Brother QL "request status information" command (0x1B 0x69 0x53) over the
-    configured transport and parses the 32-byte reply. Returns loaded media (width, length,
-    type), the printer model, and any reported error bits.
+    qlr = BrotherQLRaster(settings.model)
+    qlr.add_invalidate()
+    qlr.add_status_information()
+    return bytes(qlr.data)  # brother_ql is untyped; coerce the buffer to a concrete bytes
 
-    Returns 503 when the printer is unreachable, when a print is in progress (the transport
-    is busy), or when the configured transport does not support status queries (USB).
-    The response body always has ``reachable: false`` in those cases so callers can branch
-    without inspecting the status code.
 
-    Note: the optional background keep-alive ping was intentionally omitted;
-    it adds a background task and concurrency surface not warranted for a home app.
-    """
-    # Acquire the same lock that serializes /print and /reprint against this transport.
-    # A status query must not race an in-flight print: both open a connection to the same
-    # port-9100 endpoint (network) or touch the same USB device, and interleaving would corrupt
-    # both the print and the status reply. Use non-blocking acquire: if a print is in progress
-    # return 503 "printer busy" immediately rather than hanging the request thread. Mirror the
-    # pattern already used for /print (asyncio.Lock), but without waiting.
-    if _print_lock.locked():
-        return JSONResponse(
-            status_code=503,
-            content=PrinterStatusResponse(
-                state=PrinterState.PRINTING,
-                uri=settings.printer_uri,
-                reachable=False,
-                errors=["printer is busy with an in-progress print job; retry shortly"],
-            ).model_dump(),
-        )
-    async with _print_lock:
-        # Build the status-request payload for the configured model. Brother QL printers require
-        # a model-sized invalidate (NUL) prefix before ESC i S to clear the command buffer —
-        # without it, a printer whose buffer is dirty after an interrupted job treats ESC i S as
-        # raster data and never replies with the 32-byte status frame.
-        from brother_ql.raster import BrotherQLRaster
+def _query_printer_status(request: bytes) -> PrinterStatus:
+    """Blocking transport status query. Opens the configured transport, queries, and always closes it.
+    Run via ``run_in_threadpool`` so the socket I/O never blocks the event loop."""
+    transport = _resolve_transport()(settings.printer_uri)
+    try:
+        return transport.query_status(request)
+    finally:
+        transport.close()
 
-        _qlr = BrotherQLRaster(settings.model)
-        _qlr.add_invalidate()
-        _qlr.add_status_information()
-        _status_request = _qlr.data
 
-        transport_cls = _resolve_transport()
-        transport = transport_cls(settings.printer_uri)
-        try:
-            status = await run_in_threadpool(transport.query_status, _status_request)
-        finally:
-            transport.close()
+def _status_has_hard_fault(status: PrinterStatus) -> bool:
+    """True when a reachable SNMP status reflects a genuine hardware fault, mirroring the print
+    preflight's two gates (see :func:`_raise_if_media_incompatible`) so the status badge and the print
+    gate agree on what a "fault" is: (1) a non-zero ``hrPrinterDetectedErrorState`` bitmask, or (2) the
+    latch — ``hrPrinterStatus=other(1)`` with a non-``READY`` console. Deliberately does NOT treat a
+    non-READY console alone as a fault: transient display states (PRINTING / RECEIVING / COOLING) are
+    non-READY but normal, so keying off ``status.errors`` (which echoes the console line) would
+    false-alarm mid-print. The error bitmask and hrPrinterStatus ride in ``raw`` (see from_snmp)."""
+    if (status.raw.get("error_state_bits") or 0) != 0:
+        return True
+    console = status.console_text
+    return (
+        status.raw.get("printer_status") == HR_PRINTER_STATUS_OTHER
+        and console is not None
+        and console.strip().upper() != CONSOLE_READY
+    )
 
-    # Refresh the SNMP telemetry gauges from this query (freshness model A) — network + SNMP only.
-    # File/USB status is synthetic or unsupported, not a real printer, so it must not drive the gauges.
-    if _snmp_guard_applies():
-        _record_status_metrics(status)
 
-    if not status.reachable:
-        return JSONResponse(
-            status_code=503,
-            content=PrinterStatusResponse(
-                state=PrinterState.OFF,
-                uri=settings.printer_uri,
-                reachable=False,
-                errors=status.errors,
-            ).model_dump(),
-        )
+def _status_is_busy(status: PrinterStatus) -> bool:
+    """True when the SNMP read itself reports a working state — hrPrinterStatus printing(4) or
+    warmup(5). Independent of this server's _print_lock so an external job, or a printer still
+    finishing after our send returns, is reported as PRINTING rather than misreported as idle."""
+    return status.raw.get("printer_status") in HR_PRINTER_STATUS_BUSY
 
+
+def _status_response(status: PrinterStatus, state: PrinterState) -> PrinterStatusResponse:
+    """Build the full PrinterStatusResponse from a reachable printer query under a given ``state``.
+    Single builder so the PRINTING, IDLE, and ERROR responses can never drift field-by-field."""
     return PrinterStatusResponse(
-        state=PrinterState.ERROR if status.errors else PrinterState.IDLE,
+        state=state,
         uri=settings.printer_uri,
         reachable=status.reachable,
         model=status.model,
@@ -1274,6 +1250,100 @@ async def printer_status(
         console_text=status.console_text,
         label_lifecount=status.label_lifecount,
     )
+
+
+def _busy_503() -> JSONResponse:
+    """The 503 "printer is busy" reply for the ESC i S path, where a status readback shares the :9100
+    socket with an in-flight print and cannot run concurrently."""
+    return JSONResponse(
+        status_code=503,
+        content=PrinterStatusResponse(
+            state=PrinterState.PRINTING,
+            uri=settings.printer_uri,
+            reachable=False,
+            errors=["printer is busy with an in-progress print job; retry shortly"],
+        ).model_dump(),
+    )
+
+
+def _unreachable_503(status: PrinterStatus) -> JSONResponse:
+    """The 503 reply for a reachable-transport-but-no-printer query (state=off, reachable=false)."""
+    return JSONResponse(
+        status_code=503,
+        content=PrinterStatusResponse(
+            state=PrinterState.OFF,
+            uri=settings.printer_uri,
+            reachable=False,
+            errors=status.errors,
+        ).model_dump(),
+    )
+
+
+@app.get(
+    "/printer/status",
+    response_model=PrinterStatusResponse,
+    tags=["System"],
+    responses={
+        401: {"description": "Invalid or missing API token"},
+        503: {"description": "Printer unreachable, busy, or status query not supported"},
+    },
+)
+async def printer_status(
+    _auth: Annotated[None, Depends(check_token)],
+) -> PrinterStatusResponse | JSONResponse:
+    """Query the physical printer and return its current state.
+
+    On the default network path with SNMP enabled the status comes over SNMP (UDP 161); otherwise it
+    is read via the ESC i S back-channel over the configured transport. Returns loaded media (width,
+    length, type), the printer model, identity/telemetry, and any reported error bits.
+
+    Returns 503 when the printer is unreachable, or (ESC i S path only) when a print is in progress
+    and the :9100 status readback cannot run. The response body always has ``reachable: false`` in
+    those cases so callers can branch without inspecting the status code.
+
+    Note: the optional background keep-alive ping was intentionally omitted;
+    it adds a background task and concurrency surface not warranted for a home app.
+    """
+    # SNMP is an independent, read-only channel (UDP 161): a status query on it does NOT contend with
+    # an in-flight print's :9100 raster send, so it must NOT serialize behind _print_lock. Decoupling
+    # lets the status card poll live during a print. While the lock is held a print is mid-job, which
+    # we surface as PRINTING — but only when the read is itself clean. The ESC i S fallback below DOES
+    # share the :9100 socket, so it keeps the busy short-circuit and the lock.
+    if _snmp_guard_applies():
+        status = await run_in_threadpool(_query_printer_status, _build_status_request())
+        # Peek (never acquire) the print lock as a read-only "is a print in progress" signal. A brief
+        # stale read only mislabels a single poll cycle, harmless for a status card.
+        print_in_flight = _print_lock.locked()
+        # Refresh the SNMP telemetry gauges from this query (freshness model A).
+        _record_status_metrics(status)
+        # Precedence is deliberate: an unreachable read or a genuine HARD fault must surface EVEN
+        # mid-print — masking either behind "printing" is the phantom-success failure mode this feature
+        # exists to close. But a non-READY console alone is NOT a fault (PRINTING/RECEIVING/COOLING are
+        # transient), so the fault test reuses the preflight's hard-fault gates rather than the raw
+        # errors list — otherwise a normal mid-print poll would false-alarm as error. Only a reachable,
+        # hard-fault-free read under a held lock reports live PRINTING.
+        if not status.reachable:
+            return _unreachable_503(status)
+        if _status_has_hard_fault(status):
+            return _status_response(status, PrinterState.ERROR)
+        # Busy if the SNMP read itself says so (printing/warmup) OR this server holds the print lock
+        # (covers the window before the printer's hrPrinterStatus catches up, and a read that can't
+        # report status). Only a reachable, fault-free, non-busy read is IDLE (ready).
+        if _status_is_busy(status) or print_in_flight:
+            return _status_response(status, PrinterState.PRINTING)
+        return _status_response(status, PrinterState.IDLE)
+
+    # ── ESC i S fallback (file / USB / SNMP disabled): the status readback shares the :9100 socket
+    #    with printing, so it MUST serialize behind _print_lock. Non-blocking acquire — if a print is
+    #    in progress return 503 "busy" immediately rather than hanging the request thread.
+    if _print_lock.locked():
+        return _busy_503()
+    async with _print_lock:
+        status = await run_in_threadpool(_query_printer_status, _build_status_request())
+
+    if not status.reachable:
+        return _unreachable_503(status)
+    return _status_response(status, PrinterState.ERROR if status.errors else PrinterState.IDLE)
 
 
 def _template_media(label: str) -> TemplateMedia | None:
@@ -2360,6 +2430,12 @@ async def web_ui(request: Request) -> HTMLResponse:
             # Surface whether the configured model supports two-color so the UI can hide the toggle
             # on models that can never print red (the print gate would 422 it anyway).
             "two_color": _driver_cls.CAPABILITY.two_color,
+            # Gate the background status poll to deployments where /printer/status is served lock-free
+            # over SNMP. On the ESC i S fallback (USB/file, or SNMP_ENABLED=false) the status read
+            # takes _print_lock, so a background poll would sit on the lock and delay a later /print —
+            # reintroducing the contention this change removed. There, only manual ↻ / post-print
+            # refresh poll (explicit user actions, as before).
+            "live_status_poll": _snmp_guard_applies(),
         },
     )
 

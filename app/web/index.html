@@ -155,6 +155,21 @@
     const PRINTER_DETAILS_KEY = 'labelito_printer_details_open';
     let printerDetailsOpen = localStorage.getItem(PRINTER_DETAILS_KEY) === '1';
 
+    // ── Live status polling. The SNMP status channel (UDP 161) is independent of the :9100 print
+    //    socket, so the server can answer /printer/status during a print — we poll while the tab is
+    //    visible so the card converges to real device state on its own (offline/fault/print-done)
+    //    without a manual ↻. Backs off when unreachable and pauses when hidden to keep traffic light.
+    const STATUS_POLL_MS = 4000;              // base cadence while the printer is reachable
+    const STATUS_POLL_UNREACHABLE_MS = 15000; // slower cadence once a poll comes back unreachable
+    const STATUS_FETCH_TIMEOUT_MS = 8000;     // abort a status fetch that hangs, so it can't wedge polling
+    let statusPollTimer = null;
+    let statusInFlight = false;               // guards overlapping refreshes (poll vs ↻ vs post-print)
+    let statusRefreshPending = false;         // a refresh requested while one was in flight → run once more
+    // Only background-poll where the server serves /printer/status lock-free over SNMP. On the ESC i S
+    // fallback (USB/file, or SNMP disabled) the status read takes the print lock, so a background poll
+    // would sit on the lock and delay a later print; there we leave manual ↻ + post-print refresh only.
+    const LIVE_STATUS_POLL = {{ live_status_poll | tojson }};
+
     function authHeaders() {
       const headers = {'Content-Type': 'application/json'};
       const token = (localStorage.getItem(TOKEN_KEY) || '').trim();
@@ -172,9 +187,9 @@
     }
 
     // ── Printer status card. Mirrors the backend PrinterState enum (off/idle/printing/error).
-    //    Refreshed on load, on demand via the ↻ button, and after each print. No background poll:
-    //    the server intentionally avoids a keep-alive ping, and every query opens a real
-    //    connection to the printer.
+    //    Refreshed on load, on demand via the ↻ button, after each print, and by a visible-tab
+    //    background poll (see STATUS_POLL_MS). Polling lives in the browser by design — the server
+    //    intentionally stays stateless per request and avoids a keep-alive task.
     const STATE_LABELS = {off: 'Off', idle: 'Idle', printing: 'Printing', error: 'Error'};
     const STATE_CLASS = {off: 'state-off', idle: 'state-idle', printing: 'state-printing', error: 'state-error'};
 
@@ -254,8 +269,17 @@
     }
 
     async function refreshPrinterStatus() {
+      // In-flight guard: the poll, the ↻ button, and the post-print refresh all funnel through here.
+      // A query opens a real socket to the printer, so overlapping calls are wasteful — let the first
+      // win. But don't silently DROP a later request (e.g. the post-print reconcile that must clear an
+      // optimistic "Printing…" badge): mark it pending and run exactly one follow-up when this finishes.
+      if (statusInFlight) { statusRefreshPending = true; return; }
+      statusInFlight = true;
+      // Abort a hung fetch so it can't pin statusInFlight=true forever and wedge the whole poll loop.
+      const controller = new AbortController();
+      const abortTimer = setTimeout(() => controller.abort(), STATUS_FETCH_TIMEOUT_MS);
       try {
-        const res = await fetch('/printer/status', {headers: authHeaders()});
+        const res = await fetch('/printer/status', {headers: authHeaders(), signal: controller.signal});
         if (res.status === 401) {
           handleAuthError(res);
           setStateBadge('off', 'Auth required');
@@ -275,6 +299,7 @@
         }
         renderPrinterStatus(data);
       } catch (e) {
+        // Includes AbortError when the fetch times out — treat any failure as unreachable.
         setStateBadge('off', 'Unreachable');
         const detail = document.getElementById('printer-detail');
         detail.replaceChildren();
@@ -284,8 +309,35 @@
         detail.appendChild(div);
         printerStatus = null;
         applyMediaCompat();
+      } finally {
+        clearTimeout(abortTimer);
+        statusInFlight = false;
+        // Run the one coalesced follow-up requested while this was in flight (e.g. post-print reconcile),
+        // so the latest request always lands and an optimistic badge can't be left stale.
+        if (statusRefreshPending) {
+          statusRefreshPending = false;
+          refreshPrinterStatus();
+        }
       }
     }
+
+    // Self-scheduling poll: a setTimeout chain (not setInterval) so the cadence can vary with the last
+    // result and never stacks ticks. Skips work while the tab is hidden, and slows down when the
+    // printer is unreachable so a powered-off printer doesn't drive a tight retry loop.
+    function scheduleNextStatusPoll(ms) {
+      if (statusPollTimer !== null) clearTimeout(statusPollTimer);
+      statusPollTimer = setTimeout(pollPrinterStatus, ms);
+    }
+    async function pollPrinterStatus() {
+      if (document.hidden) { scheduleNextStatusPoll(STATUS_POLL_MS); return; }
+      await refreshPrinterStatus();
+      const reachable = printerStatus && printerStatus.reachable;
+      scheduleNextStatusPoll(reachable ? STATUS_POLL_MS : STATUS_POLL_UNREACHABLE_MS);
+    }
+    // Resume immediately when the tab regains focus (polls paused while hidden go stale fast).
+    document.addEventListener('visibilitychange', () => {
+      if (LIVE_STATUS_POLL && !document.hidden) pollPrinterStatus();
+    });
 
     function currentTemplate() {
       const sel = document.getElementById('template-select');
@@ -461,6 +513,10 @@
 
     async function doPrint() {
       const payload = buildPayload();
+      // Optimistic feedback: a print is sub-second and may finish between polls, so reflect "Printing…"
+      // the instant the job is sent. The post-print refresh and the background poll converge the badge
+      // back to the printer's real state; failure paths below reconcile it so it can never stick.
+      setStateBadge('printing', 'Printing…');
       try {
         const res = await fetch('/print', {
           method: 'POST',
@@ -468,9 +524,10 @@
           body: JSON.stringify(payload),
         });
         if (!res.ok) {
-          if (handleAuthError(res)) return;
+          if (handleAuthError(res)) { refreshPrinterStatus(); return; }
           const err = await res.json().catch(() => ({detail: res.statusText}));
           showStatus('Print error: ' + JSON.stringify(err.detail || err), 'err');
+          refreshPrinterStatus();  // e.g. a 409 fault — show the real state, not a stuck "Printing…"
           return;
         }
         const json = await res.json();
@@ -479,6 +536,7 @@
         refreshPrinterStatus();
       } catch (e) {
         showStatus('Network error: ' + e.message, 'err');
+        refreshPrinterStatus();
       }
     }
 
@@ -558,6 +616,7 @@
     renderFields();
     applyMediaCompat();      // badge from required media immediately; refreshed once status loads
     refreshPrinterStatus();
+    if (LIVE_STATUS_POLL) scheduleNextStatusPoll(STATUS_POLL_MS);  // visible-tab poll, SNMP only
     if (TEMPLATES.length > 0) doPreview();
   </script>
 </body>

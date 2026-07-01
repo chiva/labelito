@@ -173,6 +173,25 @@ def test_index_embeds_template_media(client: TestClient) -> None:
     assert '"media_type": "continuous"' in resp.text or '"media_type":"continuous"' in resp.text
 
 
+def test_index_disables_background_poll_without_snmp(client: TestClient) -> None:
+    """The default client fixture uses a file:// transport (non-SNMP), where /printer/status takes
+    the print lock — so the page must render with LIVE_STATUS_POLL=false to keep the background poll
+    OFF and avoid lock contention with /print (Codex review of the live-status change)."""
+    assert "const LIVE_STATUS_POLL = false;" in client.get("/").text
+
+
+def test_index_enables_background_poll_with_snmp(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a network transport with SNMP enabled, /printer/status is served lock-free, so the page
+    renders LIVE_STATUS_POLL=true to turn on the visible-tab background poll."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://192.168.5.14:9100")
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", True)
+    assert "const LIVE_STATUS_POLL = true;" in client.get("/").text
+
+
 def test_preview_returns_png(client: TestClient) -> None:
     resp = client.post("/preview", json={"template": "simple", "fields": {"title": "Hello"}})
     assert resp.status_code == 200
@@ -1458,11 +1477,13 @@ def test_printer_status_unreachable_returns_503(
     assert data.get("uri") == main_mod.settings.printer_uri, "503 body must echo the configured URI"
 
 
-def test_printer_status_503_when_print_lock_held(
+def test_printer_status_busy_503_retained_without_snmp(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When a print is in progress (lock held), /printer/status returns 503 immediately rather
-    than blocking the request behind the in-flight print."""
+    """On the ESC i S path (file/USB transport, or SNMP disabled) the status readback shares the
+    :9100 socket with printing, so a held print lock must still return 503 printer-busy immediately
+    rather than blocking the request. The client fixture's file:// transport exercises this path.
+    (On the SNMP path the read is decoupled — see test_printer_status_returns_printing_when_lock_held_snmp.)"""
     import asyncio
 
     import app.main as main_mod
@@ -1478,7 +1499,7 @@ def test_printer_status_503_when_print_lock_held(
         loop.close()
 
     assert resp.status_code == 503, (
-        f"a held print lock must return 503 printer-busy; got {resp.status_code}"
+        f"a held print lock on the ESC i S path must return 503 printer-busy; got {resp.status_code}"
     )
     data = resp.json()
     assert "detail" not in data, f"503 body must not wrap fields under 'detail'; got {data!r}"
@@ -1486,6 +1507,252 @@ def test_printer_status_503_when_print_lock_held(
         f"printer-busy 503 must carry top-level reachable=false in the body; got {data!r}"
     )
     assert data.get("state") == "printing", "a held print lock must derive state=printing"
+
+
+def test_printer_status_returns_printing_when_lock_held_snmp(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the SNMP path (network transport + SNMP enabled) the UDP-161 read is independent of the
+    :9100 print socket, so /printer/status answers DURING a print instead of 503-ing. The held lock
+    is an authoritative "a print is in progress" signal, so the endpoint reports a 200 state=printing
+    while passing through whatever the (independent) SNMP read returned. This is what lets the web
+    status card poll live mid-print."""
+    import asyncio
+
+    import app.main as main_mod
+    from app.transports.base import PrinterStatus
+
+    class _SNMPReachable:
+        def __init__(self, uri: str) -> None:
+            pass
+
+        def send(self, data: bytes) -> PrinterStatus | None:
+            return None
+
+        def query_status(self, request: bytes) -> PrinterStatus:
+            return PrinterStatus(
+                ok=True,
+                errors=[],
+                raw={},
+                model="Brother QL-810W",
+                media_width_mm=62,
+                media_type="continuous",
+                reachable=True,
+                console_text="PRINTING",
+            )
+
+        def close(self) -> None:
+            pass
+
+    # Network transport + SNMP enabled ⇒ _snmp_guard_applies() is True (the decoupled path).
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://192.168.5.14:9100")
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", True)
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SNMPReachable)
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(main_mod._print_lock.acquire())
+        resp = client.get("/printer/status")
+    finally:
+        if main_mod._print_lock.locked():
+            main_mod._print_lock.release()
+        loop.close()
+
+    assert resp.status_code == 200, (
+        f"the SNMP read must answer during a print (not 503); got {resp.status_code}: {resp.text}"
+    )
+    data = resp.json()
+    assert data["state"] == "printing", "a held lock on the SNMP path must derive state=printing"
+    assert data["reachable"] is True, "the in-flight SNMP read succeeded, so reachable must be true"
+    assert data["model"] == "Brother QL-810W", (
+        "the SNMP read's fields must pass through the PRINTING response"
+    )
+
+
+def _snmp_status_endpoint(monkeypatch: pytest.MonkeyPatch, query_status_result: object) -> None:
+    """Arm the SNMP status path (network + SNMP enabled) and stub the transport status read.
+
+    Distinct from _arm_network_snmp, which stubs the *print preflight* read (_query_loaded_media);
+    the /printer/status endpoint reads through _resolve_transport().query_status."""
+    import app.main as main_mod
+    from app.transports.base import PrinterStatus
+
+    class _Stub:
+        def __init__(self, uri: str) -> None:
+            pass
+
+        def send(self, data: bytes) -> PrinterStatus | None:
+            return None
+
+        def query_status(self, request: bytes) -> PrinterStatus:
+            return query_status_result  # type: ignore[return-value]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://192.168.5.14:9100")
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", True)
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _Stub)
+
+
+def _get_status_with_lock_held(client: TestClient) -> object:
+    """GET /printer/status with the print lock held, simulating an in-flight print."""
+    import asyncio
+
+    import app.main as main_mod
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(main_mod._print_lock.acquire())
+        return client.get("/printer/status")
+    finally:
+        if main_mod._print_lock.locked():
+            main_mod._print_lock.release()
+        loop.close()
+
+
+def test_printer_status_locked_snmp_surfaces_fault_as_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real HARD fault (non-zero hrPrinterDetectedErrorState) reported by the SNMP read DURING a
+    print must surface as state=error, not be masked behind the in-flight "printing" override.
+    Masking a mid-print fault is the phantom-success failure mode this feature exists to close (Codex
+    review of the live-status change). Built through the real from_snmp mapping so raw carries the bits."""
+    from app.transports.base import PrinterStatus
+    from app.transports.snmp import PrinterSNMPStatus
+
+    faulted = PrinterStatus.from_snmp(
+        PrinterSNMPStatus(
+            reachable=True,
+            media_width_mm=62.0,
+            media_type="continuous",
+            error_state_bits=0x10,  # a non-zero detected-error mask = a genuine hard fault
+            errors=["doorOpen"],
+        )
+    )
+    _snmp_status_endpoint(monkeypatch, faulted)
+
+    resp = _get_status_with_lock_held(client)
+
+    assert resp.status_code == 200, (
+        f"a reachable (even faulted) read is 200; got {resp.status_code}"
+    )
+    data = resp.json()
+    assert data["state"] == "error", "a hard fault must win over the in-flight printing override"
+    assert "doorOpen" in data["errors"]
+
+
+def test_printer_status_locked_snmp_transient_console_stays_printing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A normal mid-print poll reads a non-READY console (e.g. "PRINTING") with hrPrinterStatus=
+    printing(4) and a 00 error bitmask. That is NOT a fault — it must report state=printing, not
+    error. Regression for the Codex finding that keying the fault precedence on the raw errors list
+    (which echoes the console line) would false-alarm a healthy print as an error."""
+    from app.transports.base import PrinterStatus
+    from app.transports.snmp import PrinterSNMPStatus
+
+    printing = PrinterStatus.from_snmp(
+        PrinterSNMPStatus(
+            reachable=True,
+            media_width_mm=62.0,
+            media_type="continuous",
+            error_state_bits=0,  # no hard fault
+            printer_status=4,  # hrPrinterStatus printing(4), NOT other(1)
+            console_text="PRINTING",  # non-READY, but a transient display state
+            errors=["console: PRINTING"],  # the decoder echoes the console line here
+        )
+    )
+    _snmp_status_endpoint(monkeypatch, printing)
+
+    resp = _get_status_with_lock_held(client)
+
+    assert resp.status_code == 200, f"a healthy mid-print read is 200; got {resp.status_code}"
+    data = resp.json()
+    assert data["state"] == "printing", (
+        "a transient non-READY console must NOT be treated as a fault"
+    )
+
+
+def test_printer_status_snmp_busy_without_local_lock_is_printing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the SNMP read itself reports hrPrinterStatus=printing(4) but THIS server holds no print
+    lock (an external job, or the printer still finishing after our send returned), the endpoint must
+    report state=printing from the SNMP signal — not fall through to idle, which would let a client
+    treat a busy printer as ready (Codex review of the live-status change)."""
+    from app.transports.base import PrinterStatus
+    from app.transports.snmp import PrinterSNMPStatus
+
+    busy = PrinterStatus.from_snmp(
+        PrinterSNMPStatus(
+            reachable=True,
+            media_width_mm=62.0,
+            media_type="continuous",
+            error_state_bits=0,
+            printer_status=4,  # printing(4), reported by the device with no local lock held
+        )
+    )
+    _snmp_status_endpoint(monkeypatch, busy)
+
+    # No lock held — a plain GET.
+    data = client.get("/printer/status").json()
+    assert data["state"] == "printing", (
+        "a device-reported busy state must surface as printing, not idle"
+    )
+
+
+def test_printer_status_lock_fallback_when_printer_status_oid_absent(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hrPrinterStatus rides the best-effort optional SNMP GET, so it can be absent (None) when that
+    batch fails even though the critical read succeeded. For OUR OWN prints the held print lock is the
+    fallback busy signal, so the badge still reads printing despite the missing OID. (The residual —
+    absent OID + no local lock + a genuinely busy printer reading idle for one poll cycle — is the
+    documented best-effort-seam limitation; see docs/known-limitations.md.)"""
+    from app.transports.base import PrinterStatus
+    from app.transports.snmp import PrinterSNMPStatus
+
+    no_status_oid = PrinterStatus.from_snmp(
+        PrinterSNMPStatus(
+            reachable=True,
+            media_width_mm=62.0,
+            media_type="continuous",
+            error_state_bits=0,
+            printer_status=None,  # optional GET dropped it; critical media/error read still succeeded
+        )
+    )
+    _snmp_status_endpoint(monkeypatch, no_status_oid)
+
+    resp = _get_status_with_lock_held(client)
+
+    data = resp.json()
+    assert resp.status_code == 200
+    assert data["state"] == "printing", (
+        "with the OID absent, the held print lock must still drive printing for our own jobs"
+    )
+
+
+def test_printer_status_locked_snmp_unreachable_returns_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreachable SNMP read DURING a print must still return 503 state=off, not a confident
+    200 state=printing — the held lock alone must not fabricate a reachable-looking print state when
+    we could not actually confirm the printer (Codex review of the live-status change)."""
+    from app.transports.base import PrinterStatus
+
+    _snmp_status_endpoint(
+        monkeypatch, PrinterStatus.unreachable("test: SNMP unreachable mid-print")
+    )
+
+    resp = _get_status_with_lock_held(client)
+
+    assert resp.status_code == 503, (
+        f"an unreachable read must 503 even mid-print; got {resp.status_code}"
+    )
+    data = resp.json()
+    assert data["state"] == "off", "an unreachable read must derive state=off, not printing"
+    assert data["reachable"] is False
 
 
 def test_printer_status_reachable_with_errors_returns_error_state(

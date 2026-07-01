@@ -143,8 +143,20 @@ and file transports ignore SNMP entirely.
 ## Behaviour
 
 - **`GET /printer/status`** (network transport) reports state from `PrinterStatus.from_snmp(...)`:
-  connection, loaded media, decoded error state/console text, and identity. `200` with the body, or
-  `503` (same body) when a print holds the lock or the printer is unreachable.
+  connection, loaded media, decoded error state/console text, and identity. `200` with the body —
+  **including `200 state=printing` *during* a print**: the SNMP read (UDP 161) is independent of the
+  :9100 print socket, so it is no longer serialized behind the print lock and answers mid-job.
+  `state` is derived with a deliberate precedence — unreachable → `503` off; a genuine **hard fault**
+  (non-zero `hrPrinterDetectedErrorState`, or the `other(1)`+non-READY latch) → `error`; a **busy**
+  device state (`hrPrinterStatus` printing(4)/warmup(5)) *or* a held print lock → `printing`; else
+  `idle`. So an unreachable or faulted printer is never masked behind "printing", a transient non-READY
+  console (PRINTING/COOLING) is not mistaken for a fault, and a printer that is busy per its own
+  `hrPrinterStatus` (an external job, or one still finishing after our send) is not misreported as ready. The web status card polls this endpoint on a visible-tab background
+  timer (≈4 s, backing off when unreachable, paused when the tab is hidden) so it converges to the
+  live state with no manual refresh. *(The background poll runs **only on this lock-free SNMP path**;
+  on the ESC i S fallback — `SNMP_ENABLED=false`, or USB/file — the readback shares the :9100 socket
+  and takes the print lock, so the page disables background polling there (manual ↻ + post-print
+  refresh only) and the endpoint still returns `503` while a print holds the lock.)*
 - **Pre-flight media guard.** `/print` and `/reprint` query SNMP before sending and reject a
   loaded-vs-required media mismatch with **`409 Conflict`** (the detail names both), incrementing
   `label_errors_total{reason="media_mismatch"}`. The web UI is **advisory only**: a mismatching

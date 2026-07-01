@@ -86,6 +86,78 @@ def test_print_dry_run_round_trip(authed_page: Page) -> None:
     expect(authed_page.locator(".status.ok")).to_be_visible()
 
 
+def test_print_page_background_poll_converges_status_badge(authed_page_snmp: Page) -> None:
+    """On an SNMP deployment (live_status_poll ON) the print page polls /printer/status on a
+    visible-tab background timer, so the status badge converges to the printer's real state with no
+    manual ↻. Serve state=printing on the first call and state=idle on every call after; assert the
+    badge ends at Idle on its own and the poll fired more than once (the background timer, not just
+    the single init fetch)."""
+    import json
+
+    calls = {"n": 0}
+
+    def handle(route: object) -> None:
+        calls["n"] += 1
+        state = "printing" if calls["n"] == 1 else "idle"
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "state": state,
+                    "uri": "tcp://192.0.2.10:9100",
+                    "reachable": True,
+                    "model": "Brother QL-810W",
+                    "errors": [],
+                }
+            ),
+        )
+
+    authed_page_snmp.route("**/printer/status", handle)
+    authed_page_snmp.goto("/")
+
+    # No click, no ↻ — the badge must reach Idle purely via a later background poll.
+    expect(authed_page_snmp.locator("#printer-state")).to_have_text("Idle", timeout=15000)
+    assert calls["n"] >= 2, (
+        f"expected the background poll to fire at least twice (init + a timed poll); got {calls['n']}"
+    )
+
+
+def test_print_page_does_not_background_poll_without_snmp(authed_page: Page) -> None:
+    """On the non-SNMP (file:// / ESC i S) deployment, background polling must be OFF: there the
+    status read takes the print lock, so a timer poll would risk delaying a print. Count /printer/status
+    hits — only the single init fetch may fire; no further hits after waiting well past a poll interval.
+    Regression guard for the Codex finding that unconditional polling reintroduces lock contention."""
+    calls = {"n": 0}
+
+    def handle(route: object) -> None:
+        calls["n"] += 1
+        route.fulfill(  # type: ignore[attr-defined]
+            status=503,
+            content_type="application/json",
+            body='{"state": "off", "uri": "file:///dev/null", "reachable": false, "errors": []}',
+        )
+
+    authed_page.route("**/printer/status", handle)
+    authed_page.goto("/")
+    # Let any (incorrectly scheduled) background timer fire — the base interval is ~4s.
+    authed_page.wait_for_timeout(9000)
+    assert calls["n"] <= 1, (
+        f"non-SNMP deployment must not background-poll; got {calls['n']} /printer/status hits"
+    )
+
+
+def test_print_page_status_poll_recovers_from_hung_fetch(authed_page_snmp: Page) -> None:
+    """A hung /printer/status fetch must not wedge the UI: the client-side abort timeout fires, resets
+    the in-flight guard, and the badge resolves to Unreachable instead of freezing forever. Regression
+    for the Codex finding that a hung request could pin statusInFlight and stall the whole poll loop."""
+    # Never fulfil the request — the browser fetch hangs until the page's AbortController aborts it.
+    authed_page_snmp.route("**/printer/status", lambda route: None)
+    authed_page_snmp.goto("/")
+    # STATUS_FETCH_TIMEOUT_MS is 8s; allow margin. Freezing (the bug) would leave the badge unresolved.
+    expect(authed_page_snmp.locator("#printer-state")).to_have_text("Unreachable", timeout=12000)
+
+
 def test_editor_download_yaml_uses_yaml_extension(authed_page: Page) -> None:
     """The studio's "Download YAML" button names the file ``<template-name>.yaml``.
 

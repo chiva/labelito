@@ -130,11 +130,19 @@ HR_PRINTER_ERROR_BITS: tuple[tuple[int, str], ...] = (
 
 # Console text the printer shows when idle/ready; anything else is surfaced as an error string.
 CONSOLE_READY = "READY"
-# hrPrinterStatus (HOST-RESOURCES-MIB hrPrinterStatus) enum value other(1). idle(3)/printing(4)/
-# warmup(5) are the normal and transient-busy states; other(1) is what the QL-810W reports for a
-# latched fault that leaves hrPrinterDetectedErrorState at 00 (verified live 2026-06-30). The print
-# preflight gates on it (plus a non-READY console) to reject that bitmask-invisible latch.
+# hrPrinterStatus (HOST-RESOURCES-MIB hrPrinterStatus) enum values. idle(3) is ready; printing(4) and
+# warmup(5) are the working/transient-busy states; other(1) is what the QL-810W reports for a latched
+# fault that leaves hrPrinterDetectedErrorState at 00 (verified live 2026-06-30). The print preflight
+# gates on other(1) (plus a non-READY console) to reject that bitmask-invisible latch; the status
+# endpoint maps the busy states to PrinterState.PRINTING so it stays authoritative for readiness.
 HR_PRINTER_STATUS_OTHER = 1
+HR_PRINTER_STATUS_IDLE = 3
+HR_PRINTER_STATUS_PRINTING = 4
+HR_PRINTER_STATUS_WARMUP = 5
+# The working states a /printer/status read should surface as "printing" (not ready) regardless of
+# whether THIS server holds the print lock — so an external job, or a printer still finishing after
+# our send returns, is not misreported as idle.
+HR_PRINTER_STATUS_BUSY = frozenset({HR_PRINTER_STATUS_PRINTING, HR_PRINTER_STATUS_WARMUP})
 # prtInputMediaDimFeedDir sentinels meaning "no discrete length" ⇒ continuous tape.
 CONTINUOUS_FEED_SENTINELS = (-1, -2)
 MEDIA_TYPE_CONTINUOUS = "continuous"

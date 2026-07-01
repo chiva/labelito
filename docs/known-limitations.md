@@ -40,7 +40,10 @@ a backstop in front of that path, not a replacement for it.
 
 **Mitigation if needed later:** poll SNMP during/after the send for a post-print error transition, or
 move to a printer/firmware that returns the `:9100` status frame, so the send path itself can confirm
-the outcome instead of relying on a separate pre-flight read.
+the outcome instead of relying on a separate pre-flight read. *(Partially realized for observability:
+the web status card now polls `/printer/status` on a background timer and answers mid-print, so an
+operator sees a post-send fault transition within a poll cycle — but the **recorded job outcome** is
+still the send-path `None`→`printed`, unchanged; this surfaces the transition, it does not gate on it.)*
 
 **Verified live (2026-06-30, QL-810W): the post-send media fault is invisible to the error bitmask
 and latches until a manual reset.** Sending a die-cut template to the loaded continuous roll put the
@@ -72,6 +75,19 @@ and a manual reset is still the only way to *clear* an existing latch.
 This is the strongest argument for the guard being **pre-flight**: the failure it prevents is not a
 clean one-shot rejection but a device-side lockout that silently buffers jobs behind a `200` and needs
 someone physically at the printer to clear. The only reliable fix is to never send the mismatching job.
+
+**Best-effort seam — live-status readiness can read stale-idle.** `hrPrinterStatus` and the console
+line ride the *optional* (best-effort) SNMP GET, which SNMPv1 discards wholesale if any single OID in
+it is unsupported or its datagram drops. When that optional read fails but the critical read (media +
+error bitmask) succeeds, `/printer/status` has no readiness signal: a printer that is actually
+busy/warming can read `state=idle` for that poll. The blast radius is small — the status card is
+advisory and self-corrects on the next ≈4 s poll; a hard fault is still caught via the critical error
+bitmask; and *our own* in-flight jobs still read `printing` via the print-lock fallback regardless of
+the OID. The residual is only an **external** job (or a printer still finishing after our send) coinciding
+with an optional-read failure. **Mitigation if it ever matters:** fetch `hrPrinterStatus` (+ console) in
+a dedicated status GET, or promote them to the critical read — both trade a round-trip or some
+fail-open robustness on firmware that does not implement those OIDs. Same root cause as the latch
+guard's fail-open seam; deferred together pending a decision to restructure the SNMP batching.
 
 ## Reprint replays the *current* template, not the original
 

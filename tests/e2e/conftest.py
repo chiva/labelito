@@ -55,6 +55,30 @@ def authed_page_snmp(browser: Browser, live_server_snmp: str) -> Iterator[Page]:
         context.close()
 
 
+@pytest.fixture(scope="session")
+def live_server_usb() -> Iterator[str]:
+    """A server configured as a USB printer (SNMP off), so the pages render with status_supported ON
+    but live_status_poll OFF: a one-shot ESC i S roll read at load, and NO background poll (the USB
+    device handle must not be claimed on a timer). The device is never opened — tests intercept
+    ``/printer/status`` in the browser and do not submit a real ``/print``."""
+    with LiveServer(
+        env_overrides={"PRINTER_URI": "usb://0x04f9:0x209c", "SNMP_ENABLED": "false"}
+    ) as server:
+        yield server.base_url
+
+
+@pytest.fixture
+def authed_page_usb(browser: Browser, live_server_usb: str) -> Iterator[Page]:
+    """Authenticated page against the USB server (one-shot status read at load, no background poll)."""
+    context = browser.new_context(base_url=live_server_usb)
+    context.add_init_script(web_token_init_script(DEFAULT_API_TOKEN))
+    page = context.new_page()
+    try:
+        yield page
+    finally:
+        context.close()
+
+
 @pytest.fixture
 def api_client(live_server: str) -> Iterator[httpx2.Client]:
     """HTTP client pre-authenticated with the harness's default bearer token."""

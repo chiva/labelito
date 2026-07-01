@@ -3,6 +3,13 @@
 > Implementation task document for later execution (agent-leverageable). Each step lists **Goal /
 > Files / Work / Acceptance**. Steps are mostly independent after Steps 1–4; do 1→4 first.
 
+> **Update (2026-07-01):** The "USB = `unsupported()`" and "network ESC i S fallback" decisions below
+> were superseded once the printer moved to USB. `USBTransport.query_status` now performs a real
+> standalone **ESC i S** query (the USB back-channel answers it, unlike the network NIC), `from_parsed`
+> normalizes media_type to canonical `continuous`/`die_cut`, `PrinterStatus.unsupported()` and the
+> network TCP ESC i S query were removed, and the media guard now covers USB (hard `409`, on-demand —
+> no background poll). See [known-limitations.md](known-limitations.md) and [snmp-status.md](snmp-status.md).
+
 ## Context
 
 **Problem observed:** Printing from deployed labelito to the Brother QL-810W at

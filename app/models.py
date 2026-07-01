@@ -524,7 +524,9 @@ class PrinterStatusResponse(BaseModel):
     )
     media_type: str | None = Field(
         default=None,
-        description="Human-readable media type string from the printer, e.g. 'Continuous length tape'.",
+        description="Canonical loaded-media type: 'continuous' or 'die_cut' (null when unknown). "
+        "Normalized identically across the SNMP and ESC i S status channels so the UI compat badge "
+        "and the print media guard compare the same values.",
     )
     status: str | None = Field(
         default=None,

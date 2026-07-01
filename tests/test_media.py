@@ -10,6 +10,7 @@ die-cut template mismatch in production).
 from __future__ import annotations
 
 import pytest
+from brother_ql.labels import FormFactor
 
 from app.media import (
     LENGTH_TOLERANCE_MM,
@@ -18,9 +19,12 @@ from app.media import (
     WIDTH_TOLERANCE_MM,
     MediaMatch,
     RequiredMedia,
+    canonical_media_type,
     media_matches,
+    media_type_for_form_factor,
     required_media_for,
 )
+from app.transports.base import PrinterStatus
 from app.transports.snmp import PrinterSNMPStatus
 
 # ── SNMP fixtures mirroring the live printer ────────────────────────────────────────
@@ -189,3 +193,63 @@ def test_media_match_serialises_as_string() -> None:
     assert MediaMatch.MISMATCH == "mismatch"
     assert MediaMatch.UNKNOWN == "unknown"
     assert str(MediaMatch.MATCH) == "match"
+
+
+# ── Canonical media-type normalization (the ESC i S / USB status channel) ────────────
+# brother_ql.reader.interpret_response returns RAW media strings ('Continuous length tape') plus an
+# identified_media Label; canonical_media_type must fold both onto the same two values the SNMP path
+# and the print guard use, so USB status is comparable rather than badging "unknown".
+
+
+def test_media_type_for_form_factor_maps_endless_to_continuous() -> None:
+    assert media_type_for_form_factor(FormFactor.ENDLESS) == MEDIA_TYPE_CONTINUOUS
+
+
+def test_media_type_for_form_factor_maps_die_cut() -> None:
+    assert media_type_for_form_factor(FormFactor.DIE_CUT) == MEDIA_TYPE_DIE_CUT
+    assert media_type_for_form_factor(FormFactor.ROUND_DIE_CUT) == MEDIA_TYPE_DIE_CUT
+
+
+def test_canonical_media_type_from_raw_continuous_string() -> None:
+    """The printer's direct 0x0A report ('Continuous length tape') → canonical continuous."""
+    assert canonical_media_type({"media_type": "Continuous length tape"}) == MEDIA_TYPE_CONTINUOUS
+
+
+def test_canonical_media_type_from_raw_die_cut_string() -> None:
+    assert canonical_media_type({"media_type": "Die-cut labels"}) == MEDIA_TYPE_DIE_CUT
+
+
+def test_canonical_media_type_falls_back_to_form_factor() -> None:
+    """When the media-type byte is an unrecognised int, fall back to the identified label's form."""
+
+    class _Label:
+        form_factor = FormFactor.ENDLESS
+
+    assert (
+        canonical_media_type({"media_type": 0x99, "identified_media": _Label()})
+        == MEDIA_TYPE_CONTINUOUS
+    )
+
+
+def test_canonical_media_type_unknown_returns_none() -> None:
+    assert canonical_media_type({"media_type": 0x99, "identified_media": None}) is None
+    assert canonical_media_type({}) is None
+
+
+def test_from_parsed_normalizes_media_type_to_canonical() -> None:
+    """End-to-end: a parsed interpret_response dict yields canonical media_type on PrinterStatus, not
+    brother_ql's raw string — so the ESC i S (USB) channel matches the SNMP channel."""
+    decoded = {
+        "model_name": "QL-810W",
+        "media_type": "Continuous length tape",
+        "media_width": 62,
+        "media_length": 0,
+        "status_type": "Reply to status request",
+        "phase_type": "Waiting to receive",
+        "errors": [],
+    }
+    status = PrinterStatus.from_parsed(decoded)
+    assert status.reachable is True
+    assert status.media_type == MEDIA_TYPE_CONTINUOUS
+    assert status.media_width_mm == 62.0
+    assert status.model == "QL-810W"

@@ -51,7 +51,7 @@ from app.loader import (
     TemplateRegistry,
     validate_template_from_string,
 )
-from app.media import MediaMatch, RequiredMedia, media_matches, required_media_for
+from app.media import LoadedMedia, MediaMatch, RequiredMedia, media_matches, required_media_for
 from app.models import (
     CapabilityResponse,
     DraftPreviewRequest,
@@ -93,7 +93,10 @@ from app.transports.snmp import (
     PrinterSNMPStatus,
     query_snmp_status,
 )
-from app.transports.usb import USBTransport  # noqa: F401 — registers transport
+from app.transports.usb import (
+    USBTransport,  # noqa: F401 — registers transport
+    usb_device_busy,
+)
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -102,13 +105,15 @@ logging.basicConfig(level=logging.INFO)
 LABELS_PRINTED = Counter("labels_printed_total", "Total labels printed", ["template", "dry_run"])
 LABEL_ERRORS = Counter("label_errors_total", "Print errors", ["reason"])
 LAST_PRINT_TS = Gauge("last_print_timestamp_seconds", "Unix timestamp of last print")
-# A real network print that proceeded WITHOUT the SNMP media/fault preflight because SNMP was enabled
-# but unreachable (timeout / filtered UDP 161 / wrong community / unsupported critical OID). The guard
-# fails open by design — SNMP is opportunistic, not required — but a rising count means prints are
-# going out unverified, i.e. the phantom-success class is unguarded until SNMP becomes reachable.
-PREFLIGHT_SNMP_UNREACHABLE = Counter(
-    "print_preflight_snmp_unreachable_total",
-    "Real prints allowed without an SNMP media/fault check because SNMP was unreachable",
+# A real print that proceeded WITHOUT the media/fault preflight because the printer's status channel
+# was unreachable — SNMP (network: timeout / filtered UDP 161 / wrong community / unsupported OID) or
+# the ESC i S read (USB: device busy / claim failure / no status frame). The guard fails open by
+# design — status is opportunistic, not required — but a rising count means prints are going out
+# unverified, i.e. the phantom-success class is unguarded until the status channel recovers.
+PREFLIGHT_STATUS_UNREACHABLE = Counter(
+    "print_preflight_status_unreachable_total",
+    "Real prints allowed without a media/fault check because the printer status channel "
+    "(SNMP or USB ESC i S) was unreachable",
 )
 
 # ── SNMP-derived printer telemetry (network transport only) ───────────────────────────────────────
@@ -431,6 +436,18 @@ def _snmp_guard_applies() -> bool:
     return settings.snmp_enabled and infer_transport(settings.printer_uri) == "network"
 
 
+def _status_query_supported() -> bool:
+    """True when ``/printer/status`` can return a real loaded-media reading on this deployment.
+
+    The network+SNMP path answers over UDP 161 (lock-free) and USB answers over ESC i S (serialized
+    behind ``_print_lock``); both let the UI badge/gate on the loaded roll. It is BROADER than
+    :func:`_snmp_guard_applies`, which additionally implies the lock-free channel that alone is safe
+    to background-poll every few seconds — USB is deliberately excluded from that poll to avoid
+    claiming the single device handle on every tick. So the web pages gate their *initial* roll
+    detection on this, and the *background poll* on ``_snmp_guard_applies`` (``live_status_poll``)."""
+    return _snmp_guard_applies() or infer_transport(settings.printer_uri) == "usb"
+
+
 def _query_loaded_media() -> PrinterSNMPStatus:
     """Blocking SNMP query of the configured network printer's loaded media + fault state.
 
@@ -475,7 +492,7 @@ def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> No
         # in transit), so an unreachable agent must not block printing. But a print then goes out
         # WITHOUT the media/fault check — so count it, making a silently-unguarded run observable
         # (a rising counter means the phantom-success class is unguarded until SNMP recovers).
-        PREFLIGHT_SNMP_UNREACHABLE.inc()
+        PREFLIGHT_STATUS_UNREACHABLE.inc()
         log.warning(
             "SNMP preflight: printer unreachable; allowing print without a media/fault check "
             "(fail-open). Fix SNMP reachability to re-enable the guard, or set SNMP_ENABLED=false."
@@ -526,20 +543,38 @@ def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> No
             },
         )
 
+    _raise_on_media_mismatch(label_id, loaded)
+
+
+def _loaded_media_desc(loaded: LoadedMedia) -> str:
+    """Human description of the loaded roll for a 409 detail. Prefers the printer's own media-name
+    string when present (SNMP's ``prtInputMediaName``), else derives one from width/type/length. The
+    ESC i S (USB) status has no media-name, so it falls through to the derived description."""
+    media_name = getattr(loaded, "media_name", None)
+    if isinstance(media_name, str) and media_name:
+        return media_name
+    return _describe_media(loaded.media_width_mm, loaded.media_type, loaded.media_length_mm)
+
+
+def _raise_on_media_mismatch(label_id: str, loaded: LoadedMedia) -> None:
+    """Raise 409 when the loaded roll does not match the template label's required media.
+
+    Shared by the SNMP and USB preflights. ``media_matches`` (app.media) duck-types on
+    ``media_width_mm``/``media_type``/``media_length_mm``/``reachable`` — which BOTH
+    :class:`PrinterSNMPStatus` and :class:`PrinterStatus` satisfy, with ``media_type`` canonical on
+    both — so one comparison serves both channels. Fails open (returns without raising) when the
+    label is unknown to brother_ql (the render path surfaces that) or the loaded media is
+    indeterminate (``MediaMatch.UNKNOWN``)."""
     try:
         required = required_media_for(label_id)
     except ValueError:
         # An unknown label can't be compared; the render path will surface it. Don't block here.
-        log.warning("SNMP preflight: unknown label %r; skipping media check (fail-open)", label_id)
+        log.warning("Print preflight: unknown label %r; skipping media check (fail-open)", label_id)
         return
 
     if media_matches(required, loaded) == MediaMatch.MISMATCH:
         LABEL_ERRORS.labels(reason="media_mismatch").inc()
-        loaded_desc = (
-            loaded.media_name
-            if loaded.media_name
-            else _describe_media(loaded.media_width_mm, loaded.media_type, loaded.media_length_mm)
-        )
+        loaded_desc = _loaded_media_desc(loaded)
         raise HTTPException(
             409,
             detail={
@@ -555,20 +590,86 @@ def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> No
         )
 
 
-async def _enforce_print_preflight(label_id: str, *, dry_run: bool) -> None:
-    """Run the SNMP media/fault preflight for a real network print, if applicable.
+def _raise_if_usb_media_incompatible(label_id: str, status: PrinterStatus) -> None:
+    """Reject a USB print up front on a hard fault or a loaded-vs-required media mismatch.
 
-    A no-op for dry runs (nothing reaches the printer), for non-network transports, and when SNMP is
-    disabled. Otherwise queries SNMP off the event loop and raises 409 on a fault or media mismatch
-    (fail-open on an unreachable agent). Call inside ``_print_lock`` so the query cannot race an
-    in-flight print on the same transport."""
-    if dry_run or not _snmp_guard_applies():
+    The USB analogue of :func:`_raise_if_media_incompatible`: the ESC i S status frame has no SNMP
+    error-bitmask or ``hrPrinterStatus`` latch signal, so the single fault gate is the decoded
+    ``errors`` list (no-media / cover-open / cutter-jam bytes brother_ql surfaces). Fails open when
+    the status could not be read AND the device is free, then delegates the media comparison to the
+    shared :func:`_raise_on_media_mismatch`."""
+    if not status.reachable:
+        # Distinguish two causes of an unreachable USB status, which must NOT be handled alike:
+        #  * the device is still owned by a prior/orphaned transfer (a status read that timed out, or
+        #    the fast-fail busy check) — a send() would raise USBBusyError, so reject cleanly with 503
+        #    rather than fail open into a hard 500, and do NOT count it as an unverified print;
+        #  * genuinely unreachable with the device free (e.g. a clean read failure) — fail open.
+        if usb_device_busy():
+            raise HTTPException(
+                503,
+                detail={
+                    "msg": "Printer is busy with another transfer; retry once it clears",
+                    "errors": status.errors,
+                },
+            )
+        PREFLIGHT_STATUS_UNREACHABLE.inc()
+        log.warning(
+            "USB preflight: printer status unavailable (%s); allowing print without a media/fault "
+            "check (fail-open).",
+            "; ".join(status.errors) or "no detail",
+        )
         return
-    loaded = await run_in_threadpool(_query_loaded_media)
-    # Refresh the SNMP telemetry gauges from this query (freshness model A) before the guard decision,
-    # so a print that is about to be rejected on a fault still updates printer_up / error-state.
-    _record_snmp_metrics(loaded)
-    _raise_if_media_incompatible(label_id, loaded)
+    if status.errors:
+        LABEL_ERRORS.labels(reason="printer_error").inc()
+        raise HTTPException(
+            409,
+            detail={
+                "msg": "Printer reports a fault and cannot print; clear it and retry",
+                "errors": status.errors,
+                "media_loaded": _describe_media(
+                    status.media_width_mm, status.media_type, status.media_length_mm
+                ),
+            },
+        )
+    # A clean frame can still report the printer mid-job ('Printing state') — a prior or external job
+    # still running. Sending now would interleave/queue behind it, so refuse with a transient 503
+    # rather than emitting a second raster into a busy device. (Our own prints can't trip this: send()
+    # is synchronous and leaves the printer in 'Waiting to receive' before _print_lock is released.)
+    if _esc_i_s_status_is_busy(status):
+        raise HTTPException(
+            503,
+            detail={
+                "msg": "Printer is busy with another job; retry once it finishes",
+                "phase": status.phase_type,
+            },
+        )
+    _raise_on_media_mismatch(label_id, status)
+
+
+async def _enforce_print_preflight(label_id: str, *, dry_run: bool) -> None:
+    """Run the media/fault preflight for a real print, dispatching on the transport's status channel.
+
+    A no-op for dry runs (nothing reaches the printer). On the network+SNMP path it queries SNMP; on
+    USB it reads the ESC i S status frame; on file / network-with-SNMP-disabled there is no status
+    channel, so it fails open (no check). Either channel raises 409 on a fault or media mismatch and
+    fails open on an unreachable read. Call inside ``_print_lock`` so the query cannot race an
+    in-flight print on the same transport (critical for USB, which shares the single device handle)."""
+    if dry_run:
+        return
+    if _snmp_guard_applies():
+        loaded = await run_in_threadpool(_query_loaded_media)
+        # Refresh the SNMP telemetry gauges from this query (freshness model A) before the guard
+        # decision, so a print about to be rejected on a fault still updates printer_up / error-state.
+        _record_snmp_metrics(loaded)
+        _raise_if_media_incompatible(label_id, loaded)
+    elif infer_transport(settings.printer_uri) == "usb":
+        status = await run_in_threadpool(_query_printer_status, _build_status_request())
+        # Deliberately NOT recorded into the SNMP telemetry gauges: _set_printer_metrics keys error
+        # conditions off RFC 3805 hrPrinterDetectedErrorState names, which the ESC i S ``errors``
+        # strings (e.g. "No media when printing") do not match — feeding a USB fault there would set
+        # printer_up=1 and clear every error-condition gauge to 0, masking alerts during a real fault.
+        # Those gauges are documented as SNMP/network-only; USB simply leaves them unpopulated.
+        _raise_if_usb_media_incompatible(label_id, status)
 
 
 # Job history backend (idempotency de-dup + reprint substrate). Rebuilt in startup() so runtime
@@ -1231,6 +1332,22 @@ def _status_is_busy(status: PrinterStatus) -> bool:
     return status.raw.get("printer_status") in HR_PRINTER_STATUS_BUSY
 
 
+# brother_ql ESC i S phase byte (RESP_PHASE_TYPES): the printer is READY only in 'Waiting to receive';
+# 'Printing state' means a page is actively running. An idle QL — and one that has finished our own
+# synchronous send() — reports 'Waiting to receive', so this only flags a genuinely busy device.
+ESC_I_S_PHASE_PRINTING = "Printing state"
+
+
+def _esc_i_s_status_is_busy(status: PrinterStatus) -> bool:
+    """True when a reachable ESC i S (USB) status frame reports the printer actively printing.
+
+    The USB analogue of :func:`_status_is_busy`: a valid frame can parse as ``ok=True, errors=[]``
+    while ``phase_type == 'Printing state'`` (a prior/external job still running), which must NOT read
+    as ready — otherwise ``/printer/status`` advertises IDLE and the print preflight sends a second
+    raster into a busy device (interleaved/queued output)."""
+    return status.phase_type == ESC_I_S_PHASE_PRINTING
+
+
 def _status_response(status: PrinterStatus, state: PrinterState) -> PrinterStatusResponse:
     """Build the full PrinterStatusResponse from a reachable printer query under a given ``state``.
     Single builder so the PRINTING, IDLE, and ERROR responses can never drift field-by-field."""
@@ -1333,9 +1450,9 @@ async def printer_status(
             return _status_response(status, PrinterState.PRINTING)
         return _status_response(status, PrinterState.IDLE)
 
-    # ── ESC i S fallback (file / USB / SNMP disabled): the status readback shares the :9100 socket
-    #    with printing, so it MUST serialize behind _print_lock. Non-blocking acquire — if a print is
-    #    in progress return 503 "busy" immediately rather than hanging the request thread.
+    # ── ESC i S read (USB; also file / SNMP-disabled, which report no reachable status): the readback
+    #    claims the device / shares the socket, so it MUST serialize behind _print_lock. Non-blocking
+    #    acquire — if a print is in progress return 503 "busy" immediately rather than hanging.
     if _print_lock.locked():
         return _busy_503()
     async with _print_lock:
@@ -1343,7 +1460,14 @@ async def printer_status(
 
     if not status.reachable:
         return _unreachable_503(status)
-    return _status_response(status, PrinterState.ERROR if status.errors else PrinterState.IDLE)
+    if status.errors:
+        return _status_response(status, PrinterState.ERROR)
+    # A frame can parse clean yet report the printer mid-job (phase 'Printing state') — an external
+    # job, or one still finishing — which must read as PRINTING, not IDLE, so the UI never advertises
+    # a busy device as ready (mirrors the SNMP branch's busy check).
+    if _esc_i_s_status_is_busy(status):
+        return _status_response(status, PrinterState.PRINTING)
+    return _status_response(status, PrinterState.IDLE)
 
 
 def _template_media(label: str) -> TemplateMedia | None:
@@ -1719,11 +1843,14 @@ async def history_page(request: Request) -> HTMLResponse:
         request,
         "history.html",
         {
-            # Same gate as the print page (see the "/" route): only on the lock-free SNMP path may the
-            # page background-poll /printer/status to keep the loaded-roll reprint gating live. On the
-            # ESC i S fallback the status read takes _print_lock, so polling could delay a /reprint —
-            # there the roll is read once at load (and stays unknown anyway), with no repeating poll.
+            # Two gates, deliberately different (see _status_query_supported):
+            #  * live_status_poll — background-poll /printer/status every few seconds. ONLY on the
+            #    lock-free SNMP path; on USB the read takes _print_lock (shares the device handle), so
+            #    a repeating poll could delay a /reprint — USB reads the roll once at load instead.
+            #  * status_supported — whether a loaded-media read is possible at all (SNMP or USB), so
+            #    the page does its one-shot roll detection + reprint gating on USB too, without polling.
             "live_status_poll": _snmp_guard_applies(),
+            "status_supported": _status_query_supported(),
         },
     )
 

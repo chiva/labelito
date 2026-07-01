@@ -109,7 +109,14 @@
     const STATUS_POLL_MS = 4000;              // base cadence while the printer is reachable
     const STATUS_POLL_UNREACHABLE_MS = 15000; // slower cadence once a read comes back unknown/unreachable
     const STATUS_FETCH_TIMEOUT_MS = 8000;     // abort a status fetch that hangs, so it can't wedge polling
-    const LIVE_STATUS_POLL = {{ live_status_poll | tojson }};
+    const LIVE_STATUS_POLL = {{ live_status_poll | tojson }};   // background-poll /printer/status (SNMP only)
+    const STATUS_SUPPORTED = {{ status_supported | tojson }};   // a loaded-media read is possible at all (SNMP or USB)
+    // Only HARD-disable a size-mismatched reprint when the loaded roll is kept live by the background
+    // poll (SNMP). On USB the roll is read ONCE at load and never refreshed (no poll), so a stale
+    // disable would block a reprint the server would now accept after a roll swap — with no recovery
+    // but a full reload. There we stay advisory (✗ tag, button ENABLED) and let the server-side
+    // /reprint 409 preflight be the authoritative gate, exactly like the print page's Print button.
+    const GATE_DISABLES_REPRINT = LIVE_STATUS_POLL;
     let statusPollTimer = null;
     let statusInFlight = false;     // guards overlapping status reads (init vs poll)
     let templateMediaByName = {};   // template name → required media ({width_mm, media_type, length_mm}) or null
@@ -117,12 +124,13 @@
     let loadedRollKey = null;       // group key of loadedRoll, to detect a roll swap between polls
     let currentEntries = [];        // last rendered page, so a poll can re-gate the rows in place
 
-    // The loaded roll as {width_mm, media_type, length_mm}, or null when it can't be compared: SNMP
-    // unreachable, a non-network transport, or a media_type outside the SNMP-normalized set (e.g. the
-    // ESC i S fallback's brother_ql string). Mirrors loadedMedia() on the print page.
+    // The loaded roll as {width_mm, media_type, length_mm}, or null when it can't be compared: status
+    // unreachable, a transport with no readable media (file://), or a media_type outside the canonical
+    // set. Accepts tcp:// (SNMP) and usb:// (ESC i S). Mirrors loadedMedia() on the print page.
     function loadedMediaFrom(s) {
       if (!s || !s.reachable) return null;
-      if (typeof s.uri !== 'string' || !s.uri.startsWith('tcp://')) return null;
+      const uri = s.uri;
+      if (typeof uri !== 'string' || !(uri.startsWith('tcp://') || uri.startsWith('usb://'))) return null;
       if (s.media_width_mm == null) return null;
       if (s.media_type !== 'continuous' && s.media_type !== 'die_cut') return null;
       return {width_mm: s.media_width_mm, media_type: s.media_type, length_mm: s.media_length_mm};
@@ -238,8 +246,13 @@
       const note = document.getElementById('roll-note');
       if (!loadedRoll) { note.style.display = 'none'; note.textContent = ''; return; }
       note.style.display = '';
-      note.textContent = `Loaded roll: ${mediaDesc(loadedRoll)} — reprints that need a different size `
-        + 'are disabled while it is loaded.';
+      // The note reflects whether mismatched reprints are hard-disabled (SNMP, roll kept live) or
+      // merely flagged (USB one-shot read — the server 409 enforces, so the button stays enabled).
+      note.textContent = GATE_DISABLES_REPRINT
+        ? `Loaded roll: ${mediaDesc(loadedRoll)} — reprints that need a different size are disabled `
+          + 'while it is loaded.'
+        : `Loaded roll at page load: ${mediaDesc(loadedRoll)} — reprints that need a different size `
+          + 'are flagged ✗; the printer will reject them unless you swap the roll.';
     }
 
     // ── Auth: shares the localStorage token with the print page; attached as a Bearer header. ──
@@ -265,10 +278,19 @@
     }
 
     function showStatus(msg, type) {
-      document.getElementById('status-area').innerHTML = `<div class="status ${type}">${msg}</div>`;
+      // Build the banner with DOM nodes + textContent, never innerHTML: `msg` can embed
+      // device-supplied text — a /reprint 409 detail carries the printer's SNMP media_name and
+      // console-derived error strings (JSON.stringify'd into the message). Interpolating that into
+      // innerHTML on this token-bearing page is an XSS sink: a hostile/spoofed printer string could
+      // run script and exfiltrate the API token from localStorage. JSON.stringify does NOT escape
+      // <,>,/ so it is no defence. Mirrors the print page's hardened showStatus.
+      const div = document.createElement('div');
+      div.className = `status ${type}`;
+      div.textContent = msg;
+      document.getElementById('status-area').replaceChildren(div);
     }
     function clearStatus() {
-      document.getElementById('status-area').innerHTML = '';
+      document.getElementById('status-area').replaceChildren();
     }
 
     function fmtWhen(ts) {
@@ -398,12 +420,21 @@
         reprint.title = rec.status === 'failed'
           ? 'This job failed to print and cannot be reprinted'
           : 'This job carried an image, which is not retained — re-submit the original print';
-      } else if (gated) {
+      } else if (gated && GATE_DISABLES_REPRINT) {
+        // SNMP: the loaded roll is kept fresh by the poll, so a hard disable can't go stale.
         reprint.disabled = true;
         reprint.title = `This job needs ${mediaDesc(rowRequiredMedia(rec))} but `
           + `${mediaDesc(loadedRoll)} is loaded; the printer would reject this reprint (409). `
-          + 'Load a matching roll and reload, or swap the roll.';
+          + 'Load a matching roll, or swap the roll.';
       } else {
+        if (gated) {
+          // USB (one-shot roll read, no poll): advisory only — keep Reprint ENABLED and warn, so a
+          // roll swap after load is never blocked by a stale disable. The server /reprint 409 gates it.
+          reprint.title = `This job needs ${mediaDesc(rowRequiredMedia(rec))} but `
+            + `${mediaDesc(loadedRoll)} was loaded at page load; if that roll is still in, the printer `
+            + 'will reject this reprint (409). Swap to a matching roll first, or reprint to let the '
+            + 'server check.';
+        }
         reprint.onclick = () => {
           if (rec.sequence && rec.sequence.count >= REPRINT_CONFIRM_THRESHOLD) {
             const { start, count, step, padding } = rec.sequence;
@@ -455,7 +486,9 @@
         // gating it would block a reprint the server allows, breaking the advisory-only contract.
         const gated = rec.status !== 'failed' && !rec.image_stripped && !rec.dry_run
           && rowMediaMismatch(rec);
-        if (gated) tr.classList.add('row-incompatible');
+        // Dim the row only when the reprint is actually disabled (SNMP). On USB the row stays a normal
+        // enabled row carrying just the advisory ✗ tag (dimming would imply a disabled action).
+        if (gated && GATE_DISABLES_REPRINT) tr.classList.add('row-incompatible');
 
         const when = document.createElement('td');
         when.className = 'when';
@@ -573,17 +606,17 @@
     // Init: render the history list FIRST — it is the page's core content and must never wait on the
     // advisory printer-status read.
     //
-    // The whole roll-detection machinery (template map + status read + live poll) runs ONLY on the
-    // SNMP path (LIVE_STATUS_POLL). Two reasons, both decisive: (1) off the SNMP path the media type
-    // reads as unknown, so the gate could never fire anyway; (2) there /printer/status serializes
-    // through the server's _print_lock, so probing it would risk delaying a concurrent /reprint for
-    // zero benefit — the same contention the print page avoids by gating its poll behind this flag.
-    // So on non-SNMP deployments History never touches /printer/status and every row stays reprintable
-    // (fail-open). On SNMP, the map + roll load in the background (best-effort) and re-gate the rows in
-    // place via regateRows() once they arrive — the list renders ungated until then (an unknown roll
-    // gates nothing) — and the live poll keeps the gating fresh on a roll swap.
+    // Two independent gates (see the server's _status_query_supported / _snmp_guard_applies):
+    //  * STATUS_SUPPORTED — a loaded-media read is possible (SNMP over UDP, or USB over ESC i S). When
+    //    set, load the template map + read the roll ONCE and re-gate the rows in place via
+    //    regateRows() (the list renders ungated until then — an unknown roll gates nothing).
+    //  * LIVE_STATUS_POLL — background-poll to keep gating fresh on a roll swap. SNMP ONLY: there the
+    //    read is lock-free UDP, whereas over USB /printer/status serializes through the server's
+    //    _print_lock (single device handle), so a repeating poll would risk delaying a concurrent
+    //    /reprint. USB therefore gates once at load, with no repeating poll.
+    // On file:// (neither set) History never touches /printer/status and every row stays reprintable.
     (async () => {
-      if (LIVE_STATUS_POLL) {
+      if (STATUS_SUPPORTED) {
         Promise.allSettled([loadTemplates(), refreshLoadedRoll()]).then(regateRows);
       }
       await loadPage();

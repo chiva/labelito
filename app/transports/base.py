@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from urllib.parse import urlparse  # matches app/transports/network.py
 
+from app.media import canonical_media_type
+
 if TYPE_CHECKING:
     # Type-only import: base is a leaf the SNMP module never imports, so this avoids any runtime
     # coupling (and the appearance of a cycle) while still typing from_snmp's argument.
@@ -70,15 +72,14 @@ class PrinterStatus:
         return cls(ok=False, errors=[reason], raw={}, reachable=False)
 
     @classmethod
-    def unsupported(
-        cls, reason: str = "status query not supported over this transport"
-    ) -> "PrinterStatus":
-        """A status for transports that cannot query printer state (e.g. USB)."""
-        return cls(ok=False, errors=[reason], raw={}, reachable=False)
-
-    @classmethod
     def from_parsed(cls, decoded: dict[str, object]) -> "PrinterStatus":
-        """Build a PrinterStatus from a parsed interpret_response dict."""
+        """Build a PrinterStatus from a parsed ``brother_ql.reader.interpret_response`` dict.
+
+        ``media_type`` is normalized to the canonical ``continuous``/``die_cut`` (via
+        :func:`app.media.canonical_media_type`), NOT brother_ql's raw ``'Continuous length tape'``
+        string, so the ESC i S status channel (USB) lands on the same two values the SNMP path emits
+        and the print guard / UI badge compare against. ``status_type``/``phase_type`` stay as the raw
+        brother_ql strings — they are diagnostics, not compared anywhere."""
         raw_errors = decoded.get("errors")
         errors: list[str] = [str(e) for e in raw_errors] if isinstance(raw_errors, list) else []
         media_width = decoded.get("media_width")
@@ -90,7 +91,7 @@ class PrinterStatus:
             model=str(decoded["model_name"]) if "model_name" in decoded else None,
             media_width_mm=float(media_width) if isinstance(media_width, int) else None,
             media_length_mm=float(media_length) if isinstance(media_length, int) else None,
-            media_type=str(decoded["media_type"]) if "media_type" in decoded else None,
+            media_type=canonical_media_type(decoded),
             status_type=str(decoded["status_type"]) if "status_type" in decoded else None,
             phase_type=str(decoded["phase_type"]) if "phase_type" in decoded else None,
             reachable=True,

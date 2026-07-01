@@ -302,25 +302,29 @@ the hardware level — most commonly because the **loaded media does not match t
 red and emit nothing, while the print call still reports **`200` success**. See
 [known limitations](docs/known-limitations.md#the-network-back-channel-is-silent--snmp-is-the-status-channel).
 
-Labelito closes this hole over the network transport using **SNMP** (UDP 161), which the same
-hardware answers instantly:
+Labelito closes this hole using the printer's status channel — **SNMP** (UDP 161) on the network
+transport, and a standalone **ESC i S** query on **USB** (which, unlike the network NIC, does return
+the status frame):
 
-- **`GET /printer/status`** reports the real state — loaded media, a decoded error bitmask, the
-  console line, and identity — instead of the unreliable `:9100` readback.
-- **Pre-flight media guard.** `/print` and `/reprint` query SNMP before sending and reject a
+- **`GET /printer/status`** reports the real state — loaded media, error/fault signal, and identity
+  — instead of the unreliable `:9100` readback.
+- **Pre-flight media guard.** `/print` and `/reprint` read the loaded roll before sending and reject a
   media mismatch with **`409 Conflict`** (the detail names the loaded vs. required media), so the
   hardware rejection surfaces as an error rather than a phantom success. The web UI flags this
   advisorily: a mismatching template shows a red **✗** media badge and a `(needs …)` suffix on its
-  dropdown option, but nothing is disabled — preview and dry-run stay available, and the server's
-  409 is the authoritative gate (client-side status can be stale, so it never hard-blocks).
-- **Fail-open.** If SNMP is unreachable or `SNMP_ENABLED=false`, the guard does **not** block — it
-  logs a warning and proceeds, and the status badges as unknown (`?`). The guard only ever *adds*
-  certainty; it never turns a previously-working print into a hard failure because the status
-  channel is down.
+  dropdown option, but nothing is disabled on the print page — preview and dry-run stay available, and
+  the server's 409 is the authoritative gate (client-side status can be stale, so it never hard-blocks).
+- **Fail-open.** If the status read is unreachable (or `SNMP_ENABLED=false` on a network printer), the
+  guard does **not** block — it logs a warning and proceeds, and the status badges as unknown (`?`). The
+  guard only ever *adds* certainty; it never turns a working print into a hard failure because the
+  status channel is down.
 
-This applies to the **network** transport only. `usb://` reports `unsupported` status (its readback
-already works at print time) and `file://` reports a synthetic OK. SNMP details and the verified OID
-map live in [docs/snmp-status.md](docs/snmp-status.md).
+**Transport differences:** the **network** transport uses SNMP (lock-free UDP), so the web status card
+also background-polls it live. **USB** reads status via ESC i S **on demand only** — page load, the
+manual ↻ button, and the print preflight — because a USB status query claims the single device handle
+and serializes with printing, so it is deliberately excluded from the background poll (a USB roll swap
+shows on the next load/↻, not live). `file://` reports a synthetic OK (no printer). SNMP details and the
+verified OID map live in [docs/snmp-status.md](docs/snmp-status.md).
 
 ### Print / preview request body
 

@@ -9,7 +9,7 @@ import pytest
 
 from app.transports.base import PrinterStatus, infer_transport
 from app.transports.file import FileTransport
-from app.transports.network import STATUS_INFORMATION_CMD, STATUS_PACKET_LEN, NetworkTransport
+from app.transports.network import STATUS_PACKET_LEN, NetworkTransport
 from app.transports.snmp import PrinterSNMPStatus
 
 if TYPE_CHECKING:
@@ -108,11 +108,12 @@ def _patch_socket(monkeypatch: pytest.MonkeyPatch, fake: _FakeSocket) -> None:
 
 
 def _disable_snmp(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force NetworkTransport.query_status onto the legacy ESC i S fallback.
+    """Disable SNMP so NetworkTransport.query_status takes the no-status-channel branch.
 
-    query_status now reads the printer over SNMP by default (the channel that actually answers on
-    the QL NIC). Tests that exercise the TCP ESC i S readback must disable SNMP so the fallback path
-    runs; mutating the shared settings singleton is reverted automatically by monkeypatch.
+    query_status reads the printer over SNMP by default (the channel that actually answers on the QL
+    NIC). With SNMP off there is no TCP status channel (the standalone ESC i S query was removed), so
+    query_status returns ``unreachable``; mutating the shared settings singleton is reverted
+    automatically by monkeypatch.
     """
     import app.transports.network as net_mod
 
@@ -741,6 +742,13 @@ def test_print_marks_job_failed_on_usb_printer_error(
     )
     monkeypatch.setattr(main_mod, "_resolve_transport", lambda: USBTransport)
     monkeypatch.setattr(main_mod.settings, "printer_uri", "usb://0x04f9:0x209c")
+    # The USB print preflight now reads device status first; stub it to fail open so this test isolates
+    # send()'s error handling and never touches a real attached device.
+    monkeypatch.setattr(
+        main_mod,
+        "_query_printer_status",
+        lambda request: PrinterStatus.unreachable("status stubbed for send-path isolation"),
+    )
 
     errors_before = _label_errors_count("printer_error")
     printed_before = _labels_printed_count("simple", dry_run=False)
@@ -857,6 +865,14 @@ def test_usb_timeout_records_job_failed_and_emits_print_error_metric(
 
     monkeypatch.setattr(main_mod, "_resolve_transport", lambda: USBTransport)
     monkeypatch.setattr(main_mod.settings, "printer_uri", "usb://0x04f9:0x209c")
+    # The USB print preflight now reads device status first; stub it to fail open so this test isolates
+    # send()'s timeout behavior (USB_TIMEOUT is set tiny here for send, which would otherwise make the
+    # real preflight query orphan and mask the timeout under test) and never touches a real device.
+    monkeypatch.setattr(
+        main_mod,
+        "_query_printer_status",
+        lambda request: PrinterStatus.unreachable("status stubbed for send-path isolation"),
+    )
 
     errors_before = _label_errors_count("print_error")
     printed_before = _labels_printed_count("simple", dry_run=False)
@@ -1051,122 +1067,32 @@ def _build_status_request(model: str) -> bytes:
     return qlr.data
 
 
-def test_network_query_status_sends_model_aware_request_and_parses_reply(
+def test_network_query_status_snmp_disabled_returns_unreachable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """query_status() sends the full model-correct request (invalidate prefix + ESC i S) built via
-    BrotherQLRaster and parses the printer's reply: reachable=True, model populated, media
-    width/type extracted from the 32-byte frame.
+    """With SNMP disabled there is no TCP-native status channel on this hardware — the QL-810W NIC
+    never returns the ESC i S frame, so the standalone TCP query was removed. query_status returns
+    reachable=False directly, and must NOT open a socket or fabricate ok=True.
 
-    The bare 3-byte ESC i S is NOT sufficient — a printer with a dirty command buffer (e.g. after an
-    interrupted job) treats it as raster data and never returns the status frame. The full
-    library-built payload (NUL invalidate prefix + ESC i S) clears the buffer first.
-    """
-    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
-    reply = _status_packet_with_model(media_width=62, media_type=0x0A)
-    fake = _FakeSocket(reply)
-    _patch_socket(monkeypatch, fake)
+    (An operator who genuinely wants a working ESC i S status channel uses a usb:// transport, whose
+    back-channel does answer — see the USB query_status tests below.)"""
+    import app.transports.network as net_mod
 
-    # Build expected bytes the same way the production code does — for a QL-810W (configured model).
-    expected_request = _build_status_request("QL-810W")
-
-    transport = NetworkTransport("tcp://192.168.1.50:9100")
-    status = transport.query_status(expected_request)
-
-    # The full library-built payload must be sent, not the bare 3-byte constant.
-    assert len(fake.sent) > 3, (
-        f"query_status must send more than 3 bytes (invalidate prefix + ESC i S); "
-        f"got {len(fake.sent)} bytes"
+    _disable_snmp(monkeypatch)
+    # No status channel exists on this path: opening a TCP socket would be a bug.
+    monkeypatch.setattr(
+        net_mod.socket,
+        "socket",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("SNMP-disabled query_status must not open a TCP socket")
+        ),
     )
-    assert fake.sent.endswith(STATUS_INFORMATION_CMD), (
-        f"query_status payload must end with ESC i S ({STATUS_INFORMATION_CMD!r}); "
-        f"got tail {fake.sent[-3:]!r}"
-    )
-    assert fake.sent[: len(fake.sent) - 3] == b"\x00" * (len(fake.sent) - 3), (
-        "all bytes before ESC i S must be NUL (invalidate prefix)"
-    )
-    assert fake.sent == expected_request, (
-        f"sent bytes must match the library-built request for QL-810W; "
-        f"got {len(fake.sent)} bytes (expected {len(expected_request)})"
-    )
-    assert status.reachable is True, "a printer that replies must be reachable"
-    assert status.ok is True, "a clean status reply has no error bits"
-    assert status.errors == []
-    assert status.model == "QL-800", f"model should be parsed from frame; got {status.model!r}"
-    assert status.media_width_mm == 62, f"media_width_mm should be 62; got {status.media_width_mm}"
-    assert status.media_type is not None, "media_type should be populated from the frame"
-    assert fake.closed is True, "socket must be closed after query_status"
-
-
-def test_network_query_status_returns_unreachable_on_connection_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If the printer is not reachable (connection refused / timeout), query_status returns
-    reachable=False with the error message — it must NOT raise and must NOT fabricate ok=True."""
-
-    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
-
-    class _UnreachableSocket(_FakeSocket):
-        def connect(self, addr: tuple[str, int]) -> None:
-            raise ConnectionRefusedError("connection refused")
-
-    fake = _UnreachableSocket(b"")
-    _patch_socket(monkeypatch, fake)
 
     status = NetworkTransport("tcp://192.168.1.50:9100").query_status(_DUMMY_STATUS_REQUEST)
 
-    assert status.reachable is False, "an unreachable printer must return reachable=False"
+    assert status.reachable is False, "no status channel ⇒ reachable=False"
     assert status.ok is False, "unreachable must not be ok"
-    assert status.errors, "at least one error string must describe the failure"
-
-
-def test_network_query_status_returns_unreachable_on_empty_reply(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A printer that accepts the connection but sends nothing (empty recv) → reachable=False."""
-    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
-    fake = _FakeSocket(b"")
-    _patch_socket(monkeypatch, fake)
-
-    status = NetworkTransport("tcp://192.168.1.50:9100").query_status(_DUMMY_STATUS_REQUEST)
-
-    assert status.reachable is False, "a silent printer must report reachable=False"
-    assert status.ok is False
-
-
-def test_network_query_status_returns_unreachable_on_garbled_reply(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A reply missing the 80:20:42 header (garbled) → reachable=False with an error message."""
-    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
-    fake = _FakeSocket(b"\x00" * STATUS_PACKET_LEN)
-    _patch_socket(monkeypatch, fake)
-
-    status = NetworkTransport("tcp://192.168.1.50:9100").query_status(_DUMMY_STATUS_REQUEST)
-
-    assert status.reachable is False, "a garbled reply must report reachable=False"
-    assert status.ok is False
-    assert status.errors
-
-
-def test_network_query_status_surfaces_error_bits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When the printer's status reply has error bits set, query_status returns ok=False
-    with human-readable error strings — the printer is reachable but in an error state."""
-    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
-    reply = _status_packet_with_model(err1=1 << _ERR1_NO_MEDIA_BIT, err2=0)
-    fake = _FakeSocket(reply)
-    _patch_socket(monkeypatch, fake)
-
-    status = NetworkTransport("tcp://192.168.1.50:9100").query_status(_DUMMY_STATUS_REQUEST)
-
-    # Printer responded but reported an error
-    assert status.reachable is True, "a printer that replied is reachable even with errors"
-    assert status.ok is False, "error bits in the reply must surface as ok=False"
-    assert any("No media" in e for e in status.errors), (
-        f"expected a no-media error string; got {status.errors}"
-    )
+    assert status.errors, "must carry a reason explaining the absent status channel"
 
 
 # ── query_status() — NetworkTransport SNMP path (default) ─────────────────────────
@@ -1326,28 +1252,68 @@ def test_file_transport_query_status_returns_synthetic_ok(tmp_path: pytest.TempP
 # ── query_status() — USBTransport ────────────────────────────────────────────────
 
 
-def test_usb_transport_query_status_returns_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
-    """USBTransport.query_status returns an unsupported result (reachable=False, not ok, with
-    a clear message) — USB status query is not supported because the brother_ql USB backend
-    provides no clean ESC i S read path without a print job in flight."""
-    from app.transports.usb import USBTransport
+def _patch_usb_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    frame: bytes | None = None,
+    raise_on_init: BaseException | None = None,
+) -> dict[str, object]:
+    """Patch brother_ql's pyusb backend with a fake that returns ``frame`` from ``_read`` (or nothing
+    when ``frame`` is None), captures the written request, and records disposal. Returns that state."""
+    import brother_ql.backends.pyusb as pyusb_mod
 
-    status = USBTransport("usb://0x04f9:0x209c").query_status(_DUMMY_STATUS_REQUEST)
+    state: dict[str, object] = {"written": b"", "disposed": False}
 
-    assert isinstance(status, PrinterStatus)
-    assert status.reachable is False, "USB query_status must report reachable=False (unsupported)"
-    assert status.ok is False, "USB query_status must not report ok=True"
-    assert status.errors, "USB query_status must carry a descriptive error message"
-    assert any("USB" in e or "usb" in e.lower() or "not supported" in e for e in status.errors), (
-        f"error message should mention USB or unsupported; got {status.errors}"
-    )
+    class _FakeBackend:
+        def __init__(self, uri: str) -> None:
+            if raise_on_init is not None:
+                raise raise_on_init
+            self.read_timeout = 10.0
+
+        def _write(self, data: bytes) -> None:
+            state["written"] = bytes(data)
+
+        def _read(self, length: int = 32) -> bytes:
+            return frame if frame is not None else b""
+
+        def _dispose(self) -> None:
+            state["disposed"] = True
+
+    monkeypatch.setattr(pyusb_mod, "BrotherQLBackendPyUSB", _FakeBackend)
+    return state
 
 
-def test_usb_transport_query_status_returns_busy_when_device_locked(
+def test_usb_transport_query_status_reads_and_parses_esc_i_s_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When a USB print is in progress (_usb_busy=True), query_status returns a 'busy' result
-    rather than a generic 'unsupported' message."""
+    """query_status writes the model-correct request over USB and parses the 32-byte ESC i S reply
+    into canonical media/model fields — the USB back-channel answers a standalone status request
+    (unlike the network NIC). media_type must be the canonical 'continuous', not brother_ql's raw
+    'Continuous length tape'."""
+    from app.transports.usb import USBTransport
+
+    frame = _status_packet_with_model(media_width=62, media_type=0x0A)  # continuous
+    state = _patch_usb_backend(monkeypatch, frame=frame)
+
+    request = _build_status_request("QL-810W")
+    status = USBTransport("usb://0x04f9:0x209c").query_status(request)
+
+    assert status.reachable is True, "a printer that replies over USB is reachable"
+    assert status.ok is True, f"a clean frame has no errors; got {status.errors}"
+    assert status.model == "QL-800", f"model parsed from the frame; got {status.model!r}"
+    assert status.media_width_mm == 62
+    assert status.media_type == "continuous", (
+        f"USB media_type must be canonical, not the raw brother_ql string; got {status.media_type!r}"
+    )
+    assert state["written"] == request, "the model-correct request must be written to the device"
+    assert state["disposed"] is True, "the device must be disposed after the query"
+
+
+def test_usb_transport_query_status_returns_unreachable_when_device_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a USB print is in progress (_usb_busy=True), query_status fast-fails to reachable=False
+    with a 'busy' message rather than opening a competing device handle."""
     import app.transports.usb as usb_mod
     from app.transports.usb import USBTransport
 
@@ -1360,3 +1326,134 @@ def test_usb_transport_query_status_returns_busy_when_device_locked(
     assert any("busy" in e.lower() for e in status.errors), (
         f"error message should indicate the device is busy; got {status.errors}"
     )
+
+
+def test_usb_transport_query_status_returns_unreachable_on_backend_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backend open failure (device not found / claim error) → reachable=False, never raises."""
+    from app.transports.usb import USBTransport
+
+    _patch_usb_backend(monkeypatch, raise_on_init=ValueError("Device not found"))
+
+    status = USBTransport("usb://0x04f9:0x209c").query_status(_DUMMY_STATUS_REQUEST)
+
+    assert status.reachable is False
+    assert status.ok is False
+    assert status.errors
+
+
+def test_usb_transport_query_status_returns_unreachable_when_no_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A printer that opens but never returns a status frame → reachable=False within the deadline,
+    and the device is still disposed."""
+    import app.transports.usb as usb_mod
+    from app.transports.usb import USBTransport
+
+    # Shrink the drain budget so the test does not wait the full 5s real deadline.
+    monkeypatch.setattr(usb_mod, "USB_STATUS_READ_DEADLINE_S", 0.05)
+    monkeypatch.setattr(usb_mod, "USB_STATUS_READ_POLL_S", 0.001)
+    state = _patch_usb_backend(monkeypatch, frame=None)  # _read always returns b""
+
+    status = USBTransport("usb://0x04f9:0x209c").query_status(_DUMMY_STATUS_REQUEST)
+
+    assert status.reachable is False
+    assert status.ok is False
+    assert state["disposed"] is True, "device must be disposed even when no frame arrives"
+
+
+def test_usb_transport_query_status_retries_after_read_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A USB read TIMEOUT raises usb.core.USBError (the backend does not return b'' on no-data), so the
+    frame reader must catch it and keep polling until the deadline — a frame that arrives after the
+    first read timeout must still be read, NOT fail the guard open. Regression for the Codex finding
+    that a transient read timeout skipped the media/fault check and printed unverified."""
+    import brother_ql.backends.pyusb as pyusb_mod
+    import usb.core
+
+    from app.transports.usb import USBTransport
+
+    frame = _status_packet_with_model(media_width=62, media_type=0x0A)
+    calls = {"n": 0}
+
+    class _FakeBackend:
+        def __init__(self, uri: str) -> None:
+            self.read_timeout = 10.0
+
+        def _write(self, data: bytes) -> None:
+            pass
+
+        def _read(self, length: int = 32) -> bytes:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise usb.core.USBError("Operation timed out", errno=110)
+            return frame
+
+        def _dispose(self) -> None:
+            pass
+
+    monkeypatch.setattr(pyusb_mod, "BrotherQLBackendPyUSB", _FakeBackend)
+
+    status = USBTransport("usb://0x04f9:0x209c").query_status(_DUMMY_STATUS_REQUEST)
+
+    assert calls["n"] >= 2, "must retry the read after the first USB timeout, not give up"
+    assert status.reachable is True, (
+        "a frame arriving after a read timeout must be read, not fail-open"
+    )
+    assert status.ok is True
+    assert status.media_type == "continuous"
+
+
+def test_usb_transport_query_status_times_out_without_pinning_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wedged libusb call (here _write blocks) must NOT pin the caller: query_status runs the whole
+    transaction in a worker joined with USB_TIMEOUT and returns unreachable promptly, so the caller can
+    release _print_lock. Regression for the Codex finding that only the frame-drain loop was bounded,
+    letting an open/write/dispose hang stall every later print."""
+    import threading
+    import time as _time
+
+    import brother_ql.backends.pyusb as pyusb_mod
+
+    import app.transports.usb as usb_mod
+    from app.transports.usb import USBTransport
+
+    monkeypatch.setattr(
+        usb_mod, "USB_STATUS_TIMEOUT", 0.2
+    )  # bound the status join tightly for the test
+    frame = _status_packet_with_model(media_width=62, media_type=0x0A)
+    release = threading.Event()
+
+    class _HangingBackend:
+        def __init__(self, uri: str) -> None:
+            self.read_timeout = 10.0
+
+        def _write(self, data: bytes) -> None:
+            release.wait(30)  # simulate a wedged libusb transfer until the test releases it
+
+        def _read(self, length: int = 32) -> bytes:
+            return frame
+
+        def _dispose(self) -> None:
+            pass
+
+    monkeypatch.setattr(pyusb_mod, "BrotherQLBackendPyUSB", _HangingBackend)
+
+    try:
+        start = _time.monotonic()
+        status = USBTransport("usb://0x04f9:0x209c").query_status(_DUMMY_STATUS_REQUEST)
+        elapsed = _time.monotonic() - start
+
+        assert status.reachable is False, "a wedged USB status read must fail open (unreachable)"
+        assert elapsed < 5.0, f"query_status must return promptly on a hang; took {elapsed:.1f}s"
+        assert any("timed out" in e.lower() for e in status.errors), status.errors
+    finally:
+        # Unblock the orphaned worker so it releases _USB_DEVICE_LOCK / clears _usb_busy before the
+        # next test (otherwise a later send()/query worker would block on the held device lock).
+        release.set()
+        deadline = _time.monotonic() + 2.0
+        while usb_mod._usb_busy and _time.monotonic() < deadline:
+            _time.sleep(0.01)

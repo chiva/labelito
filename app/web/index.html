@@ -381,17 +381,20 @@
     const WIDTH_TOLERANCE_MM = 1.0;
     const LENGTH_TOLERANCE_MM = 1.0;
 
-    function isNetworkPrinter() {
-      return !!(printerStatus && typeof printerStatus.uri === 'string'
-        && printerStatus.uri.startsWith('tcp://'));
+    // A printer whose loaded media we can actually read: network (SNMP) OR USB (ESC i S). Both report
+    // canonical media_type; file:// has no printer. Gated on scheme because that is what the server's
+    // status channel maps to (tcp:// → SNMP, usb:// → ESC i S).
+    function isQueryablePrinter() {
+      const uri = printerStatus && printerStatus.uri;
+      return typeof uri === 'string' && (uri.startsWith('tcp://') || uri.startsWith('usb://'));
     }
 
     // The loaded roll as a {width_mm, media_type, length_mm} object, or null when it can't be
-    // compared: SNMP unreachable, a non-network transport, or a media_type that isn't one of the
-    // SNMP-normalized values (e.g. the ESC i S fallback's brother_ql string) → treated as unknown.
+    // compared: status unreachable, a transport with no readable media (file://), or a media_type
+    // that isn't one of the canonical values → treated as unknown.
     function loadedMedia() {
       const s = printerStatus;
-      if (!s || !s.reachable || !isNetworkPrinter()) return null;
+      if (!s || !s.reachable || !isQueryablePrinter()) return null;
       if (s.media_width_mm == null) return null;
       if (s.media_type !== 'continuous' && s.media_type !== 'die_cut') return null;
       return {width_mm: s.media_width_mm, media_type: s.media_type, length_mm: s.media_length_mm};

@@ -1408,6 +1408,37 @@ def test_printer_status_happy_path_with_reachable_transport(
     assert data["errors"] == []
 
 
+def test_printer_status_usb_printing_phase_reports_printing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A USB ESC i S frame can parse clean (ok, no errors) yet report phase 'Printing state' — a prior
+    or external job still running. /printer/status must read that as PRINTING, not IDLE, so the UI
+    never advertises a busy printer as ready (mirrors the SNMP branch's busy handling)."""
+    import app.main as main_mod
+    from app.transports.base import PrinterStatus
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "usb://0x04f9:0x209c")
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", False)
+
+    printing = PrinterStatus(
+        ok=True,
+        errors=[],
+        reachable=True,
+        model="QL-810W",
+        media_width_mm=62.0,
+        media_length_mm=0.0,
+        media_type="continuous",
+        status_type="Phase change",
+        phase_type="Printing state",
+    )
+    monkeypatch.setattr(main_mod, "_query_printer_status", lambda request: printing)
+
+    resp = client.get("/printer/status")
+
+    assert resp.status_code == 200, f"expected 200; got {resp.status_code}: {resp.text}"
+    assert resp.json()["state"] == "printing", "a printing-phase USB frame must read as PRINTING"
+
+
 def test_printer_status_surfaces_snmp_identity_fields(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3854,6 +3885,232 @@ def _loaded_62_continuous() -> object:
     )
 
 
+# ── USB print preflight (ESC i S status → hard 409, symmetric with the SNMP guard) ───────────────
+def _arm_usb(monkeypatch: pytest.MonkeyPatch, main_mod: object, status: object) -> None:
+    """Point the app at a USB printer (SNMP off) and stub the ESC i S status read to ``status``.
+
+    Stubs _query_printer_status (what the USB preflight calls) and routes prints through a silent
+    transport whose send() succeeds, so a matching print completes without touching a device."""
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "usb://0x04f9:0x209c")  # type: ignore[attr-defined]
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", False)  # type: ignore[attr-defined]
+    monkeypatch.setattr(main_mod, "_query_printer_status", lambda request: status)  # type: ignore[attr-defined]
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)  # type: ignore[attr-defined]
+
+
+def _usb_status(**over: object) -> object:
+    """A reachable USB PrinterStatus for a 62mm continuous roll, overridable per test."""
+    from app.transports.base import PrinterStatus
+
+    fields: dict[str, object] = {
+        "ok": True,
+        "errors": [],
+        "reachable": True,
+        "model": "QL-810W",
+        "media_width_mm": 62.0,
+        "media_length_mm": 0.0,
+        "media_type": "continuous",
+        **over,
+    }
+    return PrinterStatus(**fields)  # type: ignore[arg-type]
+
+
+def test_print_usb_media_mismatch_returns_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real USB print whose template needs a different roll than the ESC i S read reports is
+    rejected 409 up front — no label wasted — mirroring the network+SNMP media guard."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "diecut", "62x29")  # die-cut; loaded roll is 62 continuous
+    _arm_usb(monkeypatch, main_mod, _usb_status())
+
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 409, (
+        f"expected media-mismatch 409, got {resp.status_code}: {resp.text}"
+    )
+    assert main_mod._driver.render_payload.call_count == 0, "must reject before rendering/sending"
+
+
+def test_print_usb_media_match_succeeds(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real USB print whose template matches the loaded roll proceeds normally."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "plain62", "62")
+    _arm_usb(monkeypatch, main_mod, _usb_status())
+
+    resp = client.post("/print", json={"template": "plain62", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 200, (
+        f"a matching roll must print; got {resp.status_code}: {resp.text}"
+    )
+    assert main_mod._driver.render_payload.call_count == 1
+
+
+def test_print_usb_status_unreachable_with_free_device_fails_open(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the USB ESC i S read is unreachable but the device is FREE (a clean read failure, not a
+    busy/orphaned transfer), the guard fails open: the print proceeds and the status-unreachable
+    counter increments (unverified-print visibility)."""
+    import app.main as main_mod
+    import app.transports.usb as usb_mod
+    from app.transports.base import PrinterStatus
+
+    _write_label_template(main_mod, "diecut", "62x29")  # would mismatch IF we could read media
+    _arm_usb(monkeypatch, main_mod, PrinterStatus.unreachable("USB status read failed"))
+    monkeypatch.setattr(usb_mod, "_usb_busy", False)  # device is free — fail-open is safe
+
+    before = main_mod.PREFLIGHT_STATUS_UNREACHABLE._value.get()
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 200, (
+        f"unreachable status + free device ⇒ fail open; got {resp.status_code}: {resp.text}"
+    )
+    assert main_mod._driver.render_payload.call_count == 1
+    after = main_mod.PREFLIGHT_STATUS_UNREACHABLE._value.get()
+    assert after == before + 1, (
+        "a fail-open USB print must increment the status-unreachable counter"
+    )
+
+
+def test_print_usb_status_timeout_busy_device_returns_503_not_failopen(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the USB status read is unreachable BECAUSE a prior/orphaned transfer still owns the device
+    (e.g. a status query that timed out), a send() would raise USBBusyError. The preflight must return
+    a clean 503 — NOT fail open into a hard 500 — and must NOT count it as an unverified print.
+    Regression for the Codex finding on the timeout/busy interaction."""
+    import app.main as main_mod
+    import app.transports.usb as usb_mod
+    from app.transports.base import PrinterStatus
+
+    _write_label_template(main_mod, "plain62", "62")
+    _arm_usb(monkeypatch, main_mod, PrinterStatus.unreachable("USB status query timed out"))
+    monkeypatch.setattr(usb_mod, "_usb_busy", True)  # orphaned transfer still owns the device
+
+    before = main_mod.PREFLIGHT_STATUS_UNREACHABLE._value.get()
+    resp = client.post("/print", json={"template": "plain62", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 503, f"busy device ⇒ clean 503; got {resp.status_code}: {resp.text}"
+    assert main_mod._driver.render_payload.call_count == 0, (
+        "must not render/send into a busy device"
+    )
+    assert main_mod.PREFLIGHT_STATUS_UNREACHABLE._value.get() == before, (
+        "a busy device is not a fail-open print; the unreachable counter must NOT increment"
+    )
+
+
+def test_print_usb_fault_returns_409(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reachable USB status carrying decoded error strings (no-media / cover-open) is a hard fault:
+    409 before rendering."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "plain62", "62")
+    _arm_usb(monkeypatch, main_mod, _usb_status(ok=False, errors=["No media when printing"]))
+
+    resp = client.post("/print", json={"template": "plain62", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 409, f"a printer fault must 409; got {resp.status_code}: {resp.text}"
+    assert main_mod._driver.render_payload.call_count == 0
+
+
+def test_print_usb_busy_printing_phase_blocks_send(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A USB preflight that reads phase 'Printing state' (printer mid-job) must NOT send: it returns
+    503 busy so a second raster is never interleaved into a running job. Our own prints can't trip
+    this (send() is synchronous and leaves the printer 'Waiting to receive'); this guards an external
+    or still-finishing job."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "plain62", "62")
+    _arm_usb(
+        monkeypatch,
+        main_mod,
+        _usb_status(status_type="Phase change", phase_type="Printing state"),
+    )
+
+    resp = client.post("/print", json={"template": "plain62", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 503, (
+        f"a busy printer must block the send; got {resp.status_code}: {resp.text}"
+    )
+    assert main_mod._driver.render_payload.call_count == 0, (
+        "must not render/send into a busy device"
+    )
+
+
+def test_print_usb_dry_run_not_gated(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dry run never reaches the printer, so the USB preflight must NOT query status or block a
+    mismatched template."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "diecut", "62x29")
+
+    def _must_not_query(request: bytes) -> object:
+        raise AssertionError("dry run must not query printer status")
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "usb://0x04f9:0x209c")
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", False)
+    monkeypatch.setattr(main_mod, "_query_printer_status", _must_not_query)
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": True})
+
+    assert resp.status_code == 200, (
+        f"dry run must not be gated; got {resp.status_code}: {resp.text}"
+    )
+
+
+def test_print_usb_preflight_does_not_touch_snmp_metrics(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The USB preflight must NOT feed its ESC i S PrinterStatus into the SNMP-derived telemetry sink:
+    those gauges key error conditions off RFC hrPrinterDetectedErrorState names the ESC i S error
+    strings don't match, so recording a USB fault there would set printer_up=1 and clear the fault
+    gauges — masking alerts during a real fault. Assert the USB fault path 409s WITHOUT calling the
+    SNMP metric sink (monkeypatched to blow up if touched)."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "plain62", "62")
+    _arm_usb(monkeypatch, main_mod, _usb_status(ok=False, errors=["No media when printing"]))
+
+    def _boom(status: object) -> None:
+        raise AssertionError("USB preflight must not record into the SNMP telemetry gauges")
+
+    monkeypatch.setattr(main_mod, "_record_status_metrics", _boom)
+    monkeypatch.setattr(main_mod, "_set_printer_metrics", _boom)
+
+    resp = client.post("/print", json={"template": "plain62", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 409, f"USB fault must 409; got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.parametrize(
+    ("uri", "snmp_enabled", "expected"),
+    [
+        ("usb://0x04f9:0x209c", False, True),
+        ("usb://0x04f9:0x209c", True, True),  # USB ignores SNMP; ESC i S is its channel
+        ("tcp://192.168.5.14:9100", True, True),
+        ("tcp://192.168.5.14:9100", False, False),  # no TCP status channel on this hardware
+        ("file:///tmp/out.bin", True, False),  # file sink has no printer
+    ],
+)
+def test_status_query_supported_truth_table(
+    monkeypatch: pytest.MonkeyPatch, uri: str, snmp_enabled: bool, expected: bool
+) -> None:
+    """_status_query_supported is True where a loaded-media read is possible (SNMP or USB), gating the
+    UI's one-shot roll detection — broader than _snmp_guard_applies (which gates only the poll)."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", uri)
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", snmp_enabled)
+    assert main_mod._status_query_supported() is expected
+
+
 # ── SNMP-derived telemetry metrics (Step 11) ─────────────────────────────────────────────────────
 def _loaded_faulted() -> object:
     """A reachable printer with a hard fault (doorOpen), built from real SNMP BITS bytes.
@@ -4202,15 +4459,15 @@ def test_print_snmp_unreachable_fails_open(
     _arm_network_snmp(monkeypatch, main_mod, PrinterSNMPStatus.unreachable())
     monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
 
-    before = main_mod.PREFLIGHT_SNMP_UNREACHABLE._value.get()
+    before = main_mod.PREFLIGHT_STATUS_UNREACHABLE._value.get()
     resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
 
     assert resp.status_code == 200, f"Expected 200 (fail-open), got {resp.status_code}: {resp.text}"
     assert main_mod._driver.render_payload.call_count == 1
     # The fail-open path must be observable: a print that skipped the guard increments the counter.
-    after = main_mod.PREFLIGHT_SNMP_UNREACHABLE._value.get()
+    after = main_mod.PREFLIGHT_STATUS_UNREACHABLE._value.get()
     assert after == before + 1, (
-        "an unverified (fail-open) print must increment the SNMP-unreachable counter"
+        "an unverified (fail-open) print must increment the status-unreachable counter"
     )
 
 

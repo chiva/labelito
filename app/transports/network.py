@@ -10,11 +10,6 @@ from app.config import settings
 from app.transports.base import PrinterStatus, register_transport
 from app.transports.snmp import query_snmp_status
 
-# ESC i S — the Brother QL status-information command. The FULL status request must ALSO include a
-# model-sized invalidate (NUL) prefix built via BrotherQLRaster; this constant is kept for
-# documentation and tests that need to assert the payload ends with this sequence.
-STATUS_INFORMATION_CMD = b"\x1b\x69\x53"
-
 log = logging.getLogger(__name__)
 
 # Brother QL printers answer a print job with a fixed-size status packet. We read exactly this
@@ -196,26 +191,19 @@ class NetworkTransport:
         return None
 
     def query_status(self, request: bytes) -> PrinterStatus:
-        """Return the printer's current state, via SNMP by default.
+        """Return the printer's current state over SNMP, or unreachable when SNMP is disabled.
 
         The Brother QL NIC accepts the :9100 TCP connection but never returns the 32-byte status
-        back-channel (see docs/known-limitations.md), so SNMP (UDP 161) is the status channel that
+        frame (see docs/known-limitations.md), so SNMP (UDP 161) is the only status channel that
         actually answers on this hardware. When ``settings.snmp_enabled`` (the default) we query the
         printer's status OIDs over SNMP and map them via :meth:`PrinterStatus.from_snmp`; an
         unreachable SNMP agent yields ``reachable=False`` so the caller fails open / returns 503.
 
-        When SNMP is disabled we fall back to the legacy ESC i S readback (``request``) over :9100 —
-        best-effort, and silent on this NIC, but the only TCP-native status channel and useful on
-        printers whose back-channel does answer. ``request`` is therefore consumed only on the
-        fallback path; the SNMP path ignores it.
-
-        Note: when SNMP is *enabled* but unreachable we return ``reachable=False`` directly and do
-        NOT auto-fall-back to ESC i S. That is deliberate: on the QL-810W (this feature's target) the
-        :9100 back-channel is silent, so the fallback would burn the full STATUS_READ_DEADLINE
-        (~10s) on every status query only to also report unreachable — degrading the common case for
-        a niche one. An operator whose printer has a working TCP back-channel but blocked/unsupported
-        SNMP sets ``SNMP_ENABLED=false`` (the documented opt-out) to use ESC i S exclusively. The
-        print preflight's fail-open behaviour is independent of this status-channel choice.
+        When SNMP is disabled there is no TCP-native status channel on this hardware — the legacy
+        ESC i S readback over :9100 was removed because it never returned a frame here and only burned
+        the read deadline before reporting unreachable anyway. So we return ``reachable=False``
+        directly. ``request`` is unused (kept for the :class:`~app.transports.base.Transport`
+        signature); USB is the transport that consumes it for a real ESC i S query.
         """
         if settings.snmp_enabled:
             snmp = query_snmp_status(
@@ -225,75 +213,10 @@ class NetworkTransport:
                 timeout=settings.snmp_timeout,
             )
             return PrinterStatus.from_snmp(snmp)
-        return self._query_status_esc_i_s(request)
-
-    def _query_status_esc_i_s(self, request: bytes) -> PrinterStatus:
-        """Send the status-request bytes and parse the printer's one-shot 32-byte reply.
-
-        ``request`` must be a model-correct payload built by the caller via BrotherQLRaster
-        (add_invalidate() + add_status_information()); the transport is model-agnostic.  Without
-        the model-sized invalidate prefix, a printer whose command buffer is dirty after an
-        interrupted job may treat ESC i S as raster data and never return the 32-byte status frame.
-
-        Opens a fresh socket (same credentials as send()), sends ``request``, reads exactly one
-        32-byte frame (the printer's "Reply to status request"), and returns a PrinterStatus with
-        the extended media/model fields populated. This is a standalone query with no print job, so
-        we only expect a single frame — not the multi-frame sequence that send()+_read_status()
-        handles. On any failure to connect, timeout, or unparseable reply, returns
-        PrinterStatus.unreachable() so the caller can return 503 with reachable=False.
-        """
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(self.TIMEOUT)
-        try:
-            sock.connect((self._host, self._port))
-            sock.sendall(request)
-            frame = self._recv_one_frame(sock)
-            if frame is None:
-                return PrinterStatus.unreachable(
-                    f"printer at {self._host}:{self._port} did not reply to status request"
-                )
-            decoded: dict[str, object] = interpret_response(frame)
-            return PrinterStatus.from_parsed(decoded)
-        except (TimeoutError, OSError) as exc:
-            log.warning(
-                "Could not query status from printer %s:%d: %s", self._host, self._port, exc
-            )
-            return PrinterStatus.unreachable(
-                f"could not reach printer at {self._host}:{self._port}: {exc}"
-            )
-        except (NameError, ValueError) as exc:
-            log.warning(
-                "Unparseable status reply from printer %s:%d: %s", self._host, self._port, exc
-            )
-            return PrinterStatus.unreachable(
-                f"printer at {self._host}:{self._port} returned an unparseable status frame: {exc}"
-            )
-        finally:
-            sock.close()
-
-    def _recv_one_frame(self, sock: socket.socket) -> bytes | None:
-        """Accumulate exactly STATUS_PACKET_LEN bytes from sock, handling TCP segmentation.
-
-        Returns the assembled frame bytes, or None if the connection closes or times out before
-        a complete frame is received. Used by query_status() which expects exactly one reply frame.
-        """
-        buffer = bytearray()
-        deadline = time.monotonic() + STATUS_READ_DEADLINE
-        while len(buffer) < STATUS_PACKET_LEN:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            sock.settimeout(min(STATUS_READ_TIMEOUT, remaining))
-            try:
-                chunk = sock.recv(STATUS_PACKET_LEN - len(buffer))
-            except TimeoutError:
-                continue
-            except OSError:
-                return None
-            if not chunk:
-                return None
-            buffer.extend(chunk)
-        return bytes(buffer[:STATUS_PACKET_LEN])
+        return PrinterStatus.unreachable(
+            "status unavailable: SNMP is disabled and this printer's TCP status back-channel does "
+            "not return a status frame (set SNMP_ENABLED=true, or use a usb:// transport)"
+        )
 
     def close(self) -> None:
         if self._sock:

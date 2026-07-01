@@ -153,13 +153,16 @@ and file transports ignore SNMP entirely.
   console (PRINTING/COOLING) is not mistaken for a fault, and a printer that is busy per its own
   `hrPrinterStatus` (an external job, or one still finishing after our send) is not misreported as ready. The web status card polls this endpoint on a visible-tab background
   timer (≈4 s, backing off when unreachable, paused when the tab is hidden) so it converges to the
-  live state with no manual refresh. *(The background poll runs **only on this lock-free SNMP path**;
-  on the ESC i S fallback — `SNMP_ENABLED=false`, or USB/file — the readback shares the :9100 socket
-  and takes the print lock, so the page disables background polling there (manual ↻ + post-print
-  refresh only) and the endpoint still returns `503` while a print holds the lock.)*
-- **Pre-flight media guard.** `/print` and `/reprint` query SNMP before sending and reject a
-  loaded-vs-required media mismatch with **`409 Conflict`** (the detail names both), incrementing
-  `label_errors_total{reason="media_mismatch"}`. The web UI is **advisory only**: a mismatching
+  live state with no manual refresh. *(The background poll runs **only on this lock-free SNMP path**.
+  On **USB**, `/printer/status` answers via a standalone ESC i S query that claims the single device
+  handle and serializes through the print lock, so the page reads it **on demand only** — page load,
+  manual ↻, post-print refresh — with no background poll; the endpoint returns `503` while a print
+  holds the lock. On `SNMP_ENABLED=false` network or `file://` there is no status channel, so the
+  page stays unknown.)*
+- **Pre-flight media guard.** `/print` and `/reprint` read the loaded roll before sending — over SNMP
+  on the network transport, or via an ESC i S status query on USB (serialized under the print lock) —
+  and reject a loaded-vs-required media mismatch with **`409 Conflict`** (the detail names both),
+  incrementing `label_errors_total{reason="media_mismatch"}`. The web UI is **advisory only**: a mismatching
   template shows a red **✗** media badge and a `(needs …)` suffix on its dropdown option, but the
   option and the Print button stay enabled (preview/dry-run still work, and a stale client status
   must never hard-block) — the server's 409 is the authoritative gate. The editor is untouched.

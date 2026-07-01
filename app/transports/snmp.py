@@ -22,6 +22,11 @@ import os
 import socket
 from dataclasses import dataclass, field
 
+# Canonical media-type values live in app.media (the single source both the print guard and the UI
+# compat rule read); imported here so the SNMP decode lands on the same two values. No import cycle:
+# app.media only imports app.transports.snmp under TYPE_CHECKING.
+from app.media import MEDIA_TYPE_CONTINUOUS, MEDIA_TYPE_DIE_CUT
+
 log = logging.getLogger(__name__)
 
 # ── SNMP / UDP constants ──────────────────────────────────────────────────────────
@@ -145,8 +150,6 @@ HR_PRINTER_STATUS_WARMUP = 5
 HR_PRINTER_STATUS_BUSY = frozenset({HR_PRINTER_STATUS_PRINTING, HR_PRINTER_STATUS_WARMUP})
 # prtInputMediaDimFeedDir sentinels meaning "no discrete length" ⇒ continuous tape.
 CONTINUOUS_FEED_SENTINELS = (-1, -2)
-MEDIA_TYPE_CONTINUOUS = "continuous"
-MEDIA_TYPE_DIE_CUT = "die_cut"
 # prtInputMediaDim* values are reported in hundredths of a millimetre.
 MEDIA_DIM_HUNDREDTHS_PER_MM = 100
 

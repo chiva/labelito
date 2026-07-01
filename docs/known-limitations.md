@@ -31,12 +31,15 @@ failing closed would turn every SNMP blip into a hard print outage. The guard on
 certainty.
 
 **Other residuals:** the guard cross-checks **media geometry**, not every possible hardware fault —
-a fault SNMP does not surface (or one that appears only after the raster is accepted) can still slip
-through. It is also **network-only**: `usb://` keeps its existing best-effort readback (which works
-at print time over USB), and `file://` is a synthetic-OK debug sink. And because the raster `send()`
-path is unchanged, a job that passes the pre-flight check but is rejected *after* the bytes are sent
-still reports `None` (unknown) → recorded `printed`, exactly as before — the pre-flight SNMP check is
-a backstop in front of that path, not a replacement for it.
+a fault the status channel does not surface (or one that appears only after the raster is accepted)
+can still slip through. The guard now covers **both** the network+SNMP path and the **USB** path
+(`usb://` answers a standalone ESC i S status query, unlike the network NIC — see the USB status
+section below), each re-queried under `_print_lock` at pre-flight so the read cannot race the send;
+`file://` is a synthetic-OK debug sink with no printer, and a **network** printer with
+`SNMP_ENABLED=false` has no status channel at all (the silent `:9100` back-channel), so it stays
+unguarded. And because the raster `send()` path is unchanged, a job that passes the pre-flight check
+but is rejected *after* the bytes are sent still reports `None` (unknown) → recorded `printed` — the
+pre-flight check is a backstop in front of that path, not a replacement for it.
 
 **Mitigation if needed later:** poll SNMP during/after the send for a post-print error transition, or
 move to a printer/firmware that returns the `:9100` status frame, so the send path itself can confirm
@@ -89,33 +92,30 @@ a dedicated status GET, or promote them to the critical read — both trade a ro
 fail-open robustness on firmware that does not implement those OIDs. Same root cause as the latch
 guard's fail-open seam; deferred together pending a decision to restructure the SNMP batching.
 
-## Loaded-roll awareness (media badge + picker size-focus) requires SNMP
+## Loaded-roll awareness (media badge + picker size-focus) requires SNMP or USB
 
 The print page badges the selected template ✓/✗ against the loaded roll and groups the picker by label
 size, focusing the group that matches the loaded media (see [docs/template-format.md](template-format.md)
 and [docs/snmp-status.md](snmp-status.md)). All of this needs to know the **physically loaded roll**,
-which only the SNMP channel reports in a normalized form. On any **non-SNMP** path the client treats the
-loaded media as *unknown*: the badge is neutral (`media: …`, no ✓/✗), no size group is focused (every
-size is shown, just grouped), and there is no roll-driven re-focus. The `409` media-mismatch **print
-guard** is likewise SNMP-only (see the back-channel section above).
+reported in a normalized `continuous`/`die_cut` form. **Two** channels report it: SNMP on the network
+transport, and a standalone **ESC i S** query on USB (`from_parsed` normalizes brother_ql's raw
+`"Continuous length tape"`/`"Die-cut labels"` string to the canonical values via the shared
+`app.media.canonical_media_type`, so both channels compare identically). On those paths the badge,
+size-focus, live re-gating, and the `409` media-mismatch **print guard** all work.
 
-This is broader than it strictly needs to be. For a **network printer with `SNMP_ENABLED=false`**,
-`/printer/status` still falls back to the ESC i S status frame, which *does* decode the loaded media
-width/length and a media type — but as brother_ql's raw human string (`"Continuous length tape"` /
-`"Die-cut labels"`), not the normalized `continuous`/`die_cut` the compat rule compares. `loadedMedia()`
-(`app/web/index.html`) therefore discards it as uncomparable, so even the **advisory** badge and
-size-focus go dark on a printer that is in fact reporting usable media. (`file://`/`usb://` genuinely
-cannot report a roll, so they stay unknown regardless.)
+The paths that stay *unknown* (badge neutral, every size shown, no guard) are the ones with **no
+status channel**: `file://` has no printer, and a **network printer with `SNMP_ENABLED=false`** relies
+on the silent `:9100` back-channel — its standalone ESC i S query was removed (the QL-810W NIC never
+returns the frame, so it only burned the read deadline before reporting unreachable). On those paths
+the loaded media reads as unknown and the print still goes out, just without the advisory badge/focus.
 
-**Why this is acceptable here:** the QL-810W target runs with SNMP on, where all of it works; the
-non-SNMP fallback is the documented opt-out, and an unavailable advisory hint is a soft degradation, not
-a fault — the print still goes out, just without the loaded-vs-template badge and auto-focus.
-
-**Future improvement:** normalize the ESC i S media-type string to `continuous`/`die_cut` (a small map
-in the status decode) so the **advisory** badge and picker size-focus light up on the network+SNMP-off
-path too. The `409` **guard** should stay SNMP-only — ESC i S shares the `:9100` print socket and cannot
-be safely re-queried at preflight the way SNMP can — so this would improve the *hint*, not the
-enforcement.
+**USB cadence caveat:** USB status is read **on demand only** — page load, the manual ↻ button, and the
+print preflight — never on the print page's 4 s background poll. Unlike SNMP (lock-free UDP 161), a USB
+status query claims the single device handle and serializes through `_print_lock`, so polling it every
+few seconds would contend with printing. A USB roll swap is therefore reflected on the next page load or
+↻, not live mid-session. The gates are wired accordingly: `_status_query_supported()` (SNMP **or** USB)
+drives the one-shot read + reprint gating, while `_snmp_guard_applies()` (`live_status_poll`, SNMP only)
+drives the background poll.
 
 ## Reprint replays the *current* template, not the original
 

@@ -19,12 +19,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import Protocol, runtime_checkable
 
 from brother_ql.labels import ALL_LABELS, FormFactor
 
-if TYPE_CHECKING:
-    from app.transports.snmp import PrinterSNMPStatus
+
+@runtime_checkable
+class LoadedMedia(Protocol):
+    """The loaded-roll fields :func:`media_matches` compares — the structural contract both status
+    channels satisfy: :class:`app.transports.snmp.PrinterSNMPStatus` (SNMP) and
+    :class:`app.transports.base.PrinterStatus` (ESC i S / USB). Comparing against a Protocol rather
+    than a concrete class keeps this module decoupled from both transport layers and lets one
+    comparison serve every channel.
+
+    Declared as read-only properties (not plain attributes) so both status types — which are FROZEN
+    dataclasses with read-only fields — structurally satisfy the protocol."""
+
+    @property
+    def reachable(self) -> bool: ...
+    @property
+    def media_width_mm(self) -> float | None: ...
+    @property
+    def media_type(self) -> str | None: ...
+    @property
+    def media_length_mm(self) -> float | None: ...
+
 
 # Built once from the library registry (same source as the driver's capability table) so a template
 # label and the media it requires can never drift from what brother_ql actually rasterises.
@@ -32,6 +51,15 @@ _LABELS = {lbl.identifier: lbl for lbl in ALL_LABELS}
 
 MEDIA_TYPE_CONTINUOUS = "continuous"
 MEDIA_TYPE_DIE_CUT = "die_cut"
+
+# brother_ql.reader maps the status frame's media-type byte (0x0A/0x0B) to these human strings — the
+# printer's DIRECT continuous-vs-die-cut report — so :func:`canonical_media_type` keys off them first.
+# Lower-cased for a case-insensitive match. When the byte is an unrecognised code brother_ql leaves
+# ``media_type`` an int and we fall back to the identified label's form factor.
+_RAW_MEDIA_TYPE_TO_CANONICAL = {
+    "continuous length tape": MEDIA_TYPE_CONTINUOUS,
+    "die-cut labels": MEDIA_TYPE_DIE_CUT,
+}
 
 # The QL reports loaded-media geometry in whole millimetres; allow ±1mm of slop between the
 # template's nominal tape size and the printer's measured roll before calling it a mismatch.
@@ -69,6 +97,35 @@ class RequiredMedia:
     length_mm: float | None = None
 
 
+def media_type_for_form_factor(form_factor: FormFactor) -> str:
+    """Map a brother_ql ``FormFactor`` to the canonical media type.
+
+    ``ENDLESS`` is continuous tape; everything else (``DIE_CUT`` / ``ROUND_DIE_CUT``) is die-cut. The
+    single place this mapping lives, so :func:`required_media_for` (required side) and
+    :func:`canonical_media_type` (loaded side, ESC i S) can never disagree on the form."""
+    return MEDIA_TYPE_CONTINUOUS if form_factor == FormFactor.ENDLESS else MEDIA_TYPE_DIE_CUT
+
+
+def canonical_media_type(decoded: dict[str, object]) -> str | None:
+    """Canonical media type (``continuous``/``die_cut``) for a ``brother_ql.reader.interpret_response``
+    dict, or ``None`` when it cannot be determined.
+
+    Keys off the printer's direct media-type report (the ``media_type`` string brother_ql decodes from
+    the status frame's 0x0A/0x0B byte) first, then falls back to the width/length-identified label's
+    ``form_factor`` — the same brother_ql source :func:`required_media_for` compares against. This is
+    the normalization the SNMP path already applies (``_decode_media``), so every status channel lands
+    on the same two values the UI badge and print guard expect."""
+    raw = decoded.get("media_type")
+    if isinstance(raw, str):
+        canonical = _RAW_MEDIA_TYPE_TO_CANONICAL.get(raw.strip().lower())
+        if canonical is not None:
+            return canonical
+    form_factor = getattr(decoded.get("identified_media"), "form_factor", None)
+    if isinstance(form_factor, FormFactor):
+        return media_type_for_form_factor(form_factor)
+    return None
+
+
 def required_media_for(label_id: str) -> RequiredMedia:
     """Return the media a template's ``label`` requires, from the brother_ql label registry.
 
@@ -85,16 +142,18 @@ def required_media_for(label_id: str) -> RequiredMedia:
         raise ValueError(f"Unknown brother_ql label {label_id!r}. Known: {sorted(_LABELS)}")
     width_mm, length_mm = label.tape_size
     if label.form_factor == FormFactor.ENDLESS:
-        return RequiredMedia(width_mm=float(width_mm), media_type=MEDIA_TYPE_CONTINUOUS)
+        return RequiredMedia(
+            width_mm=float(width_mm), media_type=media_type_for_form_factor(label.form_factor)
+        )
     return RequiredMedia(
         width_mm=float(width_mm),
-        media_type=MEDIA_TYPE_DIE_CUT,
+        media_type=media_type_for_form_factor(label.form_factor),
         length_mm=float(length_mm),
     )
 
 
-def media_matches(required: RequiredMedia, loaded: PrinterSNMPStatus | None) -> MediaMatch:
-    """Compare required media against the loaded roll reported over SNMP.
+def media_matches(required: RequiredMedia, loaded: LoadedMedia | None) -> MediaMatch:
+    """Compare required media against the loaded roll (SNMP or ESC i S).
 
     Returns :attr:`MediaMatch.UNKNOWN` when the loaded media cannot be determined (SNMP
     unreachable/disabled, or reachable but reporting no width/type) so the caller fails open.

@@ -1102,3 +1102,102 @@ def test_history_does_not_probe_status_on_non_snmp(authed_page: Page) -> None:
     expect(authed_page.locator("#history-body button.btn-reprint:disabled")).to_have_count(0)
     expect(authed_page.locator("#history-body tr.row-incompatible")).to_have_count(0)
     expect(authed_page.locator("#roll-note")).to_be_hidden()
+
+
+def test_print_page_focuses_size_group_on_usb_without_polling(authed_page_usb: Page) -> None:
+    """On a USB deployment the print page reads the loaded roll ONCE at load (status_supported) and
+    focuses the matching size group — the ESC i S media read now drives grouping just like SNMP — but
+    it must NOT background-poll (live_status_poll OFF: the single USB device handle must not be claimed
+    on a timer). Route a 62mm continuous USB status; assert focus mode engaged and only the load-time
+    read fired."""
+    calls = {"n": 0}
+    body = _status_body(
+        uri="usb://0x04f9:0x209c",
+        media_width_mm=62.0,
+        media_type="continuous",
+        media_length_mm=None,
+    )
+
+    def handle(route: object) -> None:
+        calls["n"] += 1
+        route.fulfill(status=200, content_type="application/json", body=body)  # type: ignore[attr-defined]
+
+    authed_page_usb.route("**/printer/status", handle)
+    authed_page_usb.goto("/")
+
+    # A known roll → focus mode: only the matching 62mm continuous group, marked ✓, plus the reveal UI.
+    groups = authed_page_usb.locator("#template-select optgroup")
+    expect(groups).to_have_count(1, timeout=8000)
+    assert groups.first.get_attribute("label") == "✓ 62mm continuous"
+    expect(authed_page_usb.locator("#size-filter")).to_be_visible()
+    expect(authed_page_usb.locator("#size-filter-hint")).to_contain_text("hidden")
+
+    # No background poll: wait past a poll interval and assert only the load-time read fired.
+    authed_page_usb.wait_for_timeout(9000)
+    assert calls["n"] <= 1, (
+        f"USB print page must not background-poll; got {calls['n']} /printer/status hits"
+    )
+
+
+def test_history_flags_reprints_advisory_on_usb_without_polling(authed_page_usb: Page) -> None:
+    """On a USB deployment History reads the loaded roll ONCE at load and FLAGS a size mismatch (✗ tag
+    on the 17x54 die-cut row against a 62mm continuous roll) — but ADVISORY only: the Reprint button
+    stays ENABLED and the row is NOT dimmed. USB has no background poll to refresh the roll, so a hard
+    disable would become a stale block on a valid reprint after a roll swap; the server /reprint 409 is
+    the authoritative gate instead (mirrors the print page). Also asserts no background polling."""
+    calls = {"n": 0}
+    body = _status_body(uri="usb://0x04f9:0x209c", media_width_mm=62.0, media_type="continuous")
+
+    def handle(route: object) -> None:
+        calls["n"] += 1
+        route.fulfill(status=200, content_type="application/json", body=body)  # type: ignore[attr-defined]
+
+    _route_history_lists(authed_page_usb)
+    authed_page_usb.route("**/printer/status", handle)
+    authed_page_usb.goto("/history")
+
+    # The mismatched 17x54 row is flagged (✗ tag) but stays ENABLED and undimmed — no stale hard block.
+    mismatch_row = authed_page_usb.locator("#history-body tr").filter(has_text="addr-17x54")
+    expect(mismatch_row.locator(".tag-mismatch")).to_contain_text("needs 17mm")
+    expect(mismatch_row.locator("button.btn-reprint")).to_be_enabled()
+    expect(mismatch_row).not_to_have_class(re.compile("row-incompatible"))
+    # The matching 62mm row is reprintable and unflagged.
+    match_row = authed_page_usb.locator("#history-body tr").filter(has_text="text-62")
+    expect(match_row.locator("button.btn-reprint")).to_be_enabled()
+    expect(match_row.locator(".tag-mismatch")).to_have_count(0)
+    expect(authed_page_usb.locator("#roll-note")).to_contain_text("flagged")
+
+    # No background poll over USB.
+    authed_page_usb.wait_for_timeout(9000)
+    assert calls["n"] <= 1, (
+        f"USB History must not background-poll; got {calls['n']} /printer/status hits"
+    )
+
+
+def test_history_reprint_error_detail_renders_inert(authed_page: Page) -> None:
+    """A hostile /reprint 409 detail (e.g. a spoofed SNMP media_name carrying markup) must render as
+    INERT TEXT in the status banner, never as live DOM. #status-area is on a token-bearing page, so an
+    innerHTML sink here would let a printer-/SNMP-controlled string run script and exfiltrate the API
+    token from localStorage. Regression for the Codex finding on history.html showStatus."""
+    import json
+
+    _route_history_lists(authed_page)  # non-SNMP page → every row reprintable
+    payload = "<img src=x onerror=window.__xss=1>"
+    authed_page.route(
+        "**/reprint/*",
+        lambda r: r.fulfill(
+            status=409,
+            content_type="application/json",
+            body=json.dumps({"detail": {"msg": "media mismatch", "media_loaded": payload}}),
+        ),
+    )
+    authed_page.goto("/history")
+    authed_page.locator("#history-body button.btn-reprint").first.click()
+
+    status_area = authed_page.locator("#status-area")
+    expect(status_area).to_contain_text("Reprint error")
+    # The markup must NOT have become a real element, and the onerror must not have fired.
+    expect(status_area.locator("img")).to_have_count(0)
+    assert authed_page.evaluate("() => window.__xss === undefined"), (
+        "reprint-error markup must not execute as script"
+    )

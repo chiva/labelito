@@ -66,6 +66,15 @@ string) and re-indexes against the actual octet width, so the bit-name mapping i
 A non-zero mask with no recognised bit still registers as an error (`unknownErrorBits:0x…`) so a
 faulted-but-unmapped state can never read as healthy.
 
+**Not every fault sets this mask.** Verified live (2026-06-30): a media-mismatch rejection left
+`hrPrinterDetectedErrorState` at `00` while the printer red-blinked — the fault showed up only in
+`prtConsoleDisplayBufferText` (`"ERROR"`) and `hrPrinterStatus` (`other`). Because the decode also
+maps a console line ≠ `READY` into `errors`, `/printer/status` still reports `state=error` for this
+class of fault, but the bit-derived `printer_detected_error_state` gauge reads all-zero — so alerting
+should lean on `printer_up` and the console/status signal, not the error bits alone. This fault also
+latches device-side and can only be cleared at the printer; see
+[known-limitations](known-limitations.md#the-network-back-channel-is-silent--snmp-is-the-status-channel).
+
 ### Media decode
 
 - **Width** = `prtInputMediaDimXFeedDir / 100` mm (the value is in hundredths of a mm: `6200` ⇒ 62.00 mm).

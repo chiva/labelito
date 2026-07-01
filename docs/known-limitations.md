@@ -42,6 +42,29 @@ a backstop in front of that path, not a replacement for it.
 move to a printer/firmware that returns the `:9100` status frame, so the send path itself can confirm
 the outcome instead of relying on a separate pre-flight read.
 
+**Verified live (2026-06-30, QL-810W): the post-send media fault is invisible to the error bitmask
+and latches until a manual reset.** Sending a die-cut template to the loaded continuous roll put the
+printer into a red-blink error; two behaviours held across repeated SNMP reads and matter for both
+alerting and recovery:
+
+- **The error bitmask stayed `00`.** `hrPrinterDetectedErrorState` — the source for the
+  `printer_detected_error_state` gauge — did **not** flag this fault. It surfaced only in
+  `prtConsoleDisplayBufferText` (`"ERROR"`) and `hrPrinterStatus` (`other`). `/printer/status` still
+  catches it because the SNMP decode maps a console line ≠ `READY` into `errors[]` and reports
+  `state=error`, but the per-condition Prometheus gauge reads **all-zero** during this class of fault.
+  Alert on `printer_up` plus the console/status signal, not on the error-bit gauge alone.
+- **The latch is sticky and locks the printer out.** While latched, the QL **buffered** every
+  subsequent job — including a media-*matching* one — without printing (`prtMarkerLifeCount` frozen,
+  `state` stuck at `error`), and each blocked job still returned `200`. Neither an SNMP write
+  (read-only agent), nor an `ESC @` invalidate+initialize over `:9100`, nor a valid matching print
+  cleared it. Only a device-side reset (power button / cover cycle) cleared the latch — and doing so
+  **flushed the buffered job**, so the held label then printed. There is no remote recovery once
+  latched.
+
+This is the strongest argument for the guard being **pre-flight**: the failure it prevents is not a
+clean one-shot rejection but a device-side lockout that silently buffers jobs behind a `200` and needs
+someone physically at the printer to clear. The only reliable fix is to never send the mismatching job.
+
 ## Reprint replays the *current* template, not the original
 
 `/reprint/{job_id}` re-renders the named template from the live registry using the original

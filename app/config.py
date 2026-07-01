@@ -96,6 +96,21 @@ class Settings(BaseSettings):
     # still freeing the print lock if the device hangs.
     usb_timeout: int = 30
 
+    # SNMP printer status (network transport only). The Brother NIC accepts the :9100 TCP
+    # connection but never returns the status back-channel, so a print can report success while the
+    # hardware rejects it (see docs/known-limitations.md). SNMP (UDP 161, community public) is the
+    # status channel that actually answers on this hardware: loaded media, a reliable error bitmask,
+    # console text and identity. These apply ONLY when the transport inferred from printer_uri is
+    # network; the SNMP host is derived from printer_uri's hostname (there is no separate host
+    # setting). USB and file transports ignore them entirely.
+    snmp_enabled: bool = True
+    snmp_community: str = "public"
+    snmp_port: int = Field(default=161, gt=0, le=65535)
+    # Per-request SNMP timeout in seconds, passed to snmp_get's connected-UDP recv. Kept short
+    # because the status read sits in the print/preflight path; SNMP unreachable fails open (warn +
+    # proceed), so a tight bound trades a slow printer's status for not stalling the request.
+    snmp_timeout: float = Field(default=2.0, gt=0, le=60, allow_inf_nan=False)
+
     # Render limits for continuous labels
     min_length_px: int = 200
     max_length_px: int = 6000

@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Tests for app.config.Settings — SNMP printer-status settings: defaults, env-var override,
+and bounds validation enforced at Settings construction (snmp_port 1-65535, snmp_timeout > 0,
+<= 60, finite)."""
+
+from __future__ import annotations
+
+import math
+
+import pytest
+from pydantic import ValidationError
+
+from app.config import Settings
+
+
+# ── SNMP settings: defaults ──────────────────────────────────────────────────────
+def test_snmp_defaults() -> None:
+    """The out-of-the-box SNMP defaults match the snmp_get / query_snmp_status signature:
+    enabled, community 'public', UDP 161, 2.0 s timeout."""
+    s = Settings()
+    assert s.snmp_enabled is True
+    assert s.snmp_community == "public"
+    assert s.snmp_port == 161
+    assert s.snmp_timeout == 2.0
+
+
+# ── SNMP settings: env-var override ────────────────────────────────────────────────
+def test_snmp_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SNMP_* env vars override every default (case-insensitive per env_prefix config)."""
+    monkeypatch.setenv("SNMP_ENABLED", "false")
+    monkeypatch.setenv("SNMP_COMMUNITY", "private")
+    monkeypatch.setenv("SNMP_PORT", "1161")
+    monkeypatch.setenv("SNMP_TIMEOUT", "5.5")
+    s = Settings()
+    assert s.snmp_enabled is False
+    assert s.snmp_community == "private"
+    assert s.snmp_port == 1161
+    assert s.snmp_timeout == 5.5
+
+
+# ── SNMP settings: snmp_port bounds (1-65535) ──────────────────────────────────────
+def test_snmp_port_zero_rejected() -> None:
+    """SNMP_PORT=0 is out of range (gt=0) and must fail at Settings construction."""
+    with pytest.raises(ValidationError):
+        Settings(snmp_port=0)
+
+
+def test_snmp_port_above_65535_rejected() -> None:
+    """SNMP_PORT=65536 exceeds the 16-bit port space (le=65535) and must fail."""
+    with pytest.raises(ValidationError):
+        Settings(snmp_port=65536)
+
+
+def test_snmp_port_boundaries_accepted() -> None:
+    """The first and last valid ports (1 and 65535) load successfully."""
+    assert Settings(snmp_port=1).snmp_port == 1
+    assert Settings(snmp_port=65535).snmp_port == 65535
+
+
+# ── SNMP settings: snmp_timeout bounds (> 0, <= 60, finite) ─────────────────────────
+def test_snmp_timeout_zero_rejected() -> None:
+    """SNMP_TIMEOUT=0 is out of range (gt=0) and must fail at Settings construction."""
+    with pytest.raises(ValidationError):
+        Settings(snmp_timeout=0)
+
+
+def test_snmp_timeout_above_60_rejected() -> None:
+    """SNMP_TIMEOUT=61 exceeds the upper bound (le=60) and must fail."""
+    with pytest.raises(ValidationError):
+        Settings(snmp_timeout=61)
+
+
+def test_snmp_timeout_nan_rejected() -> None:
+    """SNMP_TIMEOUT=nan is non-finite and must fail at Settings construction."""
+    with pytest.raises(ValidationError):
+        Settings(snmp_timeout=math.nan)
+
+
+def test_snmp_timeout_inf_rejected() -> None:
+    """SNMP_TIMEOUT=inf is non-finite and must fail at Settings construction."""
+    with pytest.raises(ValidationError):
+        Settings(snmp_timeout=math.inf)
+
+
+def test_snmp_timeout_valid_loads() -> None:
+    """A valid SNMP_TIMEOUT (e.g. 10.0) loads successfully and is stored as-is."""
+    assert Settings(snmp_timeout=10.0).snmp_timeout == 10.0

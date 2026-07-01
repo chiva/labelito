@@ -528,6 +528,41 @@ def test_query_snmp_status_tolerates_optional_oid_failure(
     assert status.label_lifecount is None
 
 
+def test_query_snmp_status_enforces_when_descriptive_oids_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A printer that reports the error bitmask + media geometry but omits the descriptive
+    console/media-name OIDs must still yield an enforceable status (reachable, media decoded).
+
+    Regression for the over-broad-critical-OIDs fail-open hole: prtConsoleDisplayBufferText /
+    prtInputMediaName are best-effort, so a version-skewed agent that omits them (here the entire
+    optional GET fails with noSuchName) must NOT disable the media/fault guard — the critical read of
+    error-state + the two dimensions alone is enough to enforce a mismatch."""
+    monkeypatch.setattr(snmp, "_new_request_id", lambda: _PINNED_REQUEST_ID)
+    # Critical GET: ONLY error-state + the two media dimensions — no console, no media_name.
+    critical = _response(
+        _PINNED_REQUEST_ID,
+        [
+            _varbind(OID_HR_PRINTER_DETECTED_ERROR_STATE, snmp._encode_octet_string(b"\x00")),
+            _varbind(OID_PRT_INPUT_MEDIA_DIM_XFEED_DIR, snmp._encode_integer(6200)),
+            _varbind(OID_PRT_INPUT_MEDIA_DIM_FEED_DIR, snmp._encode_integer(-1)),
+        ],
+    )
+    # The agent implements none of the descriptive/telemetry OIDs: the whole optional GET fails.
+    optional_failure = _response(_PINNED_REQUEST_ID, [], error_status=2)  # noSuchName
+    fake = _SequencedUDPSocket([critical, optional_failure])
+    _patch_udp(monkeypatch, fake)
+
+    status = query_snmp_status("192.168.5.14", "public", 161, 1.0)
+
+    assert status.reachable is True, "missing descriptive OIDs must not disable the guard"
+    assert status.media_width_mm == 62.0, "loaded-media geometry still decoded for enforcement"
+    assert status.media_type == "continuous"
+    assert status.error_state_bits == 0
+    assert status.media_name is None, "media_name is best-effort and absent here"
+    assert status.console_text is None, "console text is best-effort and absent here"
+
+
 def test_query_snmp_status_unreachable_when_critical_oid_omitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

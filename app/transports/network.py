@@ -208,6 +208,14 @@ class NetworkTransport:
         best-effort, and silent on this NIC, but the only TCP-native status channel and useful on
         printers whose back-channel does answer. ``request`` is therefore consumed only on the
         fallback path; the SNMP path ignores it.
+
+        Note: when SNMP is *enabled* but unreachable we return ``reachable=False`` directly and do
+        NOT auto-fall-back to ESC i S. That is deliberate: on the QL-810W (this feature's target) the
+        :9100 back-channel is silent, so the fallback would burn the full STATUS_READ_DEADLINE
+        (~10s) on every status query only to also report unreachable — degrading the common case for
+        a niche one. An operator whose printer has a working TCP back-channel but blocked/unsupported
+        SNMP sets ``SNMP_ENABLED=false`` (the documented opt-out) to use ESC i S exclusively. The
+        print preflight's fail-open behaviour is independent of this status-channel choice.
         """
         if settings.snmp_enabled:
             snmp = query_snmp_status(

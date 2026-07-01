@@ -71,23 +71,33 @@ OID_SYS_DESCR = "1.3.6.1.2.1.1.1.0"
 OID_SYS_NAME = "1.3.6.1.2.1.1.5.0"
 OID_PRT_MARKER_LIFE_COUNT = "1.3.6.1.2.1.43.10.2.1.4.1.1"
 
-# Safety-critical OIDs: the error bitmask, loaded-media geometry and console line the print guard
-# relies on. They are fetched together and ALL must come back (see query_snmp_status): a reply that
-# omits one — even with error-status=0 — is treated as unreachable rather than decoded as a healthy
-# printer with no errors. They live in their own GetRequest so an unsupported *optional* OID below
-# cannot, via SNMPv1's all-or-nothing noSuchName, take the critical read down with it.
+# Safety-critical OIDs: ONLY the values the print guard actually enforces on — the error bitmask and
+# the loaded-media geometry (cross-feed width + feed-direction length/type). They are fetched
+# together and ALL must come back (see query_snmp_status): a reply that omits one — even with
+# error-status=0 — is treated as unreachable rather than decoded as a healthy printer with no errors.
+# They live in their own GetRequest so an unsupported *optional* OID below cannot, via SNMPv1's
+# all-or-nothing noSuchName, take the critical read down with it.
+#
+# Deliberately NOT critical: prtConsoleDisplayBufferText and prtInputMediaName. Both are descriptive,
+# never enforcement inputs — the console line only feeds the status card, and media_name only labels
+# the 409 detail string (the media guard compares the decoded geometry, not these). Bundling them
+# into the all-or-nothing critical read would let a printer that DOES report the safety data but
+# omits a commonly-unimplemented descriptive OID (prtConsoleDisplayBufferText especially) disable the
+# whole media/fault guard — a version-skew path straight back to the phantom-success hole. Keeping
+# them best-effort means the guard still enforces whenever the error+geometry OIDs are present.
 CRITICAL_STATUS_OIDS: tuple[str, ...] = (
     OID_HR_PRINTER_DETECTED_ERROR_STATE,
-    OID_PRT_CONSOLE_DISPLAY_BUFFER_TEXT,
-    OID_PRT_INPUT_MEDIA_NAME,
     OID_PRT_INPUT_MEDIA_DIM_XFEED_DIR,
     OID_PRT_INPUT_MEDIA_DIM_FEED_DIR,
 )
-# Optional identity/telemetry OIDs: enrich the status card and metrics but are not guard inputs.
-# hrPrinterStatus (idle/printing) is informational, so it lives here too. A model/firmware lacking
-# any of these (SNMPv1 noSuchName) must not cost us the critical read, so they are fetched in a
-# separate best-effort GetRequest.
+# Optional / best-effort OIDs: descriptive media + console text, identity, and telemetry. They
+# enrich the status card, the 409 detail, and metrics but are not guard inputs. hrPrinterStatus
+# (idle/printing) is informational, so it lives here too. A model/firmware lacking any of these
+# (SNMPv1 noSuchName) must not cost us the critical read, so they are fetched in a separate
+# best-effort GetRequest whose failure simply leaves these fields absent.
 OPTIONAL_STATUS_OIDS: tuple[str, ...] = (
+    OID_PRT_CONSOLE_DISPLAY_BUFFER_TEXT,
+    OID_PRT_INPUT_MEDIA_NAME,
     OID_HR_PRINTER_STATUS,
     OID_PRT_COVER_STATUS,
     OID_HR_DEVICE_DESCR,
@@ -537,7 +547,8 @@ def query_snmp_status(
 ) -> PrinterSNMPStatus:
     """Query the printer status OIDs and decode them into a :class:`PrinterSNMPStatus`.
 
-    The safety-critical OIDs (status/error/media) are fetched first; optional identity/telemetry
+    The safety-critical OIDs (error bitmask + loaded-media geometry — the only values the print
+    guard enforces on) are fetched first; descriptive media/console text, identity and telemetry
     OIDs follow in a separate best-effort GetRequest, so a model that lacks one of them does not
     cost us the critical read (SNMPv1 fails a whole GET on a single unsupported OID).
 

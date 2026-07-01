@@ -3320,6 +3320,37 @@ def test_print_media_mismatch_returns_409(
     assert main_mod._driver.render_payload.call_count == 0
 
 
+def test_print_media_mismatch_enforced_without_media_name(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mismatch is still refused with 409 when the printer omits the descriptive media_name OID.
+
+    media_name is best-effort (it only labels the 409 detail), so a version-skewed agent that reports
+    the safety geometry but not media_name must NOT escape the guard — the detail falls back to a
+    geometry description. Guards the over-broad-critical-OIDs fix end to end."""
+    import app.main as main_mod
+    from app.transports.snmp import PrinterSNMPStatus
+
+    loaded = PrinterSNMPStatus(
+        reachable=True,
+        media_name=None,  # descriptive OID absent
+        media_width_mm=62.0,
+        media_length_mm=None,
+        media_type="continuous",
+    )
+    _write_label_template(main_mod, "diecut", "62x29")
+    _arm_network_snmp(monkeypatch, main_mod, loaded)
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
+    detail = resp.json()["detail"]
+    assert detail["label"] == "62x29"
+    assert "62mm continuous" in detail["media_loaded"], "falls back to a geometry description"
+    assert main_mod._driver.render_payload.call_count == 0
+
+
 def test_print_media_match_prints(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """A continuous 62 template against the loaded 62mm continuous roll passes the guard and prints."""
     import app.main as main_mod

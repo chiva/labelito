@@ -13,6 +13,10 @@
     .nav-link { font-size: .9rem; font-weight: 400; color: #0070f3; text-decoration: none; margin-left: .5rem; }
     .nav-link:hover { text-decoration: underline; }
     .card { background: #fff; border-radius: 8px; padding: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,.1); margin-bottom: 1rem; }
+    /* API token + Printer status sit side by side to save vertical space; they stack on narrow
+       screens (flex-wrap) once neither can keep its ~300px basis. */
+    .top-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: stretch; margin-bottom: 1rem; }
+    .top-row > .card { flex: 1 1 300px; margin-bottom: 0; }
     label { display: block; margin-bottom: .25rem; font-weight: 600; font-size: .9rem; }
     input, select, textarea { width: 100%; padding: .5rem .75rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; margin-bottom: .75rem; }
     select { cursor: pointer; }
@@ -46,23 +50,35 @@
     .btn-refresh:hover { background: #f0f0f0; }
     .printer-detail { margin-top: .6rem; font-size: .85rem; color: #555; line-height: 1.5; }
     .printer-detail .detail-err { color: #991b1b; }
+    .printer-detail summary { cursor: pointer; font-weight: 600; }
+    .printer-detail details { margin-top: .3rem; }
+    /* Per-template media compatibility badge vs the loaded roll (TCP/SNMP only). */
+    .media-badge { display: inline-block; margin: 0 0 .6rem; padding: .15rem .6rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
+    .media-badge:empty { display: none; }
+    .media-ok { background: #dcfce7; color: #166534; }
+    .media-bad { background: #fee2e2; color: #991b1b; }
+    .media-unknown { background: #e5e7eb; color: #555; }
+    .size-filter { font-size: .8rem; color: #777; margin: 0 0 .6rem; }
+    .size-filter-toggle { background: none; border: none; padding: 0; margin-left: .4rem; font: inherit; color: #0070f3; cursor: pointer; text-decoration: underline; }
   </style>
 </head>
 <body>
   <h1><img src="/favicon.svg" alt="" class="logo"> Labelito {% if editor_enabled %}<a href="/editor" class="nav-link">Editor →</a>{% endif %}{% if history_ui %} <a href="/history" class="nav-link">History →</a>{% endif %}</h1>
 
-  <div class="card" id="auth-card">
-    <label for="api-token">API token <span class="optional-tag">(saved in this browser only; leave blank if the server runs unauthenticated)</span></label>
-    <input type="password" id="api-token" placeholder="Bearer token" autocomplete="off">
-  </div>
-
-  <div class="card" id="status-card">
-    <div class="status-head">
-      <strong>Printer</strong>
-      <span id="printer-state" class="state-badge">…</span>
-      <button type="button" class="btn-refresh" onclick="refreshPrinterStatus()" title="Refresh printer status" aria-label="Refresh printer status">↻</button>
+  <div class="top-row">
+    <div class="card" id="auth-card">
+      <label for="api-token">API token <span class="optional-tag">(saved in this browser only; leave blank if the server runs unauthenticated)</span></label>
+      <input type="password" id="api-token" placeholder="Bearer token" autocomplete="off">
     </div>
-    <div id="printer-detail" class="printer-detail"></div>
+
+    <div class="card" id="status-card">
+      <div class="status-head">
+        <strong>Printer</strong>
+        <span id="printer-state" class="state-badge">…</span>
+        <button type="button" class="btn-refresh" onclick="refreshPrinterStatus()" title="Refresh printer status" aria-label="Refresh printer status">↻</button>
+      </div>
+      <div id="printer-detail" class="printer-detail"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -72,6 +88,11 @@
       <option value="{{ t.name }}" data-required="{{ t.required | join(',') }}" data-optional="{{ t.optional | join(',') }}" data-desc="{{ t.description }}">{{ t.name }} — {{ t.description }}</option>
       {% endfor %}
     </select>
+    <div id="media-badge" class="media-badge"></div>
+    <div id="size-filter" class="size-filter" style="display:none">
+      <span id="size-filter-hint"></span>
+      <button type="button" id="size-filter-toggle" class="size-filter-toggle"></button>
+    </div>
     <div id="template-desc"></div>
 
     <div id="fields-container" class="fields-grid"></div>
@@ -124,6 +145,9 @@
   <script>
     const TEMPLATES = {{ templates | tojson }};
     const templateMap = Object.fromEntries(TEMPLATES.map(t => [t.name, t]));
+    // Latest /printer/status body, used to compare the loaded roll against each template's required
+    // media. Null until the first status arrives (or when the status query fails) → compat unknown.
+    let printerStatus = null;
 
     // ── Auth: the token is held only in this browser's localStorage and attached as a
     //    Bearer header on protected requests. Blank token → no header (unauthenticated servers).
@@ -131,6 +155,50 @@
     const tokenInput = document.getElementById('api-token');
     tokenInput.value = localStorage.getItem(TOKEN_KEY) || '';
     tokenInput.addEventListener('input', () => localStorage.setItem(TOKEN_KEY, tokenInput.value.trim()));
+
+    // Persisted UI pref: whether the status card's "Details" disclosure is expanded. Mirrors the
+    // TOKEN_KEY pattern so the choice survives #printer-detail's per-refresh rebuild and page reloads.
+    const PRINTER_DETAILS_KEY = 'labelito_printer_details_open';
+    let printerDetailsOpen = localStorage.getItem(PRINTER_DETAILS_KEY) === '1';
+
+    // ── Live status polling. The SNMP status channel (UDP 161) is independent of the :9100 print
+    //    socket, so the server can answer /printer/status during a print — we poll while the tab is
+    //    visible so the card converges to real device state on its own (offline/fault/print-done)
+    //    without a manual ↻. Backs off when unreachable and pauses when hidden to keep traffic light.
+    const STATUS_POLL_MS = 4000;              // base cadence while the printer is reachable
+    const STATUS_POLL_UNREACHABLE_MS = 15000; // slower cadence once a poll comes back unreachable
+    const STATUS_FETCH_TIMEOUT_MS = 8000;     // abort a status fetch that hangs, so it can't wedge polling
+    let statusPollTimer = null;
+    let statusInFlight = false;               // guards overlapping refreshes (poll vs ↻ vs post-print)
+    let statusRefreshPending = false;         // a refresh requested while one was in flight → run once more
+    // Only background-poll where the server serves /printer/status lock-free over SNMP. On the ESC i S
+    // fallback (USB/file, or SNMP disabled) the status read takes the print lock, so a background poll
+    // would sit on the lock and delay a later print; there we leave manual ↻ + post-print refresh only.
+    const LIVE_STATUS_POLL = {{ live_status_poll | tojson }};
+
+    // ── Template size grouping. The picker is grouped into <optgroup>s by each template's declared
+    //    media denomination (continuous width, or die-cut W×L). When the loaded roll is known we FOCUS
+    //    the matching group and collapse the rest behind a "Show all sizes" toggle, so a printer with a
+    //    non-62mm roll lands on usable templates instead of a wall of red mismatches. Everything needed
+    //    is already on the client (each template's `media` + the loaded roll from /printer/status) — no
+    //    extra server call. The user's show-all preference persists like TOKEN_KEY (see below).
+    const SHOW_ALL_SIZES_KEY = 'labelito_show_all_sizes';
+    let showAllSizes = localStorage.getItem(SHOW_ALL_SIZES_KEY) === '1';
+    let lastLoadedMediaKey = undefined;  // detects a roll swap to drive a one-time refocus (vs every poll)
+    let lastShowAllSizes = undefined;    // with the above, lets a no-op poll skip the <select> rebuild
+    // True once the user has made an explicit, not-yet-printed choice — typed a field OR manually
+    // picked a template. It suppresses the roll-driven auto-SELECT below so a late/slow
+    // /printer/status reply (or a roll-change poll) can't silently change the selected template and
+    // discard typed input or override an explicit pick. Scoped, not a permanent latch: a successful
+    // print "consumes" the choice and clears it, so a roll swap AFTER a print still re-focuses to a
+    // matching template. Deliberately NOT reset by renderFields — a programmatic refocus rebuilds the
+    // fields too, and resetting there would defeat the guard for a manual pick.
+    let userOverride = false;
+    // Monotonic token bumped on every field input / manual pick. doPrint captures it at send time and
+    // clears userOverride on completion ONLY if it is unchanged — so a print reply that lands AFTER the
+    // user has started the next label can't clear a guard that newer input has re-raised (stale-completion
+    // race).
+    let formRevision = 0;
 
     function authHeaders() {
       const headers = {'Content-Type': 'application/json'};
@@ -149,9 +217,9 @@
     }
 
     // ── Printer status card. Mirrors the backend PrinterState enum (off/idle/printing/error).
-    //    Refreshed on load, on demand via the ↻ button, and after each print. No background poll:
-    //    the server intentionally avoids a keep-alive ping, and every query opens a real
-    //    connection to the printer.
+    //    Refreshed on load, on demand via the ↻ button, after each print, and by a visible-tab
+    //    background poll (see STATUS_POLL_MS). Polling lives in the browser by design — the server
+    //    intentionally stays stateless per request and avoids a keep-alive task.
     const STATE_LABELS = {off: 'Off', idle: 'Idle', printing: 'Printing', error: 'Error'};
     const STATE_CLASS = {off: 'state-off', idle: 'state-idle', printing: 'state-printing', error: 'state-error'};
 
@@ -162,50 +230,374 @@
     }
 
     function renderPrinterStatus(data) {
+      printerStatus = data;
       setStateBadge(data.state);
-      const lines = [];
-      if (data.uri) lines.push(`<div>URI: <code>${data.uri}</code></div>`);
+      // Build the card with DOM nodes + textContent, never innerHTML: network status now comes
+      // from SNMP, so `model` (hrDeviceDescr) and `errors` (which can carry the printer's console
+      // text) are device/network-supplied and untrusted. A spoofed SNMP peer must not be able to
+      // inject markup into this token-bearing page. textContent escapes every value for us.
+      const detail = document.getElementById('printer-detail');
+      detail.replaceChildren();
+      const lineIn = (parent, cls) => {
+        const div = document.createElement('div');
+        if (cls) div.className = cls;
+        parent.appendChild(div);
+        return div;
+      };
+      const addLine = (cls) => lineIn(detail, cls);
+      // ── Primary: the live operational status, kept compact and always visible.
       if (data.reachable) {
-        if (data.model) lines.push(`<div>Model: ${data.model}</div>`);
+        const bits = [];
+        if (data.model) bits.push(`Model: ${data.model}`);
         if (data.media_type) {
           const len = data.media_length_mm ? `×${data.media_length_mm}mm` : '';
           const w = data.media_width_mm != null ? `${data.media_width_mm}mm${len}` : '';
-          lines.push(`<div>Media: ${data.media_type}${w ? ' (' + w + ')' : ''}</div>`);
+          bits.push(`Media: ${data.media_type}${w ? ' (' + w + ')' : ''}`);
         }
+        if (bits.length) addLine().textContent = bits.join(' · ');
+        if (data.console_text) addLine().textContent = `Console: ${data.console_text}`;
       }
       if (Array.isArray(data.errors) && data.errors.length) {
-        lines.push(`<div class="detail-err">${data.errors.join('; ')}</div>`);
+        addLine('detail-err').textContent = data.errors.join('; ');
       }
-      document.getElementById('printer-detail').innerHTML = lines.join('');
+      // ── Secondary: URI + SNMP identity/inventory behind a disclosure, off by default so they never
+      //    crowd the live status. All device-supplied → textContent keeps them inert (see XSS note).
+      //    Open state persists across this rebuild and reloads via printerDetailsOpen.
+      const secondary = [];
+      if (data.uri) secondary.push(['URI', data.uri, true]);
+      if (data.reachable) {
+        if (data.serial) secondary.push(['Serial', data.serial]);
+        if (data.firmware) secondary.push(['Firmware', data.firmware]);
+        if (data.label_lifecount != null) {
+          secondary.push(['Labels printed (lifetime)', String(data.label_lifecount)]);
+        }
+      }
+      if (secondary.length) {
+        const det = document.createElement('details');
+        det.open = printerDetailsOpen;
+        det.addEventListener('toggle', () => {
+          printerDetailsOpen = det.open;
+          localStorage.setItem(PRINTER_DETAILS_KEY, det.open ? '1' : '0');
+        });
+        const sum = document.createElement('summary');
+        sum.textContent = 'Details';
+        det.appendChild(sum);
+        for (const [label, value, asCode] of secondary) {
+          const line = lineIn(det);
+          if (asCode) {
+            line.append(`${label}: `);
+            const code = document.createElement('code');
+            code.textContent = value;
+            line.appendChild(code);
+          } else {
+            line.textContent = `${label}: ${value}`;
+          }
+        }
+        detail.appendChild(det);
+      }
+      rebuildTemplatePicker();
     }
 
     async function refreshPrinterStatus() {
+      // In-flight guard: the poll, the ↻ button, and the post-print refresh all funnel through here.
+      // A query opens a real socket to the printer, so overlapping calls are wasteful — let the first
+      // win. But don't silently DROP a later request (e.g. the post-print reconcile that must clear an
+      // optimistic "Printing…" badge): mark it pending and run exactly one follow-up when this finishes.
+      if (statusInFlight) { statusRefreshPending = true; return; }
+      statusInFlight = true;
+      // Abort a hung fetch so it can't pin statusInFlight=true forever and wedge the whole poll loop.
+      const controller = new AbortController();
+      const abortTimer = setTimeout(() => controller.abort(), STATUS_FETCH_TIMEOUT_MS);
       try {
-        const res = await fetch('/printer/status', {headers: authHeaders()});
+        const res = await fetch('/printer/status', {headers: authHeaders(), signal: controller.signal});
         if (res.status === 401) {
           handleAuthError(res);
           setStateBadge('off', 'Auth required');
-          document.getElementById('printer-detail').innerHTML = '';
+          document.getElementById('printer-detail').replaceChildren();
+          printerStatus = null;
+          rebuildTemplatePicker();
           return;
         }
         // Both 200 and 503 carry the same body shape (state/uri/reachable/errors).
         const data = await res.json().catch(() => null);
         if (!data) {
           setStateBadge('off', 'Unknown');
-          document.getElementById('printer-detail').innerHTML = '';
+          document.getElementById('printer-detail').replaceChildren();
+          printerStatus = null;
+          rebuildTemplatePicker();
           return;
         }
         renderPrinterStatus(data);
       } catch (e) {
+        // Includes AbortError when the fetch times out — treat any failure as unreachable.
         setStateBadge('off', 'Unreachable');
-        document.getElementById('printer-detail').innerHTML =
-          `<div class="detail-err">Network error: ${e.message}</div>`;
+        const detail = document.getElementById('printer-detail');
+        detail.replaceChildren();
+        const div = document.createElement('div');
+        div.className = 'detail-err';
+        div.textContent = `Network error: ${e.message}`;
+        detail.appendChild(div);
+        printerStatus = null;
+        rebuildTemplatePicker();
+      } finally {
+        clearTimeout(abortTimer);
+        statusInFlight = false;
+        // Run the one coalesced follow-up requested while this was in flight (e.g. post-print reconcile),
+        // so the latest request always lands and an optimistic badge can't be left stale.
+        if (statusRefreshPending) {
+          statusRefreshPending = false;
+          refreshPrinterStatus();
+        }
       }
     }
+
+    // Self-scheduling poll: a setTimeout chain (not setInterval) so the cadence can vary with the last
+    // result and never stacks ticks. Skips work while the tab is hidden, and slows down when the
+    // printer is unreachable so a powered-off printer doesn't drive a tight retry loop.
+    function scheduleNextStatusPoll(ms) {
+      if (statusPollTimer !== null) clearTimeout(statusPollTimer);
+      statusPollTimer = setTimeout(pollPrinterStatus, ms);
+    }
+    async function pollPrinterStatus() {
+      if (document.hidden) { scheduleNextStatusPoll(STATUS_POLL_MS); return; }
+      await refreshPrinterStatus();
+      const reachable = printerStatus && printerStatus.reachable;
+      scheduleNextStatusPoll(reachable ? STATUS_POLL_MS : STATUS_POLL_UNREACHABLE_MS);
+    }
+    // Resume immediately when the tab regains focus (polls paused while hidden go stale fast).
+    document.addEventListener('visibilitychange', () => {
+      if (LIVE_STATUS_POLL && !document.hidden) pollPrinterStatus();
+    });
 
     function currentTemplate() {
       const sel = document.getElementById('template-select');
       return templateMap[sel.value] || TEMPLATES[0];
+    }
+
+    // ── Media compatibility: a client-side mirror of the server's app.media.media_matches, so each
+    //    template can be badged ✓/✗/? against the loaded roll and mismatching ones disabled BEFORE
+    //    the user hits print (the server still enforces the same rule with a 409). Tolerances and the
+    //    width/form/length rule match the server exactly.
+    const WIDTH_TOLERANCE_MM = 1.0;
+    const LENGTH_TOLERANCE_MM = 1.0;
+
+    // A printer whose loaded media we can actually read: network (SNMP) OR USB (ESC i S). Both report
+    // canonical media_type; file:// has no printer. Gated on scheme because that is what the server's
+    // status channel maps to (tcp:// → SNMP, usb:// → ESC i S).
+    function isQueryablePrinter() {
+      const uri = printerStatus && printerStatus.uri;
+      return typeof uri === 'string' && (uri.startsWith('tcp://') || uri.startsWith('usb://'));
+    }
+
+    // The loaded roll as a {width_mm, media_type, length_mm} object, or null when it can't be
+    // compared: status unreachable, a transport with no readable media (file://), or a media_type
+    // that isn't one of the canonical values → treated as unknown.
+    function loadedMedia() {
+      const s = printerStatus;
+      if (!s || !s.reachable || !isQueryablePrinter()) return null;
+      if (s.media_width_mm == null) return null;
+      if (s.media_type !== 'continuous' && s.media_type !== 'die_cut') return null;
+      return {width_mm: s.media_width_mm, media_type: s.media_type, length_mm: s.media_length_mm};
+    }
+
+    function mediaDesc(m) {
+      if (!m || m.width_mm == null || !m.media_type) return 'unknown media';
+      const kind = m.media_type === 'die_cut' ? 'die-cut' : m.media_type;
+      if (m.media_type === 'die_cut' && m.length_mm != null) {
+        return `${m.width_mm}mm×${m.length_mm}mm ${kind}`;
+      }
+      return `${m.width_mm}mm ${kind}`;
+    }
+
+    // 'match' | 'mismatch' | 'unknown' — mirrors app.media.media_matches.
+    function mediaCompat(required, loaded) {
+      if (!required || !loaded) return 'unknown';
+      if (Math.abs(required.width_mm - loaded.width_mm) > WIDTH_TOLERANCE_MM) return 'mismatch';
+      if (required.media_type !== loaded.media_type) return 'mismatch';
+      if (required.media_type === 'die_cut' && required.length_mm != null
+          && loaded.length_mm != null
+          && Math.abs(required.length_mm - loaded.length_mm) > LENGTH_TOLERANCE_MM) {
+        return 'mismatch';
+      }
+      return 'match';
+    }
+
+    function renderMediaBadge(required, compat, loaded) {
+      const badge = document.getElementById('media-badge');
+      if (!badge) return;
+      badge.className = 'media-badge';
+      if (!required) { badge.textContent = ''; return; }
+      if (compat === 'match') {
+        badge.classList.add('media-ok');
+        badge.textContent = `✓ ${mediaDesc(required)}`;
+        badge.title = 'The loaded roll matches this template.';
+      } else if (compat === 'mismatch') {
+        badge.classList.add('media-bad');
+        badge.textContent = `✗ needs ${mediaDesc(required)} — loaded ${mediaDesc(loaded)}`;
+        badge.title = 'The loaded roll does not match this template; the server will reject a real '
+          + 'print with a 409. Preview and dry run still work; refresh ↻ after changing the roll.';
+      } else {
+        badge.classList.add('media-unknown');
+        badge.textContent = `media: ${mediaDesc(required)}`;
+        badge.title = 'Loaded media unknown (SNMP unavailable or non-network printer) — not checked.';
+      }
+    }
+
+    // Badge the CURRENT selection ✓/✗/? for the loaded roll. Purely ADVISORY — it never disables
+    // anything. The Print button is deliberately not blocked from this cached status: /print does a
+    // fresh SNMP check on every call and 409s a real mismatch (and exempts dry runs), so it is the
+    // authoritative, never-stale guard. 'unknown' (SNMP down / non-network) shows a neutral badge.
+    // Split out of rebuildTemplatePicker so a plain template change (groups unchanged) refreshes just
+    // the badge.
+    function updateMediaBadge() {
+      const loaded = loadedMedia();
+      const t = currentTemplate();
+      renderMediaBadge(t ? t.media : null, t ? mediaCompat(t.media, loaded) : 'unknown', loaded);
+    }
+
+    // Stable group key for a {width_mm, media_type, length_mm} media object (null → 'other'). Used to
+    // bucket templates AND to detect when the loaded roll changes between polls.
+    function groupKeyOf(media) {
+      if (!media || media.width_mm == null) return 'other';
+      if (media.media_type === 'die_cut') return `d:${media.width_mm}x${media.length_mm}`;
+      return `c:${media.width_mm}`;
+    }
+    function groupTitleOf(media, fallbackLabel) {
+      if (!media || media.width_mm == null) {
+        return fallbackLabel ? `Other — ${fallbackLabel}` : 'Other / unknown size';
+      }
+      if (media.media_type === 'die_cut') return `${media.width_mm}×${media.length_mm}mm die-cut`;
+      return `${media.width_mm}mm continuous`;
+    }
+    // Sort order: continuous (by width), then die-cut (by width, then length), then 'other'.
+    function groupSortKey(media) {
+      if (!media || media.width_mm == null) return [2, 0, 0];
+      if (media.media_type === 'die_cut') return [1, media.width_mm, media.length_mm || 0];
+      return [0, media.width_mm, 0];
+    }
+
+    // Rebuild the <optgroup>-grouped picker for the current loaded roll + show-all preference. Called on
+    // init, on every status refresh (the loaded roll may change), and when the show-all toggle flips.
+    // DOM nodes + textContent only (never innerHTML): the loaded-media strings are device-supplied.
+    function rebuildTemplatePicker() {
+      const sel = document.getElementById('template-select');
+      const loaded = loadedMedia();
+      const loadedKey = loaded ? groupKeyOf(loaded) : null;
+      const rollChanged = loadedKey !== lastLoadedMediaKey;
+      // Skip the <select> rebuild when neither the loaded roll nor the show-all preference changed: a
+      // background poll fires every few seconds, and replaceChildren() on the picker would snap a
+      // user-opened dropdown shut. The badge still refreshes (it's cheap and never moves focus).
+      if (!rollChanged && showAllSizes === lastShowAllSizes && sel.options.length) {
+        updateMediaBadge();
+        return;
+      }
+      lastLoadedMediaKey = loadedKey;
+      lastShowAllSizes = showAllSizes;
+
+      // Bucket templates by media group, keeping a representative media + label per group.
+      const groups = new Map();  // key -> {media, label, items: [t]}
+      for (const t of TEMPLATES) {
+        const key = groupKeyOf(t.media);
+        let g = groups.get(key);
+        if (!g) { g = {media: t.media || null, label: t.label, items: []}; groups.set(key, g); }
+        g.items.push(t);
+      }
+      const ordered = [...groups.entries()].sort((a, b) => {
+        const ka = groupSortKey(a[1].media), kb = groupSortKey(b[1].media);
+        return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
+      });
+      for (const [, g] of ordered) g.items.sort((x, y) => x.name.localeCompare(y.name));
+
+      // The group whose media matches the loaded roll (tolerance-aware, via mediaCompat).
+      let matchKey = null;
+      if (loaded) {
+        for (const [key, g] of ordered) {
+          if (g.items.length && mediaCompat(g.items[0].media, loaded) === 'match') { matchKey = key; break; }
+        }
+      }
+      const matchGroup = matchKey ? groups.get(matchKey) : null;
+
+      // Decide the selection BEFORE choosing visible groups, so a roll-driven refocus lands in the
+      // matching group without also having to reveal the previously-selected group.
+      const prevVal = sel.value;
+      let desiredVal = prevVal;
+      if (!showAllSizes && matchGroup && matchGroup.items.length && rollChanged && !userOverride) {
+        const prevT = templateMap[prevVal];
+        // Only auto-move when the current pick isn't already usable on the loaded roll — never yank an
+        // already-compatible choice, and never override an explicit user choice (userOverride gates this:
+        // a late status reply can't change a typed-into or manually-picked template — but a post-print
+        // roll swap still refocuses, since a successful print clears the override).
+        if (!prevT || mediaCompat(prevT.media, loaded) !== 'match') {
+          desiredVal = matchGroup.items[0].name;
+        }
+      }
+
+      // Focus mode = a loaded roll with a matching group, and the user hasn't asked to see all sizes.
+      const focus = !showAllSizes && !!(matchGroup && matchGroup.items.length);
+      const desiredKey = templateMap[desiredVal] ? groupKeyOf(templateMap[desiredVal].media) : null;
+      const visibleKeys = focus
+        ? new Set([matchKey, desiredKey].filter(k => k !== null))
+        : new Set(ordered.map(([k]) => k));
+
+      sel.replaceChildren();
+      let hiddenCount = 0;
+      for (const [key, g] of ordered) {
+        if (!visibleKeys.has(key)) { hiddenCount += g.items.length; continue; }
+        const og = document.createElement('optgroup');
+        const title = groupTitleOf(g.media, g.label);
+        og.label = key === matchKey ? `✓ ${title}` : title;
+        for (const t of g.items) {
+          const opt = document.createElement('option');
+          opt.value = t.name;
+          const base = `${t.name} — ${t.description || ''}`.replace(/ — $/, '');
+          // In show-all mode a mismatching option stays listed with a "(needs …)" hint; in focus mode
+          // only matching/selected groups show, so the hint would be redundant there.
+          opt.textContent = (!focus && mediaCompat(t.media, loaded) === 'mismatch')
+            ? `${base}  (needs ${mediaDesc(t.media)})`
+            : base;
+          og.appendChild(opt);
+        }
+        sel.appendChild(og);
+      }
+
+      // Apply the selection. Programmatic .value changes don't fire 'change', so when the selection
+      // actually moved (roll-driven refocus, or the old pick is now hidden) re-render fields + preview.
+      const flatValues = [...sel.options].map(o => o.value);
+      const finalVal = flatValues.includes(desiredVal) ? desiredVal
+        : (flatValues.includes(prevVal) ? prevVal : (flatValues[0] || ''));
+      sel.value = finalVal;
+      const selectionChanged = finalVal !== prevVal;
+
+      renderSizeFilterControl(loaded, matchGroup, focus, hiddenCount);
+
+      if (selectionChanged) renderFields();
+      updateMediaBadge();
+      if (selectionChanged) doPreview();
+    }
+
+    // The "Show all sizes" / "Show only matching size" toggle + hidden-count hint under the picker.
+    // Hidden entirely when the loaded roll is unknown (nothing to filter against).
+    function renderSizeFilterControl(loaded, matchGroup, focus, hiddenCount) {
+      const wrap = document.getElementById('size-filter');
+      const hint = document.getElementById('size-filter-hint');
+      const toggle = document.getElementById('size-filter-toggle');
+      if (!wrap || !hint || !toggle) return;
+      if (!loaded) { wrap.style.display = 'none'; return; }
+      wrap.style.display = '';
+      if (focus) {
+        hint.textContent = hiddenCount
+          ? `${hiddenCount} template${hiddenCount === 1 ? '' : 's'} on other sizes hidden`
+          : '';
+        toggle.textContent = 'Show all sizes';
+      } else if (showAllSizes && matchGroup && matchGroup.items.length) {
+        hint.textContent = '';
+        toggle.textContent = 'Show only matching size';
+      } else {
+        // Known roll but no matching template — we fell back to showing every size.
+        hint.textContent = `No templates for the loaded ${mediaDesc(loaded)} roll — showing all sizes`;
+        toggle.textContent = '';
+      }
+      toggle.style.display = toggle.textContent ? '' : 'none';
     }
 
     function renderFields() {
@@ -227,6 +619,7 @@
         inp.id = `field-${name}`;
         inp.name = name;
         inp.placeholder = name;
+        inp.addEventListener('input', () => { userOverride = true; formRevision++; });
         inp.addEventListener('input', debounce(doPreview, 600));
         wrap.appendChild(lbl);
         wrap.appendChild(inp);
@@ -289,6 +682,15 @@
 
     async function doPrint() {
       const payload = buildPayload();
+      // Snapshot the form revision at send time. On completion we only clear userOverride if it is
+      // unchanged — so if the user starts editing the next label while this request is in flight, the
+      // stale reply won't clear a guard their newer input has re-raised (and won't let the post-print
+      // refresh refocus over it).
+      const printRevision = formRevision;
+      // Optimistic feedback: a print is sub-second and may finish between polls, so reflect "Printing…"
+      // the instant the job is sent. The post-print refresh and the background poll converge the badge
+      // back to the printer's real state; failure paths below reconcile it so it can never stick.
+      setStateBadge('printing', 'Printing…');
       try {
         const res = await fetch('/print', {
           method: 'POST',
@@ -296,17 +698,23 @@
           body: JSON.stringify(payload),
         });
         if (!res.ok) {
-          if (handleAuthError(res)) return;
+          if (handleAuthError(res)) { refreshPrinterStatus(); return; }
           const err = await res.json().catch(() => ({detail: res.statusText}));
           showStatus('Print error: ' + JSON.stringify(err.detail || err), 'err');
+          refreshPrinterStatus();  // e.g. a 409 fault — show the real state, not a stuck "Printing…"
           return;
         }
         const json = await res.json();
+        // Choice submitted (incl. dry run) → a later roll swap may refocus again — but only if the user
+        // hasn't started a NEW choice since this print was sent (else we'd clear a guard newer input
+        // re-raised and let the post-print refresh wipe it).
+        if (formRevision === printRevision) userOverride = false;
         showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
         await doPreview();
         refreshPrinterStatus();
       } catch (e) {
         showStatus('Network error: ' + e.message, 'err');
+        refreshPrinterStatus();
       }
     }
 
@@ -319,10 +727,24 @@
     function showStatus(msg, type, {sticky} = {}) {
       const area = document.getElementById('status-area');
       if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
-      const close = sticky
-        ? '<button type="button" class="close" onclick="clearStatus({force: true})" aria-label="Dismiss">×</button>'
-        : '';
-      area.innerHTML = `<div class="status ${type}">${close}${msg}</div>`;
+      // Build the banner with DOM nodes + textContent, never innerHTML: `msg` can embed
+      // device/network-supplied text (a /print 409 detail carries the printer's SNMP media_name and
+      // console-derived error strings). Interpolating that into innerHTML on this token-bearing page
+      // is an XSS sink — a spoofed/hostile printer string could run script and exfiltrate the API
+      // token from localStorage. JSON.stringify does NOT escape <,>,/ so it is no defence here.
+      const div = document.createElement('div');
+      div.className = `status ${type}`;
+      if (sticky) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'close';
+        btn.setAttribute('aria-label', 'Dismiss');
+        btn.textContent = '×';
+        btn.addEventListener('click', () => clearStatus({force: true}));
+        div.appendChild(btn);
+      }
+      div.appendChild(document.createTextNode(msg));
+      area.replaceChildren(div);
       if (sticky) {
         area.dataset.sticky = '1';
         statusTimer = setTimeout(() => clearStatus({force: true}), STATUS_STICKY_MS);
@@ -333,7 +755,7 @@
     function clearStatus({force} = {}) {
       const area = document.getElementById('status-area');
       if (area.dataset.sticky && !force) return;
-      area.innerHTML = '';
+      area.replaceChildren();
       delete area.dataset.sticky;
       if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
     }
@@ -347,8 +769,16 @@
     }
 
     document.getElementById('template-select').addEventListener('change', () => {
+      userOverride = true;  // an explicit pick must not be overridden by a later roll-driven refocus
+      formRevision++;
       renderFields();
+      updateMediaBadge();
       doPreview();
+    });
+    document.getElementById('size-filter-toggle').addEventListener('click', () => {
+      showAllSizes = !showAllSizes;
+      localStorage.setItem(SHOW_ALL_SIZES_KEY, showAllSizes ? '1' : '0');
+      rebuildTemplatePicker();  // not a roll change → rollChanged false → no refocus, just regroup
     });
 
     // Disable threshold input when dither is on: threshold is a no-op under Floyd-Steinberg
@@ -369,7 +799,9 @@
 
     // Init
     renderFields();
+    rebuildTemplatePicker();  // group the picker + badge from required media; refreshed once status loads
     refreshPrinterStatus();
+    if (LIVE_STATUS_POLL) scheduleNextStatusPoll(STATUS_POLL_MS);  // visible-tab poll, SNMP only
     if (TEMPLATES.length > 0) doPreview();
   </script>
 </body>

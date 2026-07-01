@@ -36,6 +36,26 @@
     dialog#confirm-dialog { border: none; border-radius: 8px; padding: 1.5rem; max-width: 26rem; color: #222; box-shadow: 0 4px 24px rgba(0,0,0,.25); }
     dialog#confirm-dialog::backdrop { background: rgba(0,0,0,.35); }
     dialog#confirm-dialog p { margin: 0; font-size: .95rem; line-height: 1.5; }
+    .label-ref summary { cursor: pointer; font-weight: 600; margin: .2rem 0 .4rem; }
+    .label-ref table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    .label-ref th, .label-ref td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #eee; vertical-align: middle; }
+    .label-ref th { font-size: .8rem; color: #666; text-transform: uppercase; letter-spacing: .03em; }
+    .label-ref code { background: #f1f5f9; padding: .1rem .4rem; border-radius: 3px; font-size: .85rem; }
+    .label-ref tr.match td { background: #f0fdf4; }
+    .label-ref tr.match-geo td { background: #fffbeb; }
+    .label-ref .match-tick { color: #166534; font-weight: 700; margin-left: .4rem; }
+    .label-ref .match-tick.geo { color: #b45309; }
+    .your-printer .yp-red { margin-top: .3rem; color: #92400e; }
+    .label-ref .btn { padding: .25rem .7rem; font-size: .8rem; margin: 0; }
+    .your-printer { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: .6rem .8rem; margin-bottom: .9rem; font-size: .9rem; }
+    .your-printer code { background: #dbeafe; padding: .1rem .4rem; border-radius: 3px; }
+    .your-printer .yp-matches { margin-top: .3rem; color: #1e3a8a; }
+    .help-ref summary { cursor: pointer; font-weight: 700; }
+    .help-ref { font-size: .88rem; line-height: 1.5; }
+    .help-ref h3 { font-size: .92rem; margin: 1rem 0 .3rem; }
+    .help-ref code { background: #f1f5f9; padding: .1rem .35rem; border-radius: 3px; }
+    .help-ref table { width: 100%; border-collapse: collapse; margin-top: .25rem; }
+    .help-ref th, .help-ref td { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid #eee; vertical-align: top; }
   </style>
 </head>
 <body>
@@ -84,6 +104,57 @@
     </div>
   </div>
 
+  <!-- ── Label reference: every label the configured model supports + what the printer has loaded ── -->
+  <div class="card label-ref">
+    <div class="section-title">Label reference</div>
+    <p class="muted">Every label your configured printer model supports — use one of these <code>id</code>s as the <code>label:</code> value in the YAML above. <strong>Use</strong> sets it for you. When the printer answers SNMP, the loaded roll and the matching label id(s) are highlighted below.</p>
+    <div id="your-printer"></div>
+    <details class="label-table">
+      <summary>All supported labels</summary>
+      <table>
+        <thead><tr><th>id</th><th>media</th><th></th></tr></thead>
+        <tbody id="label-ref-body"></tbody>
+      </table>
+    </details>
+  </div>
+
+  <!-- ── Template format cheatsheet — a quick reference; docs/template-format.md is authoritative ──
+       The block below is wrapped in a Jinja raw guard so the literal token examples (name/date/now/
+       seq placeholders and the [[key]] form) are emitted verbatim, not interpreted as empty Jinja
+       variables on render. This comment carries no template tags so it cannot reopen the guard. -->
+  {% raw %}
+  <div class="card help-ref">
+    <details>
+      <summary>Template format reference</summary>
+      <p class="muted">A quick cheatsheet. The full reference (every parameter, defaults, and bounds) lives in <code>docs/template-format.md</code> in the repo.</p>
+
+      <h3>Top-level keys</h3>
+      <p><code>name</code> (unique id), <code>description</code>, <code>label</code> (a label id from the reference above), and <code>layout</code> are required. <code>rotate</code> (0/90/180/270) and <code>fields</code> are optional.</p>
+
+      <h3>Fields &amp; tokens</h3>
+      <p>Declare <code>fields.required</code>/<code>fields.optional</code> (names: letters, digits, <code>_</code>). Reference each with <code>{{name}}</code> in an element's <code>text</code>, <code>data</code>, or <code>name</code>. Computed tokens are always available: <code>{{date}}</code>, <code>{{now}}</code> (with <code>±Nd/w/m/y</code> offset and <code>:strftime</code> format), and <code>{{seq}}</code> (sequence batches). Translation words use <code>[[key]]</code>.</p>
+
+      <h3>Element types</h3>
+      <table>
+        <thead><tr><th>type</th><th>key attributes</th></tr></thead>
+        <tbody>
+          <tr><td><code>title</code> / <code>subtitle</code></td><td><code>text</code>, <code>align</code>, <code>max_lines</code>, <code>bold</code></td></tr>
+          <tr><td><code>text</code></td><td><code>text</code>, <code>size</code>, <code>align</code>, <code>bold</code>, <code>max_lines</code></td></tr>
+          <tr><td><code>qr</code></td><td><code>data</code>, <code>size</code>, <code>align</code></td></tr>
+          <tr><td><code>barcode</code></td><td><code>data</code>, <code>symbology</code>, <code>height</code>, <code>align</code></td></tr>
+          <tr><td><code>image</code></td><td><code>field</code>, <code>max_height</code>, <code>align</code></td></tr>
+          <tr><td><code>icon</code></td><td><code>name</code>, <code>size</code>, <code>align</code>, <code>collection</code>, <code>style</code></td></tr>
+          <tr><td><code>line</code></td><td><code>thickness</code>, <code>margin</code></td></tr>
+          <tr><td><code>box</code></td><td><code>height</code>, <code>border</code></td></tr>
+          <tr><td><code>spacer</code></td><td><code>size</code></td></tr>
+          <tr><td><code>row</code></td><td><code>children</code>, <code>align_items</code>, <code>spacing</code> (children take <code>width</code>/<code>weight</code>/<code>valign</code>)</td></tr>
+        </tbody>
+      </table>
+      <p>Every element also takes <code>padding_top</code>/<code>padding_bottom</code> and <code>color</code> (<code>red</code> on two-color models).</p>
+    </details>
+  </div>
+  {% endraw %}
+
   <div id="status-area"></div>
 
   <!-- In-page confirm modal. A native confirm() opened by activating "Load" with the Enter key is
@@ -105,7 +176,16 @@
     const TOKEN_KEY = 'labelito_api_token';
     const tokenInput = document.getElementById('api-token');
     tokenInput.value = localStorage.getItem(TOKEN_KEY) || '';
-    tokenInput.addEventListener('input', () => localStorage.setItem(TOKEN_KEY, tokenInput.value.trim()));
+    // Re-pull the printer status (and so the "Your Printer" highlight) when the token changes: on a
+    // secured deployment the first-run visitor lands tokenless, and /printer/status 401s on the
+    // initial load — without this refetch the loaded-roll highlight would stay blank until a manual
+    // page reload. Debounced so it fires once the operator stops typing, not per keystroke. (debounce
+    // and loadLabelReference are hoisted function declarations, so referencing them here is fine.)
+    const reloadReferenceOnAuth = debounce(loadLabelReference, 600);
+    tokenInput.addEventListener('input', () => {
+      localStorage.setItem(TOKEN_KEY, tokenInput.value.trim());
+      reloadReferenceOnAuth();
+    });
 
     function authHeaders() {
       const headers = {'Content-Type': 'application/json'};
@@ -129,6 +209,10 @@
 
     // The YAML last seeded or loaded, so "Load existing" can confirm before discarding edits.
     let lastLoadedYaml = '';
+
+    // Every label the configured model supports, each with the media it requires (mm) — embedded by
+    // the editor route from the same source as the print-page badge and the /print media guard.
+    const LABELS = {{ labels | tojson }};
 
     // ── Field-input rendering — reused verbatim from the print page (index.html#renderFields):
     //    one labelled text input per declared field, optional tagged, debounced re-preview on input.
@@ -357,6 +441,230 @@
       }
     }
 
+    // ── Label reference + "Your Printer" ─────────────────────────────────────────────────────────
+    // The media rule mirrors the server (app.media.media_matches) and the print page exactly: width
+    // ±1mm, continuous-vs-die-cut form, and die-cut length ±1mm — so an author choosing a label here
+    // sees the same match the /print guard will enforce.
+    const WIDTH_TOLERANCE_MM = 1.0;
+    const LENGTH_TOLERANCE_MM = 1.0;
+
+    function mediaDesc(m) {
+      if (!m || m.width_mm == null || !m.media_type) return 'unknown media';
+      const kind = m.media_type === 'die_cut' ? 'die-cut' : m.media_type;
+      if (m.media_type === 'die_cut' && m.length_mm != null) {
+        return `${m.width_mm}mm×${m.length_mm}mm ${kind}`;
+      }
+      return `${m.width_mm}mm ${kind}`;
+    }
+
+    // 'match' | 'mismatch' | 'unknown' — mirrors app.media.media_matches / index.html#mediaCompat.
+    function mediaCompat(required, loaded) {
+      if (!required || !loaded) return 'unknown';
+      if (Math.abs(required.width_mm - loaded.width_mm) > WIDTH_TOLERANCE_MM) return 'mismatch';
+      if (required.media_type !== loaded.media_type) return 'mismatch';
+      if (required.media_type === 'die_cut' && required.length_mm != null
+          && loaded.length_mm != null
+          && Math.abs(required.length_mm - loaded.length_mm) > LENGTH_TOLERANCE_MM) {
+        return 'mismatch';
+      }
+      return 'match';
+    }
+
+    // Classify a label against the loaded roll: 'match' (geometry agrees, plain media), 'geo'
+    // (geometry agrees but the label is red/black two-colour media whose colour SNMP can't verify —
+    // so it is NOT a definite match against a possibly-plain roll), 'mismatch', or 'unknown'.
+    function classifyLabel(l, loaded) {
+      if (!loaded) return 'unknown';
+      if (mediaCompat(l.media, loaded) !== 'match') return 'mismatch';
+      return l.red ? 'geo' : 'match';
+    }
+
+    // The loaded roll from a /printer/status body, or null when it can't be compared (SNMP
+    // unreachable, a non-network transport, or a media_type that isn't an SNMP-normalized value).
+    function loadedMediaFrom(s) {
+      if (!s || !s.reachable) return null;
+      if (typeof s.uri !== 'string' || !s.uri.startsWith('tcp://')) return null;
+      if (s.media_width_mm == null) return null;
+      if (s.media_type !== 'continuous' && s.media_type !== 'die_cut') return null;
+      return {width_mm: s.media_width_mm, media_type: s.media_type, length_mm: s.media_length_mm};
+    }
+
+    // The document's root-mapping indentation = the leading whitespace of its first non-blank,
+    // non-comment line. PyYAML accepts (and the loader validates) a uniformly-indented root mapping,
+    // so the label edit must operate at that indent rather than assuming column 0 — otherwise a
+    // column-0 insert mixes indentation levels and turns valid YAML into a parse error.
+    // A YAML directive (`%...`) or document marker (`---`/`...`) is not part of the root mapping, so
+    // it must not be treated as the first key line when deriving the indent.
+    const isDirectiveOrMarker = (line) => {
+      const t = line.trim();
+      return t === '---' || t.startsWith('--- ') || t === '...' || t.startsWith('%');
+    };
+    function rootIndent(yaml) {
+      for (const ln of yaml.split('\n')) {
+        const t = ln.trim();
+        if (t === '' || t.startsWith('#') || isDirectiveOrMarker(ln)) continue;
+        return ln.match(/^(\s*)/)[1];
+      }
+      return '';
+    }
+
+    // A root-level key matcher at exactly `indent`: an optional quote around the key name and any
+    // whitespace before the colon (`label:`, `label :`, `"label":` are all valid YAML). Requiring the
+    // key immediately after the root indent means a more-indented nested key (e.g. inside a layout
+    // element) is never mistaken for a root key.
+    const rootKey = (indent, name) => new RegExp(`^${indent}(["']?)${name}\\1\\s*:`);
+
+    // Set the root-level `label:` in the YAML to `id` (replacing the existing key in place, else
+    // inserting after description:/name:, else prepending) at the document's root indentation. The id
+    // is a brother_ql label identifier (not user input) and only lands in the textarea value (text,
+    // never markup), so it can't inject.
+    function useLabel(id) {
+      const ta = document.getElementById('yaml');
+      const yaml = ta.value;
+      const indent = rootIndent(yaml);
+      const line = `${indent}label: "${id}"`;
+      const isKey = (ln, name) => rootKey(indent, name).test(ln);
+      const lines = yaml.split('\n');
+
+      if (lines.some((ln) => isKey(ln, 'label'))) {
+        // Collapse to exactly ONE root label key: keep the first occurrence (rewritten to the
+        // selected id at the root indent) and DROP any later duplicate root label lines. PyYAML keeps
+        // the LAST of duplicate keys, so leaving any duplicate — even with an equal value — keeps the
+        // template ambiguous; a later edit to only the first line would silently revert preview/save
+        // to the stale later key, the exact wrong-media failure this guards against.
+        const out = [];
+        let done = false;
+        for (const ln of lines) {
+          if (isKey(ln, 'label')) {
+            if (!done) { out.push(line); done = true; }
+          } else {
+            out.push(ln);
+          }
+        }
+        ta.value = out.join('\n');
+      } else {
+        // No label key yet: insert one right after the first description:/name: anchor (preserving
+        // its indentation via `line`). With no anchor either, insert after a leading document marker
+        // (`---`) when present — prepending a column-0 line BEFORE the marker would split the file
+        // into an invalid/multi-document stream — else prepend at the top.
+        let idx = lines.findIndex((ln) => isKey(ln, 'description'));
+        if (idx === -1) idx = lines.findIndex((ln) => isKey(ln, 'name'));
+        if (idx === -1) idx = lines.findIndex((ln) => isDirectiveOrMarker(ln));
+        if (idx === -1) {
+          ta.value = `${line}\n${yaml}`;
+        } else {
+          lines.splice(idx + 1, 0, line);
+          ta.value = lines.join('\n');
+        }
+      }
+      doPreview();
+    }
+
+    // Render the static reference table. `loaded` (when known) highlights every label that matches
+    // the roll. Built with DOM nodes + textContent — same XSS discipline as the rest of the page.
+    function renderLabelReference(loaded) {
+      const body = document.getElementById('label-ref-body');
+      body.replaceChildren();
+      for (const l of LABELS) {
+        const tr = document.createElement('tr');
+        const cls = classifyLabel(l, loaded);
+        if (cls === 'match') tr.className = 'match';
+        else if (cls === 'geo') tr.className = 'match-geo';
+
+        const idTd = document.createElement('td');
+        const code = document.createElement('code');
+        code.textContent = l.id;
+        idTd.appendChild(code);
+        if (cls === 'match') {
+          const tick = document.createElement('span');
+          tick.className = 'match-tick';
+          tick.textContent = '✓';
+          tick.title = 'Matches the loaded roll';
+          idTd.appendChild(tick);
+        } else if (cls === 'geo') {
+          const tick = document.createElement('span');
+          tick.className = 'match-tick geo';
+          tick.textContent = '✓ red?';
+          tick.title = 'Geometry matches the loaded roll, but this is red/black media. SNMP does not '
+            + 'report roll colour — verify a red roll is loaded, or a red template prints black-only.';
+          idTd.appendChild(tick);
+        }
+
+        const mediaTd = document.createElement('td');
+        mediaTd.textContent = l.media ? mediaDesc(l.media) : 'unknown';
+
+        const useTd = document.createElement('td');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-secondary use-label';
+        btn.textContent = 'Use';
+        btn.addEventListener('click', () => useLabel(l.id));
+        useTd.appendChild(btn);
+
+        tr.append(idTd, mediaTd, useTd);
+        body.appendChild(tr);
+      }
+    }
+
+    // The highlighted "Your Printer" entry — only when the printer answers SNMP over a network
+    // transport. Returns the loaded media (so the table can mark matches) or null when unavailable.
+    function renderYourPrinter(status) {
+      const box = document.getElementById('your-printer');
+      box.replaceChildren();
+      const loaded = loadedMediaFrom(status);
+      if (!loaded) return null;
+      box.className = 'your-printer';
+      const head = document.createElement('strong');
+      head.textContent = 'Your Printer: ';
+      box.appendChild(head);
+      box.append(`loaded ${mediaDesc(loaded)}`);
+      const idList = (parent, prefix, ids) => {
+        const line = document.createElement('div');
+        line.append(prefix);
+        ids.forEach((id, i) => {
+          if (i) line.append(', ');
+          const c = document.createElement('code');
+          c.textContent = id;
+          line.appendChild(c);
+        });
+        parent.appendChild(line);
+        return line;
+      };
+      const matches = LABELS.filter(l => classifyLabel(l, loaded) === 'match').map(l => l.id);
+      // Red labels match the geometry but not necessarily the colour — listed separately, never as a
+      // definite match, so an author isn't steered onto red media for a possibly-plain roll.
+      const redMatches = LABELS.filter(l => classifyLabel(l, loaded) === 'geo').map(l => l.id);
+      if (matches.length) {
+        idList(box, 'Matching label id(s): ', matches).className = 'yp-matches';
+      } else {
+        const none = document.createElement('div');
+        none.className = 'yp-matches';
+        none.textContent = 'No supported label matches the loaded roll.';
+        box.appendChild(none);
+      }
+      if (redMatches.length) {
+        idList(box, 'Red/black labels that fit this geometry (roll colour not verified): ', redMatches)
+          .className = 'yp-red';
+      }
+      return loaded;
+    }
+
+    // Fetch the printer status once and render the reference. A 401/offline/non-network printer just
+    // leaves the table un-highlighted — the reference is informational, never auth-gated.
+    async function loadLabelReference() {
+      // Render the static table immediately from the embedded LABELS — it must never be gated on the
+      // live status fetch, which can stall on an SNMP/TCP timeout. The loaded-roll highlight is an
+      // optional enhancement layered on once /printer/status resolves (or skipped if it never does).
+      renderLabelReference(null);
+      let status = null;
+      try {
+        const res = await fetch('/printer/status', {headers: authHeaders()});
+        if (res.ok) status = await res.json().catch(() => null);
+      } catch (e) { /* offline — the static table above already rendered without the highlight */ }
+      const loaded = renderYourPrinter(status);
+      renderLabelReference(loaded);
+    }
+
     function showStatus(msg, type) {
       // `msg` can carry API-derived strings (validation errors echoing the user's YAML, including a
       // malicious field name). Build the node with textContent so no markup in `msg` can execute —
@@ -380,6 +688,12 @@
     document.getElementById('yaml').addEventListener('input', debounce(doPreview, 600));
 
     // Seed with a minimal, valid starter template so the studio renders something immediately.
+    {% raw %}
+    // The title/subtitle placeholders below must survive Jinja: editor.html renders through Jinja2,
+    // which would otherwise resolve them as undefined variables and emit empty strings — silently
+    // stripping the starter template's field tokens. (The labels JSON far above sits outside this
+    // block because it genuinely needs interpolation.) Keep this comment inside the block so it
+    // carries no stray template tags that would prematurely open or close the guard.
     document.getElementById('yaml').value =
 `name: my-label
 description: A new label
@@ -392,8 +706,10 @@ layout:
   - {type: title, text: "{{title}}"}
   - {type: subtitle, text: "{{subtitle}}"}
 `;
+    {% endraw %}
     lastLoadedYaml = document.getElementById('yaml').value;  // seed counts as "not dirty"
     populateLoadSelect();
+    loadLabelReference();
     doPreview();
   </script>
 </body>

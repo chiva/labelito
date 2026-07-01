@@ -1,0 +1,11 @@
+name: simple-text-29
+description: Single text block on 29 mm continuous tape
+label: "29"
+rotate: 0
+fields:
+  required: [text]
+  optional: []
+layout:
+  - {type: spacer, size: 8}
+  - {type: text, text: "{{text}}", size: 40, align: center, max_lines: 2}
+  - {type: spacer, size: 8}

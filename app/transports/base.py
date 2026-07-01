@@ -1,7 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from urllib.parse import urlparse  # matches app/transports/network.py
+
+from app.media import canonical_media_type
+
+if TYPE_CHECKING:
+    # Type-only import: base is a leaf the SNMP module never imports, so this avoids any runtime
+    # coupling (and the appearance of a cycle) while still typing from_snmp's argument.
+    from app.transports.snmp import PrinterSNMPStatus
 
 
 @dataclass(frozen=True)
@@ -31,11 +38,25 @@ class PrinterStatus:
     # Extended fields populated by query_status() from interpret_response (None when not queried
     # or when the transport is not backed by a real printer).
     model: str | None = None
-    media_width_mm: int | None = None
-    media_length_mm: int | None = None
+    # Float, not int: the SNMP media guard compares these against the printer's reported dimensions
+    # with a ±1mm tolerance, and the web UI mirrors that comparison off this same value (via
+    # /printer/status). Rounding here would let the UI read a different number than the server-side
+    # guard's unrounded compare and disagree at the tolerance boundary, so we keep full precision.
+    media_width_mm: float | None = None
+    media_length_mm: float | None = None
     media_type: str | None = None
     status_type: str | None = None
     phase_type: str | None = None
+    # SNMP-derived identity/health fields (populated by from_snmp on the network transport; None on
+    # the ESC i S / file / USB paths, which cannot read them). serial/firmware/hostname are inventory
+    # identity; console_text is the printer's front-panel line ("READY" when idle); cover_status is
+    # the raw prtCoverStatus enum; label_lifecount is the lifetime prtMarkerLifeCount gauge.
+    serial: str | None = None
+    firmware: str | None = None
+    hostname: str | None = None
+    console_text: str | None = None
+    cover_status: int | None = None
+    label_lifecount: int | None = None
     # Whether the status came from a real printer query (True) or is synthetic (False). Lets the
     # /printer/status endpoint distinguish "printer replied, all ok" from "no printer to query".
     reachable: bool = True
@@ -51,15 +72,14 @@ class PrinterStatus:
         return cls(ok=False, errors=[reason], raw={}, reachable=False)
 
     @classmethod
-    def unsupported(
-        cls, reason: str = "status query not supported over this transport"
-    ) -> "PrinterStatus":
-        """A status for transports that cannot query printer state (e.g. USB)."""
-        return cls(ok=False, errors=[reason], raw={}, reachable=False)
-
-    @classmethod
     def from_parsed(cls, decoded: dict[str, object]) -> "PrinterStatus":
-        """Build a PrinterStatus from a parsed interpret_response dict."""
+        """Build a PrinterStatus from a parsed ``brother_ql.reader.interpret_response`` dict.
+
+        ``media_type`` is normalized to the canonical ``continuous``/``die_cut`` (via
+        :func:`app.media.canonical_media_type`), NOT brother_ql's raw ``'Continuous length tape'``
+        string, so the ESC i S status channel (USB) lands on the same two values the SNMP path emits
+        and the print guard / UI badge compare against. ``status_type``/``phase_type`` stay as the raw
+        brother_ql strings — they are diagnostics, not compared anywhere."""
         raw_errors = decoded.get("errors")
         errors: list[str] = [str(e) for e in raw_errors] if isinstance(raw_errors, list) else []
         media_width = decoded.get("media_width")
@@ -69,11 +89,54 @@ class PrinterStatus:
             errors=errors,
             raw=decoded,
             model=str(decoded["model_name"]) if "model_name" in decoded else None,
-            media_width_mm=int(media_width) if isinstance(media_width, int) else None,
-            media_length_mm=int(media_length) if isinstance(media_length, int) else None,
-            media_type=str(decoded["media_type"]) if "media_type" in decoded else None,
+            media_width_mm=float(media_width) if isinstance(media_width, int) else None,
+            media_length_mm=float(media_length) if isinstance(media_length, int) else None,
+            media_type=canonical_media_type(decoded),
             status_type=str(decoded["status_type"]) if "status_type" in decoded else None,
             phase_type=str(decoded["phase_type"]) if "phase_type" in decoded else None,
+            reachable=True,
+        )
+
+    @classmethod
+    def from_snmp(cls, snmp: "PrinterSNMPStatus") -> "PrinterStatus":
+        """Build a PrinterStatus from a :class:`PrinterSNMPStatus` (the network status channel).
+
+        The Brother QL NIC accepts the :9100 TCP back-channel but never returns the 32-byte status
+        frame, so SNMP — not ESC i S — is the channel that actually answers. An unreachable SNMP
+        query maps to :meth:`unreachable` so the caller fails open (allow the print, badge unknown);
+        a reachable one maps the decoded identity/media/error fields across. ``ok`` is False when the
+        SNMP layer surfaced any error string (a nonzero hrPrinterDetectedErrorState or a non-READY
+        console line), mirroring the ESC i S path's ``errors`` ⇒ ``ok=False`` contract.
+
+        Media width/length carry the SNMP layer's full float precision (no rounding): the media
+        guard compares them with a ±1mm tolerance and the web UI mirrors that compare off the same
+        value via /printer/status, so rounding here would let the two disagree at the boundary.
+        ``status_type``/``phase_type`` stay None — those are ESC i S concepts with no SNMP analogue.
+        The error bitmask, hrPrinterStatus enum and authoritative loaded-media name ride in ``raw``
+        so later consumers (metrics, the status card) can recover them without a second query.
+        """
+        if not snmp.reachable:
+            return cls.unreachable("printer SNMP agent did not respond")
+        return cls(
+            ok=not bool(snmp.errors),
+            errors=list(snmp.errors),
+            raw={
+                "error_state_bits": snmp.error_state_bits,
+                "printer_status": snmp.printer_status,
+                "media_name": snmp.media_name,
+            },
+            model=snmp.model,
+            media_width_mm=snmp.media_width_mm,
+            media_length_mm=snmp.media_length_mm,
+            media_type=snmp.media_type,
+            status_type=None,
+            phase_type=None,
+            serial=snmp.serial,
+            firmware=snmp.firmware,
+            hostname=snmp.hostname,
+            console_text=snmp.console_text,
+            cover_status=snmp.cover_status,
+            label_lifecount=snmp.label_lifecount,
             reachable=True,
         )
 

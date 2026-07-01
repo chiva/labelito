@@ -50,8 +50,10 @@ Highlights:
   so callers don't pass dates (ideal for food-storage labels).
 - **Pluggable drivers & transports** — adding a Brother QL model is a single capability-table
   entry; the transport layer (network / USB / file) is a registry of small classes.
-- **Web UI** — template picker with dynamic field inputs, live preview, and a print button at `/`.
-- **Observability** — Prometheus counters at `/metrics` and a `/health` endpoint for container
+- **Web UI** — template picker with dynamic field inputs, live preview, and a print button at `/`. The
+  picker groups templates by label size and, on SNMP printers, focuses the group matching the loaded
+  roll (re-focusing automatically if you swap rolls), with a "Show all sizes" toggle.
+- **Observability** — opt-in Prometheus metrics at `/metrics` (set `METRICS_ENABLED=true`) and a `/health` endpoint for container
   health checks.
 - **Fail-closed auth** — set `API_TOKEN` to require a bearer token on all write/preview
   endpoints. The service refuses to start with neither a token nor an explicit
@@ -169,6 +171,12 @@ working directory; names are case-insensitive). Defaults come from `app/config.p
 | `TEMPLATES_LOADABLE` | `true` | Permit the studio to load an existing template's raw YAML for editing via `GET /templates/{name}/source` (and show the "Load existing template" picker). Default true — read-only and safe: the name is resolved by an in-memory registry lookup, never as a filesystem path, so traversal/unrelated-file reads are impossible. Set `false` to hide the picker and 404 the route. Requires `EDITOR_ENABLED=true`. |
 | `MIN_LENGTH_PX` | `200` | Minimum rendered length for **continuous** labels (clamps tiny labels up). |
 | `MAX_LENGTH_PX` | `6000` | Maximum rendered length for continuous labels (guards against runaway height). |
+| `SNMP_ENABLED` | `true` | Use SNMP (UDP 161) as the printer status channel for the **network** transport. Brother's NIC accepts the `:9100` print connection but never returns the status back-channel, so without SNMP a hardware-rejected print reports phantom success (see [Printer status & the media guard](#printer-status--the-media-guard)). SNMP supplies the loaded media, a reliable error bitmask, console text, identity, and the lifetime label counter — and backs the pre-flight media-mismatch guard. Ignored for `usb://`/`file://`. Set `false` to skip the status query and the guard (prints proceed, status badges as unknown). |
+| `SNMP_COMMUNITY` | `public` | SNMPv1 community string. The QL-810W answers v1/v2c `public`. |
+| `SNMP_PORT` | `161` | SNMP UDP port on the printer (`1..65535`). |
+| `SNMP_TIMEOUT` | `2.0` | Per-request SNMP receive timeout in seconds (`0 < t ≤ 60`). Kept short because the status read sits in the print pre-flight path; an unreachable printer **fails open** (warn + proceed) rather than stalling the request. |
+| `METRICS_ENABLED` | `false` | Prometheus exposition is **opt-in**. While disabled (default) the metrics endpoint 404s as if absent; set `true` to expose it. Telemetry gauges are still updated in-memory regardless — just not served until enabled. The endpoint carries **no auth** (Prometheus scrapers don't send tokens), so restrict it at the network layer if the deployment is not trusted. `printer_info` exposes only the model; serial/firmware/hostname stay on the token-protected `/printer/status`. |
+| `METRICS_PATH` | `/metrics` | Path the exposition is served at (when enabled) — on the **same port/app** as the web UI (there is no separate metrics port). Relocate it (e.g. `/internal/metrics`) if convenient; it is not advertised in `/openapi.json`. Read at startup. |
 
 **`PRINTER_URI` formats by transport:**
 
@@ -251,8 +259,11 @@ Interactive OpenAPI docs are served by FastAPI at `/docs` (and the schema at `/o
 |---|---|:--:|---|
 | `GET` | `/` | – | Web UI (template picker, preview, print). |
 | `GET` | `/health` | – | Status, configured driver/model/transport/uri, template count, default language + loaded languages. |
+| `GET` | `/livez` | – | Kubernetes liveness probe. Always `200` (`{"status":"alive"}`); no dependencies. |
+| `GET` | `/readyz` | – | Kubernetes readiness probe. `200` when ready, `503` with per-check reasons otherwise. Checks templates loaded, transport scheme resolvable, history store open — **not** the printer. |
 | `GET` | `/capabilities` | – | dpi, cut, supported label sizes + geometries. |
-| `GET` | `/templates` | – | All templates with their required/optional field contracts. |
+| `GET` | `/printer/status` | ✓ | Live printer state (network transport: via SNMP) — connection, loaded media, error state/console text, and identity. `200` with the state body; `503` (same body) when a print holds the lock or the printer is unreachable. See [Printer status & the media guard](#printer-status--the-media-guard). |
+| `GET` | `/templates` | – | All templates with their required/optional field contracts, including each template's required `media`. |
 | `POST` | `/preview` | ✓ | Render a template → `image/png`. No printing, no history. |
 | `POST` | `/preview/multipart` | ✓ | Same as `/preview` but accepts a `multipart/form-data` image upload (for `image` elements). |
 | `POST` | `/print` | ✓ | Render → print. Records the job; supports `dry_run`. |
@@ -261,9 +272,59 @@ Interactive OpenAPI docs are served by FastAPI at `/docs` (and the schema at `/o
 | `GET` | `/history/list` | ✓ | Paginated job history (`?offset=&limit=`), newest first. 404 when `HISTORY_UI=false`. |
 | `DELETE` | `/history/{job_id}` | ✓ | Delete a single history entry. 404 when the entry is missing or `HISTORY_UI=false`. |
 | `POST` | `/reload` | ✓ | Hot-reload all templates and translation catalogs. Valid files load; any malformed file is skipped and reported with a `422` (so a YAML typo can't silently drop a template). Returns `200` only when everything loaded cleanly. |
-| `GET` | `/metrics` | – | Prometheus exposition (`labels_printed_total`, `label_errors_total`, `last_print_timestamp_seconds`). |
+| `GET` | `/metrics` | – | Prometheus exposition. **Opt-in** — 404s unless `METRICS_ENABLED=true`. Print metrics (`labels_printed_total`, `label_errors_total`, `last_print_timestamp_seconds`) plus SNMP-derived printer telemetry (`printer_up`, `printer_detected_error_state{condition}`, `printer_label_lifecount`, `printer_info`, `printer_media_info`, `printer_status_last_query_timestamp_seconds`). The printer gauges reflect the **last** SNMP query (on a print or a `/printer/status` call); a scrape never triggers a live query. |
 
 \* Only enforced when `API_TOKEN` is set.
+
+### Kubernetes probes
+
+`/livez` and `/readyz` are unauthenticated and side-effect free. Liveness only confirms the process
+answers; readiness confirms the app can serve a print (templates loaded, transport scheme resolvable,
+history store open) — it intentionally does **not** depend on the printer being online, so a transient
+printer outage never pulls the pod out of its Service. Watch live printer state via `/printer/status`.
+
+```yaml
+livenessProbe:
+  httpGet: { path: /livez, port: 8765 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /readyz, port: 8765 }
+  periodSeconds: 10
+  failureThreshold: 3
+```
+
+### Printer status & the media guard
+
+Brother's network printers have a **silent back-channel**: the NIC accepts the `:9100` print
+connection and the raster bytes, but never returns the status frame that USB does. A job rejected at
+the hardware level — most commonly because the **loaded media does not match the template's `label`**
+(e.g. printing a `62x29` die-cut template against a 62 mm continuous roll) — makes the printer blink
+red and emit nothing, while the print call still reports **`200` success**. See
+[known limitations](docs/known-limitations.md#the-network-back-channel-is-silent--snmp-is-the-status-channel).
+
+Labelito closes this hole using the printer's status channel — **SNMP** (UDP 161) on the network
+transport, and a standalone **ESC i S** query on **USB** (which, unlike the network NIC, does return
+the status frame):
+
+- **`GET /printer/status`** reports the real state — loaded media, error/fault signal, and identity
+  — instead of the unreliable `:9100` readback.
+- **Pre-flight media guard.** `/print` and `/reprint` read the loaded roll before sending and reject a
+  media mismatch with **`409 Conflict`** (the detail names the loaded vs. required media), so the
+  hardware rejection surfaces as an error rather than a phantom success. The web UI flags this
+  advisorily: a mismatching template shows a red **✗** media badge and a `(needs …)` suffix on its
+  dropdown option, but nothing is disabled on the print page — preview and dry-run stay available, and
+  the server's 409 is the authoritative gate (client-side status can be stale, so it never hard-blocks).
+- **Fail-open.** If the status read is unreachable (or `SNMP_ENABLED=false` on a network printer), the
+  guard does **not** block — it logs a warning and proceeds, and the status badges as unknown (`?`). The
+  guard only ever *adds* certainty; it never turns a working print into a hard failure because the
+  status channel is down.
+
+**Transport differences:** the **network** transport uses SNMP (lock-free UDP), so the web status card
+also background-polls it live. **USB** reads status via ESC i S **on demand only** — page load, the
+manual ↻ button, and the print preflight — because a USB status query claims the single device handle
+and serializes with printing, so it is deliberately excluded from the background poll (a USB roll swap
+shows on the next load/↻, not live). `file://` reports a synthetic OK (no printer). SNMP details and the
+verified OID map live in [docs/snmp-status.md](docs/snmp-status.md).
 
 ### Print / preview request body
 
@@ -300,7 +361,12 @@ With auth enabled, add `-H "Authorization: Bearer $API_TOKEN"`.
 Every print is recorded in a small SQLite store. That record powers two things:
 
 - **`/reprint/{job_id}`** — replays a recorded job (with its original date) so the label is
-  identical.
+  identical. On the History page, when the loaded roll is known (SNMP), rows whose template needs a
+  different roll are dimmed and their **Reprint** is disabled with the reason inline — advisory only,
+  mirroring the print page; the server still enforces the same media check and `409`s a real
+  mismatch. The page background-polls printer status on the SNMP path (same gate as the print page),
+  so swapping the roll re-gates the rows live with no reload. With the roll unknown (non-SNMP /
+  unreachable) there is no poll and every row stays reprintable.
 - **Idempotency** — pass `"idempotency_key": "<unique-id>"` in a `/print` body and a retry with
   the *same* key and payload returns the original job instead of printing a second label. Reusing
   a key with a *different* payload is rejected with `409`. Without a key, identical requests print
@@ -556,6 +622,10 @@ Voice: *"imprime etiqueta de congelador salsa boloñesa"* → the freezer label 
 
 The project uses [**uv**](https://docs.astral.sh/uv/) for dependency management and
 [hatchling](https://hatch.pypa.io/) for builds. Python **3.12+** is required.
+
+> **New here?** [docs/development.md](docs/development.md) is the full onboarding guide, and a VS
+> Code / Codespaces **dev container** (`.devcontainer/`) provisions Python + uv + system libs in one
+> click.
 
 ```bash
 # Install uv (https://docs.astral.sh/uv/getting-started/installation/), then:

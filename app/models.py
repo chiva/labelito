@@ -280,6 +280,22 @@ class SaveTemplateRequest(BaseModel):
     yaml: str = Field(min_length=1, max_length=MAX_TEMPLATE_YAML_CHARS)
 
 
+class TemplateMedia(BaseModel):
+    """The media a template's brother_ql ``label`` requires (width, continuous-vs-die-cut, and the
+    die-cut label length). Surfaced on :class:`TemplateInfo` so the UI can badge each template as
+    compatible / incompatible against the loaded roll reported by ``GET /printer/status`` — the same
+    width + form comparison the server-side print guard applies. ``length_mm`` is null for continuous
+    tape (no discrete label length)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"width_mm": 62.0, "media_type": "continuous"}]}
+    )
+
+    width_mm: float
+    media_type: str  # "continuous" | "die_cut"
+    length_mm: float | None = None
+
+
 class TemplateInfo(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -290,6 +306,7 @@ class TemplateInfo(BaseModel):
                     "label": "62",
                     "rotate": 0,
                     "fields": {"required": ["title"], "optional": ["subtitle"]},
+                    "media": {"width_mm": 62.0, "media_type": "continuous"},
                 }
             ]
         }
@@ -300,6 +317,9 @@ class TemplateInfo(BaseModel):
     label: str
     rotate: int
     fields: TemplateFieldContract
+    # The media this template's label requires. None when the label is not a known brother_ql label
+    # (the template still lists and prints; it just carries no compatibility badge).
+    media: TemplateMedia | None = None
 
 
 class TemplateSourceResponse(BaseModel):
@@ -438,6 +458,25 @@ class HealthResponse(BaseModel):
     languages: list[str]
 
 
+class LivenessResponse(BaseModel):
+    """Kubernetes liveness probe body — the process is up and serving. No dependencies."""
+
+    status: str  # "alive"
+
+
+class ReadinessResponse(BaseModel):
+    """Kubernetes readiness probe body — whether the app can serve print requests.
+
+    ``ready`` is the single boolean a probe keys on (mirrored by 200 vs 503). ``checks`` maps each
+    readiness dependency to ``"ok"`` or a short human reason, so a not-ready response says WHY
+    without a log dive. Deliberately excludes the printer being online — a print service should keep
+    accepting requests while the printer is briefly unreachable; live printer state is /printer/status.
+    """
+
+    ready: bool
+    checks: dict[str, str]
+
+
 class PrinterState(StrEnum):
     """The single derived state of the physical printer, surfaced to the web UI.
 
@@ -474,17 +513,20 @@ class PrinterStatusResponse(BaseModel):
         default=None,
         description="Printer model name as reported by the device, e.g. 'QL-800'.",
     )
-    media_width_mm: int | None = Field(
+    media_width_mm: float | None = Field(
         default=None,
-        description="Width of the loaded media in millimetres (e.g. 62).",
+        description="Width of the loaded media in millimetres (e.g. 62). Float so the UI's media "
+        "compatibility check reads the same precision the server-side guard compares.",
     )
-    media_length_mm: int | None = Field(
+    media_length_mm: float | None = Field(
         default=None,
-        description="Length of the loaded die-cut media in mm; 0 for continuous tape.",
+        description="Length of the loaded die-cut media in mm; null/0 for continuous tape.",
     )
     media_type: str | None = Field(
         default=None,
-        description="Human-readable media type string from the printer, e.g. 'Continuous length tape'.",
+        description="Canonical loaded-media type: 'continuous' or 'die_cut' (null when unknown). "
+        "Normalized identically across the SNMP and ESC i S status channels so the UI compat badge "
+        "and the print media guard compare the same values.",
     )
     status: str | None = Field(
         default=None,
@@ -497,6 +539,23 @@ class PrinterStatusResponse(BaseModel):
     errors: list[str] = Field(
         default_factory=list,
         description="Human-readable error strings reported by the printer, empty when ok.",
+    )
+    # Identity/telemetry from the SNMP status read (network transport). All optional: absent over the
+    # file/USB transports and on the ESC i S fallback, which do not report them.
+    serial: str | None = Field(
+        default=None, description="Printer serial number (SNMP), e.g. 'B2Z160525'."
+    )
+    firmware: str | None = Field(
+        default=None,
+        description="Firmware / NIC description (SNMP sysDescr), e.g. 'Brother NC-36002w, Firmware Ver.1.00'.",
+    )
+    console_text: str | None = Field(
+        default=None,
+        description="The printer's console display line (SNMP), e.g. 'READY'; fault text when faulted.",
+    )
+    label_lifecount: int | None = Field(
+        default=None,
+        description="Lifetime label count from the printer's marker life counter (SNMP).",
     )
 
 

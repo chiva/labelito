@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -95,6 +96,59 @@ class Settings(BaseSettings):
     # is deliberately larger than the network TIMEOUT. 30 s covers even a long multi-copy job while
     # still freeing the print lock if the device hangs.
     usb_timeout: int = 30
+
+    # SNMP printer status (network transport only). The Brother NIC accepts the :9100 TCP
+    # connection but never returns the status back-channel, so a print can report success while the
+    # hardware rejects it (see docs/known-limitations.md). SNMP (UDP 161, community public) is the
+    # status channel that actually answers on this hardware: loaded media, a reliable error bitmask,
+    # console text and identity. These apply ONLY when the transport inferred from printer_uri is
+    # network; the SNMP host is derived from printer_uri's hostname (there is no separate host
+    # setting). USB and file transports ignore them entirely.
+    snmp_enabled: bool = True
+    snmp_community: str = "public"
+    snmp_port: int = Field(default=161, gt=0, le=65535)
+    # Per-request SNMP timeout in seconds, passed to snmp_get's connected-UDP recv. Kept short
+    # because the status read sits in the print/preflight path; SNMP unreachable fails open (warn +
+    # proceed), so a tight bound trades a slow printer's status for not stalling the request.
+    snmp_timeout: float = Field(default=2.0, gt=0, le=60, allow_inf_nan=False)
+
+    # Prometheus exposition is OFF by default (opt-in): a home print service is not normally scraped,
+    # and an open /metrics leaks printer identity/usage. Set METRICS_ENABLED=true to expose it; while
+    # disabled the endpoint 404s as if absent. The telemetry gauges are still updated in-memory on a
+    # print/status query regardless — they are simply not exposed until this is enabled.
+    metrics_enabled: bool = False
+    # Path the Prometheus exposition is served at, on the SAME port/app as the web UI and the rest of
+    # the API (there is no separate metrics server/port). Override (env var METRICS_PATH) to relocate
+    # it — e.g. behind a hard-to-guess path, or to avoid a collision with an upstream proxy route. The
+    # path is read once at startup, so a change takes effect on restart.
+    metrics_path: str = "/metrics"
+
+    @field_validator("metrics_path")
+    @classmethod
+    def _normalize_metrics_path(cls, value: str) -> str:
+        """Normalize to a single leading slash, no trailing slash, and restrict to a LITERAL path.
+
+        A path without a leading slash (``metrics``) is not a valid route mount and would 404; a
+        trailing slash (``/metrics/``) would not match a scrape of ``/metrics``. Both are normalized.
+
+        Critically, the value is interpolated straight into ``@app.get(...)``, where FastAPI treats
+        braces as path parameters — so ``/{p:path}`` would register a catch-all that shadows every
+        page, and ``/metrics/{x}`` would serve metrics for any suffix. Restrict to literal path
+        segments of an unreserved URL charset (letters, digits, ``-._~``) so no path-parameter,
+        wildcard, query, or fragment syntax can ever reach the router. Empty/``/`` is rejected (it
+        would shadow the web UI).
+        """
+        path = "/" + value.strip().strip("/")
+        if path == "/":
+            raise ValueError("METRICS_PATH must not be empty or '/' (it would shadow the web UI)")
+        segments = path.lstrip("/").split("/")
+        if not all(re.fullmatch(r"[A-Za-z0-9._~-]+", seg) for seg in segments):
+            raise ValueError(
+                f"METRICS_PATH {value!r} must be a literal URL path of /-separated segments using "
+                "only letters, digits, and '-._~' (no path parameters '{...}', wildcards, query, "
+                "or fragment) — it is mounted as a FastAPI route verbatim"
+            )
+        return path
 
     # Render limits for continuous labels
     min_length_px: int = 200

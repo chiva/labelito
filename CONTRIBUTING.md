@@ -5,16 +5,21 @@ and the special case of adding printer support.
 
 ## Development setup
 
+The project uses [**uv**](https://docs.astral.sh/uv/). A VS Code/Codespaces **dev container**
+(`.devcontainer/`) provisions everything automatically; otherwise:
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-pre-commit install
+uv sync                       # create .venv and install all dependency groups
+uv run pre-commit install     # enable lint/format/type hooks on commit
 ```
 
 Run tests:
 ```bash
-pytest -m "not hardware"
+uv run pytest -m "not hardware"
 ```
+
+See [docs/development.md](docs/development.md) for the full onboarding guide (project layout, running
+the app with no printer, the dev harness, testing tiers, and gotchas).
 
 ## Coding standards
 

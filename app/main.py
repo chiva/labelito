@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 from brother_ql.exceptions import BrotherQLUnsupportedCmd
 from fastapi import (
@@ -39,6 +40,7 @@ from PIL import Image, UnidentifiedImageError
 from prometheus_client import Counter, Gauge, generate_latest
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
+from starlette.routing import Match
 
 from app.config import settings
 from app.drivers.brother_ql import BrotherQLDriver
@@ -49,21 +51,25 @@ from app.loader import (
     TemplateRegistry,
     validate_template_from_string,
 )
+from app.media import LoadedMedia, MediaMatch, RequiredMedia, media_matches, required_media_for
 from app.models import (
     CapabilityResponse,
     DraftPreviewRequest,
     HealthResponse,
     HistoryPage,
+    LivenessResponse,
     PrinterState,
     PrinterStatusResponse,
     PrintJobRecord,
     PrintRequest,
     PrintResponse,
+    ReadinessResponse,
     RenderOptions,
     SaveTemplateRequest,
     SequenceSpec,
     TemplateFieldContract,
     TemplateInfo,
+    TemplateMedia,
     TemplateParseRequest,
     TemplateParseResponse,
     TemplateSourceResponse,
@@ -79,7 +85,18 @@ from app.render.i18n import Translator
 from app.transports.base import PrinterStatus, Transport, get_transport, infer_transport
 from app.transports.file import FileTransport  # noqa: F401 — registers transport
 from app.transports.network import NetworkTransport  # noqa: F401 — registers transport
-from app.transports.usb import USBTransport  # noqa: F401 — registers transport
+from app.transports.snmp import (
+    CONSOLE_READY,
+    HR_PRINTER_ERROR_BITS,
+    HR_PRINTER_STATUS_BUSY,
+    HR_PRINTER_STATUS_OTHER,
+    PrinterSNMPStatus,
+    query_snmp_status,
+)
+from app.transports.usb import (
+    USBTransport,  # noqa: F401 — registers transport
+    usb_device_busy,
+)
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -88,6 +105,152 @@ logging.basicConfig(level=logging.INFO)
 LABELS_PRINTED = Counter("labels_printed_total", "Total labels printed", ["template", "dry_run"])
 LABEL_ERRORS = Counter("label_errors_total", "Print errors", ["reason"])
 LAST_PRINT_TS = Gauge("last_print_timestamp_seconds", "Unix timestamp of last print")
+# A real print that proceeded WITHOUT the media/fault preflight because the printer's status channel
+# was unreachable — SNMP (network: timeout / filtered UDP 161 / wrong community / unsupported OID) or
+# the ESC i S read (USB: device busy / claim failure / no status frame). The guard fails open by
+# design — status is opportunistic, not required — but a rising count means prints are going out
+# unverified, i.e. the phantom-success class is unguarded until the status channel recovers.
+PREFLIGHT_STATUS_UNREACHABLE = Counter(
+    "print_preflight_status_unreachable_total",
+    "Real prints allowed without a media/fault check because the printer status channel "
+    "(SNMP or USB ESC i S) was unreachable",
+)
+
+# ── SNMP-derived printer telemetry (network transport only) ───────────────────────────────────────
+# Freshness model (A) — last-known, refreshed lazily. The app has no background printer poll
+# (docs/known-limitations.md), so these gauges are refreshed only when the printer is actually queried
+# over SNMP: on a /print preflight and on a /printer/status query. /metrics reports the last-known
+# values (which may be stale) and NEVER triggers a live SNMP query per scrape — that would add UDP 161
+# traffic and print-lock contention for no real benefit on a home app. PRINTER_STATUS_LAST_QUERY_TS
+# makes the staleness visible so an alert can flag "last queried too long ago" if desired.
+#
+# State model — unknown/not-applicable is NaN, never a misleading 0. A scalar gauge defaults to 0,
+# which would read as "printer down" / "zero labels" on a cold start, on a non-network (USB/file)
+# deployment, or with SNMP disabled — none of which ever query SNMP. So these are initialized to NaN
+# (Prometheus treats NaN as no-data: `printer_up == 0` alerts do not fire on it) and only take a
+# concrete value once an SNMP query actually observes one. ``printer_up`` 0 therefore means "queried
+# and did not answer" (genuinely down), distinct from NaN "never queried / not applicable".
+_METRIC_UNKNOWN = float("nan")
+PRINTER_UP = Gauge(
+    "printer_up", "1 printer answered the last SNMP query, 0 queried-but-down, NaN not-queried"
+)
+PRINTER_UP.set(_METRIC_UNKNOWN)
+PRINTER_DETECTED_ERROR_STATE = Gauge(
+    "printer_detected_error_state",
+    "hrPrinterDetectedErrorState per condition: 1 set, 0 clear, NaN when the printer is unreachable",
+    ["condition"],
+)
+PRINTER_LABEL_LIFECOUNT = Gauge(
+    "printer_label_lifecount", "Lifetime label count from prtMarkerLifeCount (NaN when unobserved)"
+)
+PRINTER_LABEL_LIFECOUNT.set(_METRIC_UNKNOWN)
+# Only the model is exported (already public via /health). serial/firmware/hostname are stable device
+# identifiers and are deliberately NOT put on the unauthenticated metrics surface — they stay on the
+# token-protected /printer/status. (/metrics carries no token; leaking identifiers there would be a
+# weaker gate than the status route that returns the same fields.)
+PRINTER_INFO = Gauge("printer_info", "Printer model (value always 1)", ["model"])
+PRINTER_MEDIA_INFO = Gauge(
+    "printer_media_info",
+    "Currently loaded media (value always 1)",
+    ["media_name", "media_type", "width_mm"],
+)
+PRINTER_STATUS_LAST_QUERY_TS = Gauge(
+    "printer_status_last_query_timestamp_seconds",
+    "Unix timestamp of the last SNMP printer query (NaN until one happens, so staleness is visible)",
+)
+PRINTER_STATUS_LAST_QUERY_TS.set(_METRIC_UNKNOWN)
+
+
+def _set_printer_metrics(
+    *,
+    reachable: bool,
+    error_conditions: list[str],
+    label_lifecount: int | None,
+    model: str | None,
+    media_name: str | None,
+    media_type: str | None,
+    media_width_mm: float | None,
+) -> None:
+    """Update the SNMP telemetry gauges from one query's decoded values.
+
+    The single sink for both the /print preflight and the /printer/status query. Per-condition error
+    gauges are driven off the SNMP layer's already-DECODED condition names (``error_conditions``), not
+    re-derived from the raw bitmask: hrPrinterDetectedErrorState is a BITS value whose bit numbering
+    (MSB-first, octet-width-dependent) does not match a plain ``1 << index``, so re-bit-shifting the
+    mask here would misclassify real faults. ``printer_info``/``printer_media_info`` are cleared before
+    each set so a changed model/loaded-media never leaves a stale series exported at 1.
+
+    Unknown is represented as NaN, never a misleading concrete value: when the printer is unreachable
+    ``printer_up`` is 0 (queried-and-down) but every per-condition gauge and the life-count become NaN
+    — we cannot know fault state or the counter on a printer that did not answer, and a stale prior
+    value must not look current just because the query timestamp refreshed.
+    """
+    active = set(error_conditions)
+    PRINTER_UP.set(1 if reachable else 0)
+    PRINTER_STATUS_LAST_QUERY_TS.set_to_current_time()
+    for _bit, name in HR_PRINTER_ERROR_BITS:
+        PRINTER_DETECTED_ERROR_STATE.labels(condition=name).set(
+            (1 if name in active else 0) if reachable else _METRIC_UNKNOWN
+        )
+    # A nonzero hrPrinterDetectedErrorState the SNMP layer couldn't map to a known RFC 3805 bit is
+    # surfaced as an ``unknownErrorBits:*`` string (firmware version skew / nonstandard bit). Without
+    # a catch-all series, such a fault would leave every known condition at 0 and read as healthy
+    # while the print preflight rejects the job. Expose it as condition="unknown" so alerting still
+    # fires on any fault the guard would block.
+    has_unknown_fault = any(e.startswith("unknownErrorBits") for e in active)
+    PRINTER_DETECTED_ERROR_STATE.labels(condition="unknown").set(
+        (1 if has_unknown_fault else 0) if reachable else _METRIC_UNKNOWN
+    )
+    PRINTER_INFO.clear()
+    if reachable and model:
+        PRINTER_INFO.labels(model=model).set(1)
+    PRINTER_MEDIA_INFO.clear()
+    if reachable and (media_name or media_type or media_width_mm is not None):
+        PRINTER_MEDIA_INFO.labels(
+            media_name=media_name or "",
+            media_type=media_type or "",
+            width_mm=(f"{media_width_mm:g}" if media_width_mm is not None else ""),
+        ).set(1)
+    # Reset to unknown (NaN) when the printer is down or the optional counter OID is absent, so a
+    # previously-observed count never lingers as if current.
+    PRINTER_LABEL_LIFECOUNT.set(
+        label_lifecount if (reachable and label_lifecount is not None) else _METRIC_UNKNOWN
+    )
+
+
+def _record_snmp_metrics(snmp: PrinterSNMPStatus) -> None:
+    """Record telemetry from a print-preflight :class:`PrinterSNMPStatus`.
+
+    ``snmp.errors`` carries the decoded HR condition names (plus any console/unknown strings, which
+    the recorder ignores — it only matches the known condition names)."""
+    _set_printer_metrics(
+        reachable=snmp.reachable,
+        error_conditions=snmp.errors,
+        label_lifecount=snmp.label_lifecount,
+        model=snmp.model,
+        media_name=snmp.media_name,
+        media_type=snmp.media_type,
+        media_width_mm=snmp.media_width_mm,
+    )
+
+
+def _record_status_metrics(status: PrinterStatus) -> None:
+    """Record telemetry from a /printer/status :class:`PrinterStatus`.
+
+    ``status.errors`` carries the same decoded condition names as the SNMP layer (PrinterStatus.from_snmp
+    copies them); the loaded-media name rides in ``raw`` so no second SNMP query is needed."""
+    raw = status.raw if isinstance(status.raw, dict) else {}
+    media_name = raw.get("media_name")
+    _set_printer_metrics(
+        reachable=status.reachable,
+        error_conditions=status.errors,
+        label_lifecount=status.label_lifecount,
+        model=status.model,
+        media_name=media_name if isinstance(media_name, str) else None,
+        media_type=status.media_type,
+        media_width_mm=status.media_width_mm,
+    )
+
 
 # ── Image upload limits ──────────────────────────────────────────────────────────
 # A label is a small thermal print (≤ ~696 px wide at 300 dpi, downscaled before printing),
@@ -255,6 +418,258 @@ def _resolve_transport() -> type[Transport]:
     """Transport class for the configured printer_uri, resolved per call so a runtime-overridden
     URI (e.g. monkeypatched in tests) is always honoured."""
     return get_transport(infer_transport(settings.printer_uri))
+
+
+# ── SNMP print preflight (close the phantom-success hole) ──────────────────────────────
+# The QL-810W rasterises a job and only THEN rejects it at the hardware level when the loaded roll
+# does not match the template's media (red blink, prints nothing) — yet its :9100 NIC never returns
+# the status back-channel, so the send still records a 200. SNMP (UDP 161) is the channel that does
+# answer, so before a real print we ask SNMP what is actually loaded and refuse a mismatch up front.
+
+
+def _snmp_guard_applies() -> bool:
+    """True when the SNMP media/fault preflight should run for a real print.
+
+    Only the network transport has an SNMP agent to query, and only when SNMP is enabled. File/USB
+    transports and a disabled-SNMP deployment skip the guard entirely (the latter is the documented
+    opt-out for sites that cannot reach UDP 161)."""
+    return settings.snmp_enabled and infer_transport(settings.printer_uri) == "network"
+
+
+def _status_query_supported() -> bool:
+    """True when ``/printer/status`` can return a real loaded-media reading on this deployment.
+
+    The network+SNMP path answers over UDP 161 (lock-free) and USB answers over ESC i S (serialized
+    behind ``_print_lock``); both let the UI badge/gate on the loaded roll. It is BROADER than
+    :func:`_snmp_guard_applies`, which additionally implies the lock-free channel that alone is safe
+    to background-poll every few seconds — USB is deliberately excluded from that poll to avoid
+    claiming the single device handle on every tick. So the web pages gate their *initial* roll
+    detection on this, and the *background poll* on ``_snmp_guard_applies`` (``live_status_poll``)."""
+    return _snmp_guard_applies() or infer_transport(settings.printer_uri) == "usb"
+
+
+def _query_loaded_media() -> PrinterSNMPStatus:
+    """Blocking SNMP query of the configured network printer's loaded media + fault state.
+
+    Runs off the event loop (call via ``run_in_threadpool`` while holding ``_print_lock``, like the
+    print itself). Never raises: an unreachable/undecodable agent yields ``reachable=False`` so the
+    caller fails open. The SNMP host is the ``printer_uri`` hostname; the UDP 161 port/community/
+    timeout come from settings (independent of the :9100 print port)."""
+    host = urlparse(settings.printer_uri).hostname or ""
+    return query_snmp_status(
+        host,
+        community=settings.snmp_community,
+        port=settings.snmp_port,
+        timeout=settings.snmp_timeout,
+    )
+
+
+def _describe_media(width_mm: float | None, media_type: str | None, length_mm: float | None) -> str:
+    """Human-readable media description for a 409 detail, e.g. ``62mm continuous`` or ``62x29mm
+    die-cut``. ``:g`` trims the trailing ``.0`` from whole-millimetre values."""
+    if width_mm is None or media_type is None:
+        return "unknown media"
+    kind = "die-cut" if media_type == "die_cut" else media_type
+    if media_type == "die_cut" and length_mm is not None:
+        return f"{width_mm:g}x{length_mm:g}mm {kind}"
+    return f"{width_mm:g}mm {kind}"
+
+
+def _describe_required(required: RequiredMedia) -> str:
+    return _describe_media(required.width_mm, required.media_type, required.length_mm)
+
+
+def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> None:
+    """Reject a print up front on a hard printer fault or a loaded-vs-required media mismatch.
+
+    Pure decision logic over an already-fetched :class:`PrinterSNMPStatus` (no I/O), so it is safe to
+    call from the async handler and unit-testable without a socket. Fails open — returns without
+    raising — when SNMP is unreachable or reports no comparable media (``MediaMatch.UNKNOWN``), or
+    when the template's label is unknown to brother_ql (the downstream render surfaces that). Raises
+    :class:`HTTPException` 409 otherwise, incrementing the matching ``label_errors_total`` series."""
+    if not loaded.reachable:
+        # Fail open by design: SNMP is opportunistic (it may be disabled on the printer or blocked
+        # in transit), so an unreachable agent must not block printing. But a print then goes out
+        # WITHOUT the media/fault check — so count it, making a silently-unguarded run observable
+        # (a rising counter means the phantom-success class is unguarded until SNMP recovers).
+        PREFLIGHT_STATUS_UNREACHABLE.inc()
+        log.warning(
+            "SNMP preflight: printer unreachable; allowing print without a media/fault check "
+            "(fail-open). Fix SNMP reachability to re-enable the guard, or set SNMP_ENABLED=false."
+        )
+        return
+
+    # Two fault gates, both rejecting before send so a fault is an explicit 409, never a phantom 200.
+    #
+    # (1) A non-zero hrPrinterDetectedErrorState — the RFC 3805 machine-readable fault signal (cover
+    # open, no media, jam): the job would red-blink and print nothing. We gate on the bitmask, NOT on
+    # console text: build_snmp_status flags any console line != "READY" as an error, but transient
+    # non-fault display states (PRINTING / RECEIVING / COOLING) are also non-READY, and blocking on
+    # them would 409 a valid back-to-back print whose predecessor is still processing.
+    if loaded.error_state_bits != 0:
+        LABEL_ERRORS.labels(reason="printer_error").inc()
+        raise HTTPException(
+            409,
+            detail={
+                "msg": "Printer reports a fault and cannot print; clear it and retry",
+                "errors": loaded.errors,
+                "media_loaded": _describe_media(
+                    loaded.media_width_mm, loaded.media_type, loaded.media_length_mm
+                ),
+            },
+        )
+
+    # (2) A latched fault the bitmask MISSES. Verified live on the QL-810W (2026-06-30): sending a
+    # die-cut template to a continuous roll red-blinks and *latches* the printer — every later job,
+    # even a media-matching one, is buffered and silently returns 200 until a manual reset — yet
+    # hrPrinterDetectedErrorState stays 00. It surfaces only as hrPrinterStatus=other(1) with a
+    # non-READY console line. Gate on BOTH signals so we reject the latch without re-introducing the
+    # transient-state false positives gate (1) avoids: idle reads idle(3)/"READY" and PRINTING/WARMUP
+    # read printing(4)/warmup(5), so other(1) + a non-READY console uniquely identifies the latch.
+    if (
+        loaded.printer_status == HR_PRINTER_STATUS_OTHER
+        and loaded.console_text is not None
+        and loaded.console_text.strip().upper() != CONSOLE_READY
+    ):
+        LABEL_ERRORS.labels(reason="printer_error").inc()
+        raise HTTPException(
+            409,
+            detail={
+                "msg": "Printer reports a fault and cannot print; clear it and retry",
+                "errors": loaded.errors,
+                "media_loaded": _describe_media(
+                    loaded.media_width_mm, loaded.media_type, loaded.media_length_mm
+                ),
+            },
+        )
+
+    _raise_on_media_mismatch(label_id, loaded)
+
+
+def _loaded_media_desc(loaded: LoadedMedia) -> str:
+    """Human description of the loaded roll for a 409 detail. Prefers the printer's own media-name
+    string when present (SNMP's ``prtInputMediaName``), else derives one from width/type/length. The
+    ESC i S (USB) status has no media-name, so it falls through to the derived description."""
+    media_name = getattr(loaded, "media_name", None)
+    if isinstance(media_name, str) and media_name:
+        return media_name
+    return _describe_media(loaded.media_width_mm, loaded.media_type, loaded.media_length_mm)
+
+
+def _raise_on_media_mismatch(label_id: str, loaded: LoadedMedia) -> None:
+    """Raise 409 when the loaded roll does not match the template label's required media.
+
+    Shared by the SNMP and USB preflights. ``media_matches`` (app.media) duck-types on
+    ``media_width_mm``/``media_type``/``media_length_mm``/``reachable`` — which BOTH
+    :class:`PrinterSNMPStatus` and :class:`PrinterStatus` satisfy, with ``media_type`` canonical on
+    both — so one comparison serves both channels. Fails open (returns without raising) when the
+    label is unknown to brother_ql (the render path surfaces that) or the loaded media is
+    indeterminate (``MediaMatch.UNKNOWN``)."""
+    try:
+        required = required_media_for(label_id)
+    except ValueError:
+        # An unknown label can't be compared; the render path will surface it. Don't block here.
+        log.warning("Print preflight: unknown label %r; skipping media check (fail-open)", label_id)
+        return
+
+    if media_matches(required, loaded) == MediaMatch.MISMATCH:
+        LABEL_ERRORS.labels(reason="media_mismatch").inc()
+        loaded_desc = _loaded_media_desc(loaded)
+        raise HTTPException(
+            409,
+            detail={
+                "msg": (
+                    f"Loaded media ({loaded_desc}) does not match the media required by template "
+                    f"label {label_id!r} ({_describe_required(required)}). Load the matching roll "
+                    "or print a template that matches what is loaded."
+                ),
+                "label": label_id,
+                "media_required": _describe_required(required),
+                "media_loaded": loaded_desc,
+            },
+        )
+
+
+def _raise_if_usb_media_incompatible(label_id: str, status: PrinterStatus) -> None:
+    """Reject a USB print up front on a hard fault or a loaded-vs-required media mismatch.
+
+    The USB analogue of :func:`_raise_if_media_incompatible`: the ESC i S status frame has no SNMP
+    error-bitmask or ``hrPrinterStatus`` latch signal, so the single fault gate is the decoded
+    ``errors`` list (no-media / cover-open / cutter-jam bytes brother_ql surfaces). Fails open when
+    the status could not be read AND the device is free, then delegates the media comparison to the
+    shared :func:`_raise_on_media_mismatch`."""
+    if not status.reachable:
+        # Distinguish two causes of an unreachable USB status, which must NOT be handled alike:
+        #  * the device is still owned by a prior/orphaned transfer (a status read that timed out, or
+        #    the fast-fail busy check) — a send() would raise USBBusyError, so reject cleanly with 503
+        #    rather than fail open into a hard 500, and do NOT count it as an unverified print;
+        #  * genuinely unreachable with the device free (e.g. a clean read failure) — fail open.
+        if usb_device_busy():
+            raise HTTPException(
+                503,
+                detail={
+                    "msg": "Printer is busy with another transfer; retry once it clears",
+                    "errors": status.errors,
+                },
+            )
+        PREFLIGHT_STATUS_UNREACHABLE.inc()
+        log.warning(
+            "USB preflight: printer status unavailable (%s); allowing print without a media/fault "
+            "check (fail-open).",
+            "; ".join(status.errors) or "no detail",
+        )
+        return
+    if status.errors:
+        LABEL_ERRORS.labels(reason="printer_error").inc()
+        raise HTTPException(
+            409,
+            detail={
+                "msg": "Printer reports a fault and cannot print; clear it and retry",
+                "errors": status.errors,
+                "media_loaded": _describe_media(
+                    status.media_width_mm, status.media_type, status.media_length_mm
+                ),
+            },
+        )
+    # A clean frame can still report the printer mid-job ('Printing state') — a prior or external job
+    # still running. Sending now would interleave/queue behind it, so refuse with a transient 503
+    # rather than emitting a second raster into a busy device. (Our own prints can't trip this: send()
+    # is synchronous and leaves the printer in 'Waiting to receive' before _print_lock is released.)
+    if _esc_i_s_status_is_busy(status):
+        raise HTTPException(
+            503,
+            detail={
+                "msg": "Printer is busy with another job; retry once it finishes",
+                "phase": status.phase_type,
+            },
+        )
+    _raise_on_media_mismatch(label_id, status)
+
+
+async def _enforce_print_preflight(label_id: str, *, dry_run: bool) -> None:
+    """Run the media/fault preflight for a real print, dispatching on the transport's status channel.
+
+    A no-op for dry runs (nothing reaches the printer). On the network+SNMP path it queries SNMP; on
+    USB it reads the ESC i S status frame; on file / network-with-SNMP-disabled there is no status
+    channel, so it fails open (no check). Either channel raises 409 on a fault or media mismatch and
+    fails open on an unreachable read. Call inside ``_print_lock`` so the query cannot race an
+    in-flight print on the same transport (critical for USB, which shares the single device handle)."""
+    if dry_run:
+        return
+    if _snmp_guard_applies():
+        loaded = await run_in_threadpool(_query_loaded_media)
+        # Refresh the SNMP telemetry gauges from this query (freshness model A) before the guard
+        # decision, so a print about to be rejected on a fault still updates printer_up / error-state.
+        _record_snmp_metrics(loaded)
+        _raise_if_media_incompatible(label_id, loaded)
+    elif infer_transport(settings.printer_uri) == "usb":
+        status = await run_in_threadpool(_query_printer_status, _build_status_request())
+        # Deliberately NOT recorded into the SNMP telemetry gauges: _set_printer_metrics keys error
+        # conditions off RFC 3805 hrPrinterDetectedErrorState names, which the ESC i S ``errors``
+        # strings (e.g. "No media when printing") do not match — feeding a USB fault there would set
+        # printer_up=1 and clear every error-condition gauge to 0, masking alerts during a real fault.
+        # Those gauges are documented as SNMP/network-only; USB simply leaves them unpopulated.
+        _raise_if_usb_media_incompatible(label_id, status)
 
 
 # Job history backend (idempotency de-dup + reprint substrate). Rebuilt in startup() so runtime
@@ -799,6 +1214,60 @@ def health() -> HealthResponse:
     )
 
 
+@app.get("/livez", response_model=LivenessResponse, tags=["System"])
+def livez() -> LivenessResponse:
+    """Kubernetes liveness probe: the process is up. Always 200, no dependencies, unauthenticated.
+
+    A liveness failure tells the orchestrator to RESTART the pod, so it must never depend on an
+    external resource (printer, history store, templates) — only that the event loop can answer.
+    Cheap and side-effect free.
+    """
+    return LivenessResponse(status="alive")
+
+
+@app.get(
+    "/readyz",
+    response_model=ReadinessResponse,
+    tags=["System"],
+    responses={503: {"description": "Not ready to serve (see per-check reasons)"}},
+)
+def readyz() -> ReadinessResponse | JSONResponse:
+    """Kubernetes readiness probe: can the app serve print requests? 200 ready / 503 not-ready.
+
+    Checks the dependencies a print actually needs — at least one template loaded, a resolvable
+    transport scheme, and an open history store — and reports each in ``checks`` so a not-ready
+    response says WHY. Deliberately does NOT probe the printer: a print service should keep accepting
+    requests while the printer is briefly unreachable (that live state is /printer/status), and a
+    printer-coupled readiness would flap the pod out of its Service on a transient blip. Unauthenticated
+    and exposes no sensitive data (probes carry no token).
+    """
+    checks: dict[str, str] = {}
+
+    checks["templates"] = "ok" if len(registry) else "no templates loaded"
+
+    # An unknown/unregistered PRINTER_URI scheme means the app cannot route any print — not ready.
+    try:
+        get_transport(infer_transport(settings.printer_uri))
+        checks["transport"] = "ok"
+    except (ValueError, KeyError) as exc:
+        checks["transport"] = f"unresolved transport for {settings.printer_uri!r}: {exc}"
+
+    # A cheap probe that the history store is open (a closed/broken store raises). The broad catch is
+    # deliberate here and ONLY here: a readiness probe must turn ANY dependency failure into a
+    # structured 503, never let it surface as a 500 — so it cannot assume a specific store backend.
+    try:
+        _history.count()
+        checks["history"] = "ok"
+    except Exception as exc:
+        checks["history"] = f"history store unavailable: {exc}"
+
+    ready = all(v == "ok" for v in checks.values())
+    body = ReadinessResponse(ready=ready, checks=checks)
+    if not ready:
+        return JSONResponse(status_code=503, content=body.model_dump())
+    return body
+
+
 @app.get("/capabilities", response_model=CapabilityResponse, tags=["System"])
 def capabilities() -> CapabilityResponse:
     cap = _driver_cls.CAPABILITY
@@ -814,6 +1283,119 @@ def capabilities() -> CapabilityResponse:
     )
 
 
+def _build_status_request() -> bytes:
+    """Model-correct ESC i S status-request payload: a model-sized invalidate (NUL) prefix before
+    the status-information command. Without the prefix, a printer whose command buffer is dirty after
+    an interrupted job treats ESC i S as raster data and never replies with the 32-byte status frame.
+    Consumed only on the ESC i S fallback path; the SNMP status read ignores it (see NetworkTransport
+    .query_status), but it is cheap and the transport API takes a request either way."""
+    from brother_ql.raster import BrotherQLRaster
+
+    qlr = BrotherQLRaster(settings.model)
+    qlr.add_invalidate()
+    qlr.add_status_information()
+    return bytes(qlr.data)  # brother_ql is untyped; coerce the buffer to a concrete bytes
+
+
+def _query_printer_status(request: bytes) -> PrinterStatus:
+    """Blocking transport status query. Opens the configured transport, queries, and always closes it.
+    Run via ``run_in_threadpool`` so the socket I/O never blocks the event loop."""
+    transport = _resolve_transport()(settings.printer_uri)
+    try:
+        return transport.query_status(request)
+    finally:
+        transport.close()
+
+
+def _status_has_hard_fault(status: PrinterStatus) -> bool:
+    """True when a reachable SNMP status reflects a genuine hardware fault, mirroring the print
+    preflight's two gates (see :func:`_raise_if_media_incompatible`) so the status badge and the print
+    gate agree on what a "fault" is: (1) a non-zero ``hrPrinterDetectedErrorState`` bitmask, or (2) the
+    latch — ``hrPrinterStatus=other(1)`` with a non-``READY`` console. Deliberately does NOT treat a
+    non-READY console alone as a fault: transient display states (PRINTING / RECEIVING / COOLING) are
+    non-READY but normal, so keying off ``status.errors`` (which echoes the console line) would
+    false-alarm mid-print. The error bitmask and hrPrinterStatus ride in ``raw`` (see from_snmp)."""
+    if (status.raw.get("error_state_bits") or 0) != 0:
+        return True
+    console = status.console_text
+    return (
+        status.raw.get("printer_status") == HR_PRINTER_STATUS_OTHER
+        and console is not None
+        and console.strip().upper() != CONSOLE_READY
+    )
+
+
+def _status_is_busy(status: PrinterStatus) -> bool:
+    """True when the SNMP read itself reports a working state — hrPrinterStatus printing(4) or
+    warmup(5). Independent of this server's _print_lock so an external job, or a printer still
+    finishing after our send returns, is reported as PRINTING rather than misreported as idle."""
+    return status.raw.get("printer_status") in HR_PRINTER_STATUS_BUSY
+
+
+# brother_ql ESC i S phase byte (RESP_PHASE_TYPES): the printer is READY only in 'Waiting to receive';
+# 'Printing state' means a page is actively running. An idle QL — and one that has finished our own
+# synchronous send() — reports 'Waiting to receive', so this only flags a genuinely busy device.
+ESC_I_S_PHASE_PRINTING = "Printing state"
+
+
+def _esc_i_s_status_is_busy(status: PrinterStatus) -> bool:
+    """True when a reachable ESC i S (USB) status frame reports the printer actively printing.
+
+    The USB analogue of :func:`_status_is_busy`: a valid frame can parse as ``ok=True, errors=[]``
+    while ``phase_type == 'Printing state'`` (a prior/external job still running), which must NOT read
+    as ready — otherwise ``/printer/status`` advertises IDLE and the print preflight sends a second
+    raster into a busy device (interleaved/queued output)."""
+    return status.phase_type == ESC_I_S_PHASE_PRINTING
+
+
+def _status_response(status: PrinterStatus, state: PrinterState) -> PrinterStatusResponse:
+    """Build the full PrinterStatusResponse from a reachable printer query under a given ``state``.
+    Single builder so the PRINTING, IDLE, and ERROR responses can never drift field-by-field."""
+    return PrinterStatusResponse(
+        state=state,
+        uri=settings.printer_uri,
+        reachable=status.reachable,
+        model=status.model,
+        media_width_mm=status.media_width_mm,
+        media_length_mm=status.media_length_mm,
+        media_type=status.media_type,
+        status=status.status_type,
+        phase=status.phase_type,
+        errors=status.errors,
+        serial=status.serial,
+        firmware=status.firmware,
+        console_text=status.console_text,
+        label_lifecount=status.label_lifecount,
+    )
+
+
+def _busy_503() -> JSONResponse:
+    """The 503 "printer is busy" reply for the ESC i S path, where a status readback shares the :9100
+    socket with an in-flight print and cannot run concurrently."""
+    return JSONResponse(
+        status_code=503,
+        content=PrinterStatusResponse(
+            state=PrinterState.PRINTING,
+            uri=settings.printer_uri,
+            reachable=False,
+            errors=["printer is busy with an in-progress print job; retry shortly"],
+        ).model_dump(),
+    )
+
+
+def _unreachable_503(status: PrinterStatus) -> JSONResponse:
+    """The 503 reply for a reachable-transport-but-no-printer query (state=off, reachable=false)."""
+    return JSONResponse(
+        status_code=503,
+        content=PrinterStatusResponse(
+            state=PrinterState.OFF,
+            uri=settings.printer_uri,
+            reachable=False,
+            errors=status.errors,
+        ).model_dump(),
+    )
+
+
 @app.get(
     "/printer/status",
     response_model=PrinterStatusResponse,
@@ -826,77 +1408,81 @@ def capabilities() -> CapabilityResponse:
 async def printer_status(
     _auth: Annotated[None, Depends(check_token)],
 ) -> PrinterStatusResponse | JSONResponse:
-    """Query the physical printer via ESC i S and return its current state.
+    """Query the physical printer and return its current state.
 
-    Sends the Brother QL "request status information" command (0x1B 0x69 0x53) over the
-    configured transport and parses the 32-byte reply. Returns loaded media (width, length,
-    type), the printer model, and any reported error bits.
+    On the default network path with SNMP enabled the status comes over SNMP (UDP 161); otherwise it
+    is read via the ESC i S back-channel over the configured transport. Returns loaded media (width,
+    length, type), the printer model, identity/telemetry, and any reported error bits.
 
-    Returns 503 when the printer is unreachable, when a print is in progress (the transport
-    is busy), or when the configured transport does not support status queries (USB).
-    The response body always has ``reachable: false`` in those cases so callers can branch
-    without inspecting the status code.
+    Returns 503 when the printer is unreachable, or (ESC i S path only) when a print is in progress
+    and the :9100 status readback cannot run. The response body always has ``reachable: false`` in
+    those cases so callers can branch without inspecting the status code.
 
     Note: the optional background keep-alive ping was intentionally omitted;
     it adds a background task and concurrency surface not warranted for a home app.
     """
-    # Acquire the same lock that serializes /print and /reprint against this transport.
-    # A status query must not race an in-flight print: both open a connection to the same
-    # port-9100 endpoint (network) or touch the same USB device, and interleaving would corrupt
-    # both the print and the status reply. Use non-blocking acquire: if a print is in progress
-    # return 503 "printer busy" immediately rather than hanging the request thread. Mirror the
-    # pattern already used for /print (asyncio.Lock), but without waiting.
+    # SNMP is an independent, read-only channel (UDP 161): a status query on it does NOT contend with
+    # an in-flight print's :9100 raster send, so it must NOT serialize behind _print_lock. Decoupling
+    # lets the status card poll live during a print. While the lock is held a print is mid-job, which
+    # we surface as PRINTING — but only when the read is itself clean. The ESC i S fallback below DOES
+    # share the :9100 socket, so it keeps the busy short-circuit and the lock.
+    if _snmp_guard_applies():
+        status = await run_in_threadpool(_query_printer_status, _build_status_request())
+        # Peek (never acquire) the print lock as a read-only "is a print in progress" signal. A brief
+        # stale read only mislabels a single poll cycle, harmless for a status card.
+        print_in_flight = _print_lock.locked()
+        # Refresh the SNMP telemetry gauges from this query (freshness model A).
+        _record_status_metrics(status)
+        # Precedence is deliberate: an unreachable read or a genuine HARD fault must surface EVEN
+        # mid-print — masking either behind "printing" is the phantom-success failure mode this feature
+        # exists to close. But a non-READY console alone is NOT a fault (PRINTING/RECEIVING/COOLING are
+        # transient), so the fault test reuses the preflight's hard-fault gates rather than the raw
+        # errors list — otherwise a normal mid-print poll would false-alarm as error. Only a reachable,
+        # hard-fault-free read under a held lock reports live PRINTING.
+        if not status.reachable:
+            return _unreachable_503(status)
+        if _status_has_hard_fault(status):
+            return _status_response(status, PrinterState.ERROR)
+        # Busy if the SNMP read itself says so (printing/warmup) OR this server holds the print lock
+        # (covers the window before the printer's hrPrinterStatus catches up, and a read that can't
+        # report status). Only a reachable, fault-free, non-busy read is IDLE (ready).
+        if _status_is_busy(status) or print_in_flight:
+            return _status_response(status, PrinterState.PRINTING)
+        return _status_response(status, PrinterState.IDLE)
+
+    # ── ESC i S read (USB; also file / SNMP-disabled, which report no reachable status): the readback
+    #    claims the device / shares the socket, so it MUST serialize behind _print_lock. Non-blocking
+    #    acquire — if a print is in progress return 503 "busy" immediately rather than hanging.
     if _print_lock.locked():
-        return JSONResponse(
-            status_code=503,
-            content=PrinterStatusResponse(
-                state=PrinterState.PRINTING,
-                uri=settings.printer_uri,
-                reachable=False,
-                errors=["printer is busy with an in-progress print job; retry shortly"],
-            ).model_dump(),
-        )
+        return _busy_503()
     async with _print_lock:
-        # Build the status-request payload for the configured model. Brother QL printers require
-        # a model-sized invalidate (NUL) prefix before ESC i S to clear the command buffer —
-        # without it, a printer whose buffer is dirty after an interrupted job treats ESC i S as
-        # raster data and never replies with the 32-byte status frame.
-        from brother_ql.raster import BrotherQLRaster
-
-        _qlr = BrotherQLRaster(settings.model)
-        _qlr.add_invalidate()
-        _qlr.add_status_information()
-        _status_request = _qlr.data
-
-        transport_cls = _resolve_transport()
-        transport = transport_cls(settings.printer_uri)
-        try:
-            status = await run_in_threadpool(transport.query_status, _status_request)
-        finally:
-            transport.close()
+        status = await run_in_threadpool(_query_printer_status, _build_status_request())
 
     if not status.reachable:
-        return JSONResponse(
-            status_code=503,
-            content=PrinterStatusResponse(
-                state=PrinterState.OFF,
-                uri=settings.printer_uri,
-                reachable=False,
-                errors=status.errors,
-            ).model_dump(),
-        )
+        return _unreachable_503(status)
+    if status.errors:
+        return _status_response(status, PrinterState.ERROR)
+    # A frame can parse clean yet report the printer mid-job (phase 'Printing state') — an external
+    # job, or one still finishing — which must read as PRINTING, not IDLE, so the UI never advertises
+    # a busy device as ready (mirrors the SNMP branch's busy check).
+    if _esc_i_s_status_is_busy(status):
+        return _status_response(status, PrinterState.PRINTING)
+    return _status_response(status, PrinterState.IDLE)
 
-    return PrinterStatusResponse(
-        state=PrinterState.ERROR if status.errors else PrinterState.IDLE,
-        uri=settings.printer_uri,
-        reachable=status.reachable,
-        model=status.model,
-        media_width_mm=status.media_width_mm,
-        media_length_mm=status.media_length_mm,
-        media_type=status.media_type,
-        status=status.status_type,
-        phase=status.phase_type,
-        errors=status.errors,
+
+def _template_media(label: str) -> TemplateMedia | None:
+    """The media a template's ``label`` requires, as the UI-facing model — ``None`` when the label is
+    not a known brother_ql label (the template still lists and prints; it just gets no compatibility
+    badge). Reuses :func:`app.media.required_media_for` so the badge can never drift from the
+    server-side print guard's comparison."""
+    try:
+        required = required_media_for(label)
+    except ValueError:
+        return None
+    return TemplateMedia(
+        width_mm=required.width_mm,
+        media_type=required.media_type,
+        length_mm=required.length_mm,
     )
 
 
@@ -912,6 +1498,7 @@ def list_templates() -> list[TemplateInfo]:
                 required=t.required_fields,
                 optional=t.optional_fields,
             ),
+            media=_template_media(t.label),
         )
         for t in registry.all()
     ]
@@ -1108,6 +1695,10 @@ async def print_label(request: PrintRequest) -> PrintResponse:
                     copies=prior.copies,
                     dry_run=prior.dry_run,
                 )
+        # Pre-flight the loaded media over SNMP before committing the (silent-on-this-NIC) raster
+        # send: a media mismatch or a hard printer fault is rejected with 409 here rather than
+        # recorded as a phantom success. Held inside _print_lock so the query can't race a print.
+        await _enforce_print_preflight(tmpl.label, dry_run=request.dry_run)
         return await run_in_threadpool(
             _execute_print,
             tmpl,
@@ -1222,6 +1813,9 @@ async def reprint(job_id: str) -> PrintResponse:
     # Replay the frozen reference instant so the reprinted label's computed dates are identical.
     now = datetime.fromisoformat(record.render_now) if record.render_now else datetime.now()
     async with _print_lock:
+        # Same SNMP media/fault preflight as /print: a saved job replayed against a printer now
+        # loaded with different media (or in a fault state) is rejected with 409, not phantom-printed.
+        await _enforce_print_preflight(tmpl.label, dry_run=record.dry_run)
         return await run_in_threadpool(
             _execute_print,
             tmpl,
@@ -1245,7 +1839,20 @@ async def history_page(request: Request) -> HTMLResponse:
     """Browse-history page shell. Public like ``GET /`` — it carries no history data (that is
     fetched client-side from the token-protected ``/history/list``) and must be reachable from a
     plain link so the browser can render its token input. 404s only when browsing is disabled."""
-    return jinja.TemplateResponse(request, "history.html", {})
+    return jinja.TemplateResponse(
+        request,
+        "history.html",
+        {
+            # Two gates, deliberately different (see _status_query_supported):
+            #  * live_status_poll — background-poll /printer/status every few seconds. ONLY on the
+            #    lock-free SNMP path; on USB the read takes _print_lock (shares the device handle), so
+            #    a repeating poll could delay a /reprint — USB reads the roll once at load instead.
+            #  * status_supported — whether a loaded-media read is possible at all (SNMP or USB), so
+            #    the page does its one-shot roll detection + reprint gating on USB too, without polling.
+            "live_status_poll": _snmp_guard_applies(),
+            "status_supported": _status_query_supported(),
+        },
+    )
 
 
 @app.get(
@@ -1328,8 +1935,10 @@ def reload_templates() -> dict[str, Any]:
     return {"loaded": len(loaded), "templates": loaded, "languages": langs}
 
 
-@app.get("/metrics", tags=["System"])
 def metrics() -> Response:
+    """Prometheus exposition handler. Registered at settings.metrics_path at the END of this module
+    (see ``_register_metrics_route``) so it is mounted AFTER every fixed route — a misconfigured
+    METRICS_PATH that happens to equal a real route can never shadow it (first-registered wins)."""
     return Response(content=generate_latest(), media_type="text/plain; version=0.0.4")
 
 
@@ -1898,6 +2507,25 @@ async def editor_page(request: Request) -> HTMLResponse:
     preview / parse / save calls are made client-side with the saved Bearer token. ``two_color`` /
     ``templates_writable`` toggle UI affordances only. 404s when EDITOR_ENABLED=false.
     """
+    # The label-reference panel: every label the configured model supports, each with the media it
+    # requires (mm). Sourced from the same _template_media()/required_media_for() the print-page
+    # badge and the /print media guard use, so the studio author sees exactly the media the server
+    # will enforce. Embedded server-side (like index.html's TEMPLATES) so the panel renders without a
+    # round-trip; the live "Your Printer" highlight is layered on client-side from /printer/status.
+    # ``red`` flags black/red two-colour media (e.g. 62red). Geometry-only media matching treats
+    # 62red and plain 62 as the same roll (see app.media.media_matches — SNMP reports no roll colour),
+    # so the studio must NOT badge a red label as a definite match against a roll whose colour it can't
+    # verify; the client surfaces red matches as geometry-only to avoid steering authors onto red
+    # media that would print black-only on a plain roll.
+    red_labels = set(_driver_cls.CAPABILITY.red_labels)
+    labels = [
+        {
+            "id": label_id,
+            "media": (m.model_dump() if (m := _template_media(label_id)) is not None else None),
+            "red": label_id in red_labels,
+        }
+        for label_id in _driver_cls.CAPABILITY.supported_labels
+    ]
     return jinja.TemplateResponse(
         request,
         "editor.html",
@@ -1905,6 +2533,7 @@ async def editor_page(request: Request) -> HTMLResponse:
             "history_ui": settings.history_ui,
             "templates_writable": settings.templates_writable,
             "templates_loadable": settings.templates_loadable,
+            "labels": labels,
         },
     )
 
@@ -1917,6 +2546,14 @@ async def web_ui(request: Request) -> HTMLResponse:
             "description": t.description,
             "required": t.required_fields,
             "optional": t.optional_fields,
+            # Raw brother_ql label id (e.g. "62", "62x29"). Drives the client-side size grouping of
+            # the template picker and is the human-readable denomination fallback for the "Other"
+            # bucket when `media` is None (label unknown to brother_ql).
+            "label": t.label,
+            # Required media per template (None when the label is unknown to brother_ql) so the page
+            # can badge each template against the loaded roll from GET /printer/status. Same source
+            # as TemplateInfo.media, serialised for the inline TEMPLATES JSON.
+            "media": (m.model_dump() if (m := _template_media(t.label)) is not None else None),
         }
         for t in registry.all()
     ]
@@ -1934,5 +2571,64 @@ async def web_ui(request: Request) -> HTMLResponse:
             # Surface whether the configured model supports two-color so the UI can hide the toggle
             # on models that can never print red (the print gate would 422 it anyway).
             "two_color": _driver_cls.CAPABILITY.two_color,
+            # Gate the background status poll to deployments where /printer/status is served lock-free
+            # over SNMP. On the ESC i S fallback (USB/file, or SNMP_ENABLED=false) the status read
+            # takes _print_lock, so a background poll would sit on the lock and delay a later /print —
+            # reintroducing the contention this change removed. There, only manual ↻ / post-print
+            # refresh poll (explicit user actions, as before).
+            "live_status_poll": _snmp_guard_applies(),
         },
     )
+
+
+# ── Metrics route (registered LAST) ───────────────────────────────────────────────────────────────
+# Registered here, after every other route is defined, at the env-configured settings.metrics_path
+# (default /metrics; charset already restricted to a literal by Settings._normalize_metrics_path, so
+# no path parameter/wildcard can reach the router). Registering last is a safety property: Starlette
+# matches the FIRST-registered route, so a misconfigured METRICS_PATH equal to a real route can never
+# shadow that page/endpoint. A direct collision is still a config mistake (metrics would be
+# unreachable there), so it is rejected fail-fast at import rather than silently swallowed.
+@app.middleware("http")
+async def _metrics_disabled_gate(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Make the metrics path behave as TRULY ABSENT when METRICS_ENABLED=false — for every method.
+
+    A per-route dependency only runs on the matched (GET) route, so a disabled GET /metrics 404s but
+    POST /metrics returns 405 (Starlette resolves method-not-allowed before dependencies), and that
+    405 + ``Allow: GET`` leaks that the (possibly relocated) path exists. Gating in middleware — which
+    runs before routing — returns a uniform 404 for any method to the path while disabled, matching a
+    genuinely missing path. Runtime-toggleable (reads the setting per request). When enabled it is a
+    no-op and normal routing applies (a 405 on POST is then the honest "real endpoint" response).
+    """
+    if not settings.metrics_enabled and request.url.path == settings.metrics_path:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    return await call_next(request)
+
+
+def _register_metrics_route() -> None:
+    # Reject any path a GET would already resolve to — using Starlette's real route matching, not a
+    # literal string compare. A string compare misses DYNAMIC shadowing: a literal METRICS_PATH like
+    # /templates/foo/source is captured by the earlier /templates/{name}/source route, so (since
+    # metrics registers last) a scrape would silently hit that handler instead of the exposition.
+    # Match.FULL = an existing route fully handles GET at this path; reject so the misconfig fails fast.
+    probe = {"type": "http", "method": "GET", "path": settings.metrics_path}
+    for route in app.routes:
+        match, _ = route.matches(probe)
+        if match == Match.FULL:
+            raise RuntimeError(
+                f"METRICS_PATH {settings.metrics_path!r} is already served by route "
+                f"{getattr(route, 'path', route)!r}; choose a different path."
+            )
+    # Always registered (so the harness/an enabled deployment serves it); the disabled state is
+    # enforced uniformly by _metrics_disabled_gate above, not a per-route dependency.
+    app.add_api_route(
+        settings.metrics_path,
+        metrics,
+        methods=["GET"],
+        tags=["System"],
+        include_in_schema=False,  # not advertised via the unauthenticated /openapi.json
+    )
+
+
+_register_metrics_route()

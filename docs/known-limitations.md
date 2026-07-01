@@ -5,6 +5,149 @@ are deliberate trade-offs for that scope rather than bugs. They are recorded her
 conscious choice, not a surprise — and so the mitigations are ready if the project ever outgrows
 the home setup.
 
+## The network back-channel is silent → SNMP is the status channel
+
+Brother's network NIC (e.g. the QL-810W's `Brother NC-36002w`) **accepts the `:9100` TCP connection
+and the raster bytes but never returns the status frame** that the same printer returns over USB.
+Verified live: `recv` on the back-channel times out. So `NetworkTransport`'s readback sees `None`,
+which the print path treats as "no error reported" — and a job the **hardware** rejects (most often
+because the loaded media does not match the template's `label`: a `62x29` die-cut template against a
+62 mm continuous roll) makes the printer **blink red and print nothing while `/print` returns `200`
+success**. The status channel that actually works on this hardware is **SNMP** (UDP 161, community
+`public`), which answers instantly with loaded media, a reliable error bitmask, console text, and
+identity (see [docs/snmp-status.md](snmp-status.md)).
+
+**What is done about it:** over the **network** transport, `/printer/status` reads via SNMP rather
+than the unreliable `:9100` readback, and `/print` + `/reprint` run a **pre-flight media-mismatch
+guard** that rejects a loaded-vs-required mismatch with `409` before sending. This closes the common
+phantom-success case (wrong media loaded) for network printers.
+
+**Residual (accepted): the guard is fail-open, not fail-closed.** When SNMP is unreachable or
+`SNMP_ENABLED=false`, the guard does **not** block — it logs a warning and proceeds, and the UI
+badges status as unknown (`?`). A print sent while SNMP is down can therefore still hit the original
+phantom-success hole (raster accepted, hardware rejects, `200` reported). This is deliberate: a home
+print service should keep working when its *optional* status sidecar is briefly unreachable, and
+failing closed would turn every SNMP blip into a hard print outage. The guard only ever *adds*
+certainty.
+
+**Other residuals:** the guard cross-checks **media geometry**, not every possible hardware fault —
+a fault the status channel does not surface (or one that appears only after the raster is accepted)
+can still slip through. The guard now covers **both** the network+SNMP path and the **USB** path
+(`usb://` answers a standalone ESC i S status query, unlike the network NIC — see the USB status
+section below), each re-queried under `_print_lock` at pre-flight so the read cannot race the send;
+`file://` is a synthetic-OK debug sink with no printer, and a **network** printer with
+`SNMP_ENABLED=false` has no status channel at all (the silent `:9100` back-channel), so it stays
+unguarded. And because the raster `send()` path is unchanged, a job that passes the pre-flight check
+but is rejected *after* the bytes are sent still reports `None` (unknown) → recorded `printed` — the
+pre-flight check is a backstop in front of that path, not a replacement for it.
+
+**Mitigation if needed later:** poll SNMP during/after the send for a post-print error transition, or
+move to a printer/firmware that returns the `:9100` status frame, so the send path itself can confirm
+the outcome instead of relying on a separate pre-flight read. *(Partially realized for observability:
+the web status card now polls `/printer/status` on a background timer and answers mid-print, so an
+operator sees a post-send fault transition within a poll cycle — but the **recorded job outcome** is
+still the send-path `None`→`printed`, unchanged; this surfaces the transition, it does not gate on it.)*
+
+**Verified live (2026-06-30, QL-810W): the post-send media fault is invisible to the error bitmask
+and latches until a manual reset.** Sending a die-cut template to the loaded continuous roll put the
+printer into a red-blink error; two behaviours held across repeated SNMP reads and matter for both
+alerting and recovery:
+
+- **The error bitmask stayed `00`.** `hrPrinterDetectedErrorState` — the source for the
+  `printer_detected_error_state` gauge — did **not** flag this fault. It surfaced only in
+  `prtConsoleDisplayBufferText` (`"ERROR"`) and `hrPrinterStatus` (`other`). `/printer/status` still
+  catches it because the SNMP decode maps a console line ≠ `READY` into `errors[]` and reports
+  `state=error`, but the per-condition Prometheus gauge reads **all-zero** during this class of fault.
+  Alert on `printer_up` plus the console/status signal, not on the error-bit gauge alone.
+- **The latch is sticky and locks the printer out.** While latched, the QL **buffered** every
+  subsequent job — including a media-*matching* one — without printing (`prtMarkerLifeCount` frozen,
+  `state` stuck at `error`), and each blocked job still returned `200`. Neither an SNMP write
+  (read-only agent), nor an `ESC @` invalidate+initialize over `:9100`, nor a valid matching print
+  cleared it. Only a device-side reset (power button / cover cycle) cleared the latch — and doing so
+  **flushed the buffered job**, so the held label then printed. There is no remote recovery once
+  latched.
+
+**Now guarded (when SNMP is reachable).** The print preflight gained a second gate alongside the error
+bitmask: a job is rejected with `409` when `hrPrinterStatus=other(1)` **and** the console line is not
+`READY` — the exact signature of this latch. Idle reads `idle(3)`/`READY` and transient-busy states
+read `printing(4)`/`warmup(5)`, so the gate fires only on the latch, not on valid back-to-back prints.
+This turns the buffered phantom-`200` into an explicit `409` rather than silently queueing labels that
+never print. The residual stands only when SNMP is unreachable or disabled (the guard is fail-open),
+and a manual reset is still the only way to *clear* an existing latch.
+
+This is the strongest argument for the guard being **pre-flight**: the failure it prevents is not a
+clean one-shot rejection but a device-side lockout that silently buffers jobs behind a `200` and needs
+someone physically at the printer to clear. The only reliable fix is to never send the mismatching job.
+
+**Best-effort seam — live-status readiness can read stale-idle.** `hrPrinterStatus` and the console
+line ride the *optional* (best-effort) SNMP GET, which SNMPv1 discards wholesale if any single OID in
+it is unsupported or its datagram drops. When that optional read fails but the critical read (media +
+error bitmask) succeeds, `/printer/status` has no readiness signal: a printer that is actually
+busy/warming can read `state=idle` for that poll. The blast radius is small — the status card is
+advisory and self-corrects on the next ≈4 s poll; a hard fault is still caught via the critical error
+bitmask; and *our own* in-flight jobs still read `printing` via the print-lock fallback regardless of
+the OID. The residual is only an **external** job (or a printer still finishing after our send) coinciding
+with an optional-read failure. **Mitigation if it ever matters:** fetch `hrPrinterStatus` (+ console) in
+a dedicated status GET, or promote them to the critical read — both trade a round-trip or some
+fail-open robustness on firmware that does not implement those OIDs. Same root cause as the latch
+guard's fail-open seam; deferred together pending a decision to restructure the SNMP batching.
+
+## Loaded-roll awareness (media badge + picker size-focus) requires SNMP or USB
+
+The print page badges the selected template ✓/✗ against the loaded roll and groups the picker by label
+size, focusing the group that matches the loaded media (see [docs/template-format.md](template-format.md)
+and [docs/snmp-status.md](snmp-status.md)). All of this needs to know the **physically loaded roll**,
+reported in a normalized `continuous`/`die_cut` form. **Two** channels report it: SNMP on the network
+transport, and a standalone **ESC i S** query on USB (`from_parsed` normalizes brother_ql's raw
+`"Continuous length tape"`/`"Die-cut labels"` string to the canonical values via the shared
+`app.media.canonical_media_type`, so both channels compare identically). On those paths the badge,
+size-focus, live re-gating, and the `409` media-mismatch **print guard** all work.
+
+The paths that stay *unknown* (badge neutral, every size shown, no guard) are the ones with **no
+status channel**: `file://` has no printer, and a **network printer with `SNMP_ENABLED=false`** relies
+on the silent `:9100` back-channel — its standalone ESC i S query was removed (the QL-810W NIC never
+returns the frame, so it only burned the read deadline before reporting unreachable). On those paths
+the loaded media reads as unknown and the print still goes out, just without the advisory badge/focus.
+
+**USB cadence caveat:** USB status is read **on demand only** — page load, the manual ↻ button, and the
+print preflight — never on the print page's 4 s background poll. Unlike SNMP (lock-free UDP 161), a USB
+status query claims the single device handle and serializes through `_print_lock`, so polling it every
+few seconds would contend with printing. A USB roll swap is therefore reflected on the next page load or
+↻, not live mid-session. The gates are wired accordingly: `_status_query_supported()` (SNMP **or** USB)
+drives the one-shot read + reprint gating, while `_snmp_guard_applies()` (`live_status_poll`, SNMP only)
+drives the background poll.
+
+## The TCP ESC i S status query was removed — network status needs SNMP
+
+Earlier revisions had `NetworkTransport` fall back to a standalone **ESC i S** status query over the
+`:9100` TCP back-channel when SNMP was disabled (invalidate prefix + `1b 69 53`, then read a 32-byte
+status frame). That fallback was **removed**: on the only network hardware we have — the **QL-810W**
+(`Brother NC-36002w` NIC) — the back-channel **accepts the request but never returns the status frame**
+(`recv` times out). So the query could not succeed; it only burned the full read deadline before also
+reporting the printer unreachable. Over **USB** the *same* printer answers a standalone ESC i S query
+cleanly (verified live 2026-07-01), which is why the query lives on the USB transport and not the
+network one — the asymmetry is in the NIC's back-channel, not the ESC i S protocol.
+
+**Consequence:** a **network** printer with `SNMP_ENABLED=false` has **no status channel** — no media
+badge, no size-focus, no pre-flight media guard (fail-open), status reads `unreachable`. SNMP (UDP 161)
+is the only network status path. This is deliberate for our hardware, not an oversight.
+
+**What we'd need to re-support TCP ESC i S** (only worth doing if a *different* model is confirmed to
+answer the `:9100` back-channel):
+
+- Restore a bounded `_query_status_esc_i_s` on `NetworkTransport` (invalidate + `1b6953`, then a
+  deadline-bounded `recv` loop to a full 32-byte frame → `interpret_response` → `from_parsed`), mirroring
+  the USB `_read_status_frame` shape but over the socket. The old `STATUS_*` frame constants that the
+  print-readback path (`_read_status`) still uses are a starting point.
+- **Gate it behind an explicit opt-in** — a per-printer/model flag or a `NETWORK_STATUS_MODE` setting —
+  rather than making it the automatic SNMP-disabled fallback again, so a QL-810W-class NIC that swallows
+  the frame does not silently re-introduce the deadline-burning dead path.
+- Add coverage for `query_status` with `SNMP_ENABLED=false` against a working TCP status reply, plus a
+  timeout case proving the deadline is bounded.
+
+Until a model is actually confirmed to return the frame, this stays removed: **no SNMP ⇒ no network
+status.**
+
 ## Reprint replays the *current* template, not the original
 
 `/reprint/{job_id}` re-renders the named template from the live registry using the original

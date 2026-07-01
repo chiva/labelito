@@ -100,12 +100,16 @@ class LiveServer:
         port: int | None = None,
         host: str = "127.0.0.1",
         startup_timeout: float = DEFAULT_STARTUP_TIMEOUT_S,
+        env_overrides: dict[str, str] | None = None,
     ) -> None:
         self.token = token
         self.host = host
         self.port = port or find_free_port()
         self.base_url = f"http://{self.host}:{self.port}"
         self._startup_timeout = startup_timeout
+        # Extra env applied last, so a test can flip e.g. PRINTER_URI/SNMP_ENABLED without touching
+        # the file:// sink default. Used by the SNMP-server fixture to enable live status polling.
+        self._env_overrides = env_overrides or {}
         self._proc: subprocess.Popen[bytes] | None = None
         # Capture combined stdout+stderr to a file so a failed startup surfaces the real traceback.
         log_fd, log_name = tempfile.mkstemp(prefix="labelito-e2e-", suffix=".log")
@@ -135,6 +139,7 @@ class LiveServer:
                 "EDITOR_ENABLED": "true",
             }
         )
+        env.update(self._env_overrides)
         self._proc = subprocess.Popen(
             [
                 sys.executable,

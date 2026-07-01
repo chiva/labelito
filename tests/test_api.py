@@ -42,6 +42,42 @@ def test_list_templates(client: TestClient) -> None:
     assert "required" in t["fields"]
 
 
+def test_list_templates_includes_continuous_media(client: TestClient) -> None:
+    """Each template carries its required media (Step 6) so the UI can badge compatibility.
+
+    The fixture templates use the continuous ``62`` label → 62mm continuous, no discrete length."""
+    resp = client.get("/templates")
+    assert resp.status_code == 200
+    by_name = {t["name"]: t for t in resp.json()}
+    media = by_name["simple"]["media"]
+    assert media == {"width_mm": 62.0, "media_type": "continuous", "length_mm": None}
+
+
+def test_list_templates_die_cut_media_carries_length(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A die-cut template (62x29) exposes a die-cut media with the label length."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "diecut", "62x29")
+    resp = client.get("/templates")
+    by_name = {t["name"]: t for t in resp.json()}
+    assert by_name["diecut"]["media"] == {
+        "width_mm": 62.0,
+        "media_type": "die_cut",
+        "length_mm": 29.0,
+    }
+
+
+def test_index_embeds_template_media(client: TestClient) -> None:
+    """The index route serialises each template's media into the inline TEMPLATES JSON (Step 6),
+    so the page can compare it against GET /printer/status client-side without another round-trip."""
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert '"media"' in resp.text
+    assert '"media_type": "continuous"' in resp.text or '"media_type":"continuous"' in resp.text
+
+
 def test_preview_returns_png(client: TestClient) -> None:
     resp = client.post("/preview", json={"template": "simple", "fields": {"title": "Hello"}})
     assert resp.status_code == 200

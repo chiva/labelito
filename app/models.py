@@ -280,6 +280,22 @@ class SaveTemplateRequest(BaseModel):
     yaml: str = Field(min_length=1, max_length=MAX_TEMPLATE_YAML_CHARS)
 
 
+class TemplateMedia(BaseModel):
+    """The media a template's brother_ql ``label`` requires (width, continuous-vs-die-cut, and the
+    die-cut label length). Surfaced on :class:`TemplateInfo` so the UI can badge each template as
+    compatible / incompatible against the loaded roll reported by ``GET /printer/status`` — the same
+    width + form comparison the server-side print guard applies. ``length_mm`` is null for continuous
+    tape (no discrete label length)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"width_mm": 62.0, "media_type": "continuous"}]}
+    )
+
+    width_mm: float
+    media_type: str  # "continuous" | "die_cut"
+    length_mm: float | None = None
+
+
 class TemplateInfo(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -290,6 +306,7 @@ class TemplateInfo(BaseModel):
                     "label": "62",
                     "rotate": 0,
                     "fields": {"required": ["title"], "optional": ["subtitle"]},
+                    "media": {"width_mm": 62.0, "media_type": "continuous"},
                 }
             ]
         }
@@ -300,6 +317,9 @@ class TemplateInfo(BaseModel):
     label: str
     rotate: int
     fields: TemplateFieldContract
+    # The media this template's label requires. None when the label is not a known brother_ql label
+    # (the template still lists and prints; it just carries no compatibility badge).
+    media: TemplateMedia | None = None
 
 
 class TemplateSourceResponse(BaseModel):

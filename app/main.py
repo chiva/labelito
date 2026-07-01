@@ -66,6 +66,7 @@ from app.models import (
     SequenceSpec,
     TemplateFieldContract,
     TemplateInfo,
+    TemplateMedia,
     TemplateParseRequest,
     TemplateParseResponse,
     TemplateSourceResponse,
@@ -1042,6 +1043,22 @@ async def printer_status(
     )
 
 
+def _template_media(label: str) -> TemplateMedia | None:
+    """The media a template's ``label`` requires, as the UI-facing model — ``None`` when the label is
+    not a known brother_ql label (the template still lists and prints; it just gets no compatibility
+    badge). Reuses :func:`app.media.required_media_for` so the badge can never drift from the
+    server-side print guard's comparison."""
+    try:
+        required = required_media_for(label)
+    except ValueError:
+        return None
+    return TemplateMedia(
+        width_mm=required.width_mm,
+        media_type=required.media_type,
+        length_mm=required.length_mm,
+    )
+
+
 @app.get("/templates", response_model=list[TemplateInfo], tags=["Templates"])
 def list_templates() -> list[TemplateInfo]:
     return [
@@ -1054,6 +1071,7 @@ def list_templates() -> list[TemplateInfo]:
                 required=t.required_fields,
                 optional=t.optional_fields,
             ),
+            media=_template_media(t.label),
         )
         for t in registry.all()
     ]
@@ -2066,6 +2084,10 @@ async def web_ui(request: Request) -> HTMLResponse:
             "description": t.description,
             "required": t.required_fields,
             "optional": t.optional_fields,
+            # Required media per template (None when the label is unknown to brother_ql) so the page
+            # can badge each template against the loaded roll from GET /printer/status. Same source
+            # as TemplateInfo.media, serialised for the inline TEMPLATES JSON.
+            "media": (m.model_dump() if (m := _template_media(t.label)) is not None else None),
         }
         for t in registry.all()
     ]

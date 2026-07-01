@@ -390,6 +390,35 @@ def test_editor_use_preserves_indented_root_mapping(authed_page: Page) -> None:
             assert ln.startswith("  ") and not ln.startswith("   "), f"indentation drifted: {ln!r}"
 
 
+def test_editor_use_handles_document_marker_and_indented_root(authed_page: Page) -> None:
+    """ "Use" edits in place under a `---` document marker + indented root mapping (Codex iter 6).
+
+    Regression: a valid template that opens with `---` followed by a uniformly indented root mapping
+    must not make the edit derive an empty indent and prepend a column-0 `label:` before the marker
+    (which would split the file into an invalid/multi-document stream). The marker is skipped when
+    deriving the root indent, so the real indented `label:` is replaced in place.
+    """
+    authed_page.goto("/editor")
+    authed_page.evaluate(
+        """() => { document.getElementById('yaml').value =
+`---
+  name: my-label
+  description: A new label
+  label: "62"
+  rotate: 0
+`; }"""
+    )
+    row = authed_page.locator("#label-ref-body tr").filter(has_text="62x29").first
+    row.locator("button:has-text('Use')").click()
+    yaml = authed_page.locator("#yaml").input_value()
+    assert '  label: "62x29"' in yaml, yaml
+    # Exactly one document marker, still first, and no column-0 label inserted before it.
+    assert yaml.splitlines()[0].strip() == "---", yaml
+    assert yaml.count("---") == 1, yaml
+    assert re.search(r"^label:", yaml, re.MULTILINE) is None, yaml
+    assert len(re.findall(r'^\s*["\']?label["\']?\s*:', yaml, re.MULTILINE)) == 1, yaml
+
+
 def test_unauthenticated_preview_shows_auth_error(anon_page: Page) -> None:
     """With no token seeded, the server rejects /preview and the UI surfaces the auth prompt."""
     anon_page.goto("/")

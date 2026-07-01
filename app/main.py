@@ -56,11 +56,13 @@ from app.models import (
     DraftPreviewRequest,
     HealthResponse,
     HistoryPage,
+    LivenessResponse,
     PrinterState,
     PrinterStatusResponse,
     PrintJobRecord,
     PrintRequest,
     PrintResponse,
+    ReadinessResponse,
     RenderOptions,
     SaveTemplateRequest,
     SequenceSpec,
@@ -940,6 +942,60 @@ def health() -> HealthResponse:
         default_language=settings.default_language,
         languages=translator.available(),
     )
+
+
+@app.get("/livez", response_model=LivenessResponse, tags=["System"])
+def livez() -> LivenessResponse:
+    """Kubernetes liveness probe: the process is up. Always 200, no dependencies, unauthenticated.
+
+    A liveness failure tells the orchestrator to RESTART the pod, so it must never depend on an
+    external resource (printer, history store, templates) — only that the event loop can answer.
+    Cheap and side-effect free.
+    """
+    return LivenessResponse(status="alive")
+
+
+@app.get(
+    "/readyz",
+    response_model=ReadinessResponse,
+    tags=["System"],
+    responses={503: {"description": "Not ready to serve (see per-check reasons)"}},
+)
+def readyz() -> ReadinessResponse | JSONResponse:
+    """Kubernetes readiness probe: can the app serve print requests? 200 ready / 503 not-ready.
+
+    Checks the dependencies a print actually needs — at least one template loaded, a resolvable
+    transport scheme, and an open history store — and reports each in ``checks`` so a not-ready
+    response says WHY. Deliberately does NOT probe the printer: a print service should keep accepting
+    requests while the printer is briefly unreachable (that live state is /printer/status), and a
+    printer-coupled readiness would flap the pod out of its Service on a transient blip. Unauthenticated
+    and exposes no sensitive data (probes carry no token).
+    """
+    checks: dict[str, str] = {}
+
+    checks["templates"] = "ok" if len(registry) else "no templates loaded"
+
+    # An unknown/unregistered PRINTER_URI scheme means the app cannot route any print — not ready.
+    try:
+        get_transport(infer_transport(settings.printer_uri))
+        checks["transport"] = "ok"
+    except (ValueError, KeyError) as exc:
+        checks["transport"] = f"unresolved transport for {settings.printer_uri!r}: {exc}"
+
+    # A cheap probe that the history store is open (a closed/broken store raises). The broad catch is
+    # deliberate here and ONLY here: a readiness probe must turn ANY dependency failure into a
+    # structured 503, never let it surface as a 500 — so it cannot assume a specific store backend.
+    try:
+        _history.count()
+        checks["history"] = "ok"
+    except Exception as exc:
+        checks["history"] = f"history store unavailable: {exc}"
+
+    ready = all(v == "ok" for v in checks.values())
+    body = ReadinessResponse(ready=ready, checks=checks)
+    if not ready:
+        return JSONResponse(status_code=503, content=body.model_dump())
+    return body
 
 
 @app.get("/capabilities", response_model=CapabilityResponse, tags=["System"])

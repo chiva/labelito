@@ -251,6 +251,8 @@ Interactive OpenAPI docs are served by FastAPI at `/docs` (and the schema at `/o
 |---|---|:--:|---|
 | `GET` | `/` | – | Web UI (template picker, preview, print). |
 | `GET` | `/health` | – | Status, configured driver/model/transport/uri, template count, default language + loaded languages. |
+| `GET` | `/livez` | – | Kubernetes liveness probe. Always `200` (`{"status":"alive"}`); no dependencies. |
+| `GET` | `/readyz` | – | Kubernetes readiness probe. `200` when ready, `503` with per-check reasons otherwise. Checks templates loaded, transport scheme resolvable, history store open — **not** the printer. |
 | `GET` | `/capabilities` | – | dpi, cut, supported label sizes + geometries. |
 | `GET` | `/templates` | – | All templates with their required/optional field contracts. |
 | `POST` | `/preview` | ✓ | Render a template → `image/png`. No printing, no history. |
@@ -264,6 +266,23 @@ Interactive OpenAPI docs are served by FastAPI at `/docs` (and the schema at `/o
 | `GET` | `/metrics` | – | Prometheus exposition (`labels_printed_total`, `label_errors_total`, `last_print_timestamp_seconds`). |
 
 \* Only enforced when `API_TOKEN` is set.
+
+### Kubernetes probes
+
+`/livez` and `/readyz` are unauthenticated and side-effect free. Liveness only confirms the process
+answers; readiness confirms the app can serve a print (templates loaded, transport scheme resolvable,
+history store open) — it intentionally does **not** depend on the printer being online, so a transient
+printer outage never pulls the pod out of its Service. Watch live printer state via `/printer/status`.
+
+```yaml
+livenessProbe:
+  httpGet: { path: /livez, port: 8765 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /readyz, port: 8765 }
+  periodSeconds: 10
+  failureThreshold: 3
+```
 
 ### Print / preview request body
 

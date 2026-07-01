@@ -458,6 +458,25 @@ class HealthResponse(BaseModel):
     languages: list[str]
 
 
+class LivenessResponse(BaseModel):
+    """Kubernetes liveness probe body — the process is up and serving. No dependencies."""
+
+    status: str  # "alive"
+
+
+class ReadinessResponse(BaseModel):
+    """Kubernetes readiness probe body — whether the app can serve print requests.
+
+    ``ready`` is the single boolean a probe keys on (mirrored by 200 vs 503). ``checks`` maps each
+    readiness dependency to ``"ok"`` or a short human reason, so a not-ready response says WHY
+    without a log dive. Deliberately excludes the printer being online — a print service should keep
+    accepting requests while the printer is briefly unreachable; live printer state is /printer/status.
+    """
+
+    ready: bool
+    checks: dict[str, str]
+
+
 class PrinterState(StrEnum):
     """The single derived state of the physical printer, surfaced to the web UI.
 

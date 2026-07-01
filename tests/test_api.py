@@ -23,6 +23,98 @@ def test_health_returns_ok(client: TestClient) -> None:
     assert data["template_count"] >= 1
 
 
+# ── Kubernetes probes (/livez, /readyz) ──────────────────────────────────────────────────────────
+def test_livez_always_ok(client: TestClient) -> None:
+    """Liveness is a cheap, dependency-free 200 — the process is up."""
+    resp = client.get("/livez")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "alive"}
+
+
+def test_livez_and_readyz_need_no_token(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Probes carry no token, so both must answer even when the service requires auth."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "secret-token")
+    # No Authorization header — a token-protected endpoint would 401 here; the probes must not.
+    assert client.get("/livez").status_code == 200
+    assert client.get("/readyz").status_code == 200
+
+
+def test_readyz_ready_when_dependencies_ok(client: TestClient) -> None:
+    """With templates loaded, a resolvable transport, and an open history store, readiness is 200."""
+    resp = client.get("/readyz")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is True
+    assert body["checks"] == {"templates": "ok", "transport": "ok", "history": "ok"}
+
+
+def test_readyz_not_ready_without_templates(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero loaded templates ⇒ 503 with a templates reason (the service can't print anything)."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.registry, "_templates", {})
+    resp = client.get("/readyz")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["ready"] is False
+    assert body["checks"]["templates"] != "ok"
+
+
+def test_readyz_not_ready_on_unresolvable_transport(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unknown PRINTER_URI scheme ⇒ 503: the app cannot route a print."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "weird://nope")
+    resp = client.get("/readyz")
+    assert resp.status_code == 503
+    assert resp.json()["checks"]["transport"] != "ok"
+
+
+def test_readyz_not_ready_when_history_store_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken/closed history store ⇒ 503, surfaced as a structured reason rather than a 500."""
+    import app.main as main_mod
+
+    class _BrokenHistory:
+        def count(self) -> int:
+            raise RuntimeError("database connection is closed")
+
+        def close(self) -> None:  # the client fixture closes _history on teardown
+            pass
+
+    monkeypatch.setattr(main_mod, "_history", _BrokenHistory())
+    resp = client.get("/readyz")
+    assert resp.status_code == 503
+    assert resp.json()["checks"]["history"] != "ok"
+
+
+def test_readyz_does_not_depend_on_printer(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Readiness must stay green even if the printer is unreachable — that is /printer/status's job.
+
+    Point the transport at an unroutable network printer (a resolvable scheme, just an offline host):
+    the scheme still resolves, so readiness stays 200 and never probes the device.
+    """
+    import app.main as main_mod
+
+    monkeypatch.setattr(
+        main_mod.settings, "printer_uri", "tcp://192.0.2.1:9100"
+    )  # TEST-NET-1, dead
+    resp = client.get("/readyz")
+    assert resp.status_code == 200
+    assert resp.json()["ready"] is True
+
+
 def test_capabilities_response(client: TestClient) -> None:
     resp = client.get("/capabilities")
     assert resp.status_code == 200
@@ -2897,10 +2989,18 @@ def test_editor_embeds_label_reference(client: TestClient) -> None:
 
 
 def test_editor_includes_template_format_help(client: TestClient) -> None:
-    """The studio carries the template-format cheatsheet pointing at the full doc (Step 9)."""
+    """The studio carries the template-format cheatsheet pointing at the full doc (Step 9).
+
+    The token examples must survive Jinja rendering verbatim ({% raw %}), not collapse to empty
+    Jinja variables — otherwise the cheatsheet would ship without the very token syntax it documents.
+    """
     page = client.get("/editor").text
     assert "Template format reference" in page
     assert "docs/template-format.md" in page
+    for token in ("{{name}}", "{{date}}", "{{now}}", "{{seq}}", "[[key]]"):
+        assert token in page, (
+            f"cheatsheet must render the literal token {token}, not eat it via Jinja"
+        )
 
 
 # ── Load an existing template's source (GET /templates/{name}/source) ──

@@ -114,7 +114,10 @@
     </table>
   </div>
 
-  <!-- ── Template format cheatsheet — a quick reference; docs/template-format.md is authoritative ── -->
+  <!-- ── Template format cheatsheet — a quick reference; docs/template-format.md is authoritative ──
+       Wrapped in {% raw %} so the literal {{name}}/{{date}}/{{now}}/{{seq}} token examples below are
+       emitted verbatim and not interpreted as (empty) Jinja variables when this page is rendered. -->
+  {% raw %}
   <div class="card help-ref">
     <details>
       <summary>Template format reference</summary>
@@ -145,6 +148,7 @@
       <p>Every element also takes <code>padding_top</code>/<code>padding_bottom</code> and <code>color</code> (<code>red</code> on two-color models).</p>
     </details>
   </div>
+  {% endraw %}
 
   <div id="status-area"></div>
 
@@ -484,9 +488,16 @@
     // non-comment line. PyYAML accepts (and the loader validates) a uniformly-indented root mapping,
     // so the label edit must operate at that indent rather than assuming column 0 — otherwise a
     // column-0 insert mixes indentation levels and turns valid YAML into a parse error.
+    // A YAML directive (`%...`) or document marker (`---`/`...`) is not part of the root mapping, so
+    // it must not be treated as the first key line when deriving the indent.
+    const isDirectiveOrMarker = (line) => {
+      const t = line.trim();
+      return t === '---' || t.startsWith('--- ') || t === '...' || t.startsWith('%');
+    };
     function rootIndent(yaml) {
       for (const ln of yaml.split('\n')) {
-        if (ln.trim() === '' || ln.trimStart().startsWith('#')) continue;
+        const t = ln.trim();
+        if (t === '' || t.startsWith('#') || isDirectiveOrMarker(ln)) continue;
         return ln.match(/^(\s*)/)[1];
       }
       return '';
@@ -528,9 +539,12 @@
         ta.value = out.join('\n');
       } else {
         // No label key yet: insert one right after the first description:/name: anchor (preserving
-        // its indentation via `line`), else prepend it.
+        // its indentation via `line`). With no anchor either, insert after a leading document marker
+        // (`---`) when present — prepending a column-0 line BEFORE the marker would split the file
+        // into an invalid/multi-document stream — else prepend at the top.
         let idx = lines.findIndex((ln) => isKey(ln, 'description'));
         if (idx === -1) idx = lines.findIndex((ln) => isKey(ln, 'name'));
+        if (idx === -1) idx = lines.findIndex((ln) => isDirectiveOrMarker(ln));
         if (idx === -1) {
           ta.value = `${line}\n${yaml}`;
         } else {

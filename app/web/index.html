@@ -13,6 +13,10 @@
     .nav-link { font-size: .9rem; font-weight: 400; color: #0070f3; text-decoration: none; margin-left: .5rem; }
     .nav-link:hover { text-decoration: underline; }
     .card { background: #fff; border-radius: 8px; padding: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,.1); margin-bottom: 1rem; }
+    /* API token + Printer status sit side by side to save vertical space; they stack on narrow
+       screens (flex-wrap) once neither can keep its ~300px basis. */
+    .top-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: stretch; margin-bottom: 1rem; }
+    .top-row > .card { flex: 1 1 300px; margin-bottom: 0; }
     label { display: block; margin-bottom: .25rem; font-weight: 600; font-size: .9rem; }
     input, select, textarea { width: 100%; padding: .5rem .75rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; margin-bottom: .75rem; }
     select { cursor: pointer; }
@@ -51,18 +55,20 @@
 <body>
   <h1><img src="/favicon.svg" alt="" class="logo"> Labelito {% if editor_enabled %}<a href="/editor" class="nav-link">Editor →</a>{% endif %}{% if history_ui %} <a href="/history" class="nav-link">History →</a>{% endif %}</h1>
 
-  <div class="card" id="auth-card">
-    <label for="api-token">API token <span class="optional-tag">(saved in this browser only; leave blank if the server runs unauthenticated)</span></label>
-    <input type="password" id="api-token" placeholder="Bearer token" autocomplete="off">
-  </div>
-
-  <div class="card" id="status-card">
-    <div class="status-head">
-      <strong>Printer</strong>
-      <span id="printer-state" class="state-badge">…</span>
-      <button type="button" class="btn-refresh" onclick="refreshPrinterStatus()" title="Refresh printer status" aria-label="Refresh printer status">↻</button>
+  <div class="top-row">
+    <div class="card" id="auth-card">
+      <label for="api-token">API token <span class="optional-tag">(saved in this browser only; leave blank if the server runs unauthenticated)</span></label>
+      <input type="password" id="api-token" placeholder="Bearer token" autocomplete="off">
     </div>
-    <div id="printer-detail" class="printer-detail"></div>
+
+    <div class="card" id="status-card">
+      <div class="status-head">
+        <strong>Printer</strong>
+        <span id="printer-state" class="state-badge">…</span>
+        <button type="button" class="btn-refresh" onclick="refreshPrinterStatus()" title="Refresh printer status" aria-label="Refresh printer status">↻</button>
+      </div>
+      <div id="printer-detail" class="printer-detail"></div>
+    </div>
   </div>
 
   <div class="card">

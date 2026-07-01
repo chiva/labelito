@@ -6,7 +6,9 @@ from urllib.parse import urlparse
 
 from brother_ql.reader import interpret_response
 
+from app.config import settings
 from app.transports.base import PrinterStatus, register_transport
+from app.transports.snmp import query_snmp_status
 
 # ESC i S — the Brother QL status-information command. The FULL status request must ALSO include a
 # model-sized invalidate (NUL) prefix built via BrotherQLRaster; this constant is kept for
@@ -194,6 +196,30 @@ class NetworkTransport:
         return None
 
     def query_status(self, request: bytes) -> PrinterStatus:
+        """Return the printer's current state, via SNMP by default.
+
+        The Brother QL NIC accepts the :9100 TCP connection but never returns the 32-byte status
+        back-channel (see docs/known-limitations.md), so SNMP (UDP 161) is the status channel that
+        actually answers on this hardware. When ``settings.snmp_enabled`` (the default) we query the
+        printer's status OIDs over SNMP and map them via :meth:`PrinterStatus.from_snmp`; an
+        unreachable SNMP agent yields ``reachable=False`` so the caller fails open / returns 503.
+
+        When SNMP is disabled we fall back to the legacy ESC i S readback (``request``) over :9100 —
+        best-effort, and silent on this NIC, but the only TCP-native status channel and useful on
+        printers whose back-channel does answer. ``request`` is therefore consumed only on the
+        fallback path; the SNMP path ignores it.
+        """
+        if settings.snmp_enabled:
+            snmp = query_snmp_status(
+                self._host,
+                community=settings.snmp_community,
+                port=settings.snmp_port,
+                timeout=settings.snmp_timeout,
+            )
+            return PrinterStatus.from_snmp(snmp)
+        return self._query_status_esc_i_s(request)
+
+    def _query_status_esc_i_s(self, request: bytes) -> PrinterStatus:
         """Send the status-request bytes and parse the printer's one-shot 32-byte reply.
 
         ``request`` must be a model-correct payload built by the caller via BrotherQLRaster

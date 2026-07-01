@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from urllib.parse import urlparse  # matches app/transports/network.py
+
+if TYPE_CHECKING:
+    # Type-only import: base is a leaf the SNMP module never imports, so this avoids any runtime
+    # coupling (and the appearance of a cycle) while still typing from_snmp's argument.
+    from app.transports.snmp import PrinterSNMPStatus
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,16 @@ class PrinterStatus:
     media_type: str | None = None
     status_type: str | None = None
     phase_type: str | None = None
+    # SNMP-derived identity/health fields (populated by from_snmp on the network transport; None on
+    # the ESC i S / file / USB paths, which cannot read them). serial/firmware/hostname are inventory
+    # identity; console_text is the printer's front-panel line ("READY" when idle); cover_status is
+    # the raw prtCoverStatus enum; label_lifecount is the lifetime prtMarkerLifeCount gauge.
+    serial: str | None = None
+    firmware: str | None = None
+    hostname: str | None = None
+    console_text: str | None = None
+    cover_status: int | None = None
+    label_lifecount: int | None = None
     # Whether the status came from a real printer query (True) or is synthetic (False). Lets the
     # /printer/status endpoint distinguish "printer replied, all ok" from "no printer to query".
     reachable: bool = True
@@ -74,6 +89,53 @@ class PrinterStatus:
             media_type=str(decoded["media_type"]) if "media_type" in decoded else None,
             status_type=str(decoded["status_type"]) if "status_type" in decoded else None,
             phase_type=str(decoded["phase_type"]) if "phase_type" in decoded else None,
+            reachable=True,
+        )
+
+    @classmethod
+    def from_snmp(cls, snmp: "PrinterSNMPStatus") -> "PrinterStatus":
+        """Build a PrinterStatus from a :class:`PrinterSNMPStatus` (the network status channel).
+
+        The Brother QL NIC accepts the :9100 TCP back-channel but never returns the 32-byte status
+        frame, so SNMP — not ESC i S — is the channel that actually answers. An unreachable SNMP
+        query maps to :meth:`unreachable` so the caller fails open (allow the print, badge unknown);
+        a reachable one maps the decoded identity/media/error fields across. ``ok`` is False when the
+        SNMP layer surfaced any error string (a nonzero hrPrinterDetectedErrorState or a non-READY
+        console line), mirroring the ESC i S path's ``errors`` ⇒ ``ok=False`` contract.
+
+        Media width/length are reported by the QL in whole millimetres, so the SNMP layer's float is
+        rounded to the int contract of this dataclass without loss; the unrounded float remains on
+        :class:`PrinterSNMPStatus` for the media-compatibility guard (which uses a ±1mm tolerance).
+        ``status_type``/``phase_type`` stay None — those are ESC i S concepts with no SNMP analogue.
+        The error bitmask, hrPrinterStatus enum and authoritative loaded-media name ride in ``raw``
+        so later consumers (metrics, the status card) can recover them without a second query.
+        """
+        if not snmp.reachable:
+            return cls.unreachable("printer SNMP agent did not respond")
+        return cls(
+            ok=not bool(snmp.errors),
+            errors=list(snmp.errors),
+            raw={
+                "error_state_bits": snmp.error_state_bits,
+                "printer_status": snmp.printer_status,
+                "media_name": snmp.media_name,
+            },
+            model=snmp.model,
+            media_width_mm=(
+                round(snmp.media_width_mm) if snmp.media_width_mm is not None else None
+            ),
+            media_length_mm=(
+                round(snmp.media_length_mm) if snmp.media_length_mm is not None else None
+            ),
+            media_type=snmp.media_type,
+            status_type=None,
+            phase_type=None,
+            serial=snmp.serial,
+            firmware=snmp.firmware,
+            hostname=snmp.hostname,
+            console_text=snmp.console_text,
+            cover_status=snmp.cover_status,
+            label_lifecount=snmp.label_lifecount,
             reachable=True,
         )
 

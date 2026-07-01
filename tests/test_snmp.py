@@ -582,3 +582,95 @@ def test_query_snmp_status_optional_cannot_clear_critical_fault(
     assert status.error_state_bits != 0, "the optional reply must not clear the critical fault"
     assert "doorOpen" in status.errors
     assert status.serial == "B2Z160525", "a legitimate optional field still merges"
+
+
+def test_parse_response_rejects_snmp_exception_varbind() -> None:
+    """A varbind whose value is an SNMPv2 exception (noSuchObject, 0x80) means the OID has no value.
+    _parse_response must raise rather than decode the empty content to a benign value — otherwise a
+    critical fault OID returned as noSuchObject would read as a zero error mask (a healthy printer)."""
+    exception_value = snmp._tlv(0x80, b"")  # noSuchObject, empty content
+    response = _response(
+        _PINNED_REQUEST_ID,
+        [_varbind(OID_HR_PRINTER_DETECTED_ERROR_STATE, exception_value)],
+    )
+    with pytest.raises(snmp.SNMPError, match="exception"):
+        snmp._parse_response(response, _PINNED_REQUEST_ID)
+
+
+def test_query_snmp_status_unreachable_on_exception_tagged_critical_oid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end: a critical GET whose error-state OID comes back as an SNMP exception value must
+    degrade to unreachable (fail open) — never a falsely-healthy reachable status. The exception tag
+    is rejected in _parse_response, which query_snmp_status catches and maps to unreachable."""
+    monkeypatch.setattr(snmp, "_new_request_id", lambda: _PINNED_REQUEST_ID)
+    degraded = _response(
+        _PINNED_REQUEST_ID,
+        [
+            _varbind(OID_HR_PRINTER_DETECTED_ERROR_STATE, snmp._tlv(0x80, b"")),  # noSuchObject
+            _varbind(OID_PRT_CONSOLE_DISPLAY_BUFFER_TEXT, snmp._encode_octet_string("READY")),
+            _varbind(OID_PRT_INPUT_MEDIA_NAME, snmp._encode_octet_string('62mm / 2.4"')),
+            _varbind(OID_PRT_INPUT_MEDIA_DIM_XFEED_DIR, snmp._encode_integer(6200)),
+            _varbind(OID_PRT_INPUT_MEDIA_DIM_FEED_DIR, snmp._encode_integer(-1)),
+        ],
+    )
+    fake = _SequencedUDPSocket([degraded])
+    _patch_udp(monkeypatch, fake)
+
+    status = query_snmp_status("192.168.5.14", "public", 161, 1.0)
+
+    assert status.reachable is False, (
+        "an exception-tagged critical OID must fail open as unreachable, not read as healthy"
+    )
+
+
+def test_query_snmp_status_unreachable_on_mistyped_error_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A critical reply whose error-state OID is present but the wrong type (NULL, not BITS/INTEGER)
+    must be treated as unreachable: the fault state was not actually measured. NULL is not an SNMP
+    exception tag, so this exercises the critical-value type guard, not the exception-tag rejection."""
+    monkeypatch.setattr(snmp, "_new_request_id", lambda: _PINNED_REQUEST_ID)
+    degraded = _response(
+        _PINNED_REQUEST_ID,
+        [
+            _varbind(OID_HR_PRINTER_DETECTED_ERROR_STATE, snmp._encode_null()),  # decodes to None
+            _varbind(OID_PRT_CONSOLE_DISPLAY_BUFFER_TEXT, snmp._encode_octet_string("READY")),
+            _varbind(OID_PRT_INPUT_MEDIA_NAME, snmp._encode_octet_string('62mm / 2.4"')),
+            _varbind(OID_PRT_INPUT_MEDIA_DIM_XFEED_DIR, snmp._encode_integer(6200)),
+            _varbind(OID_PRT_INPUT_MEDIA_DIM_FEED_DIR, snmp._encode_integer(-1)),
+        ],
+    )
+    fake = _SequencedUDPSocket([degraded])
+    _patch_udp(monkeypatch, fake)
+
+    status = query_snmp_status("192.168.5.14", "public", 161, 1.0)
+
+    assert status.reachable is False
+
+
+def test_query_snmp_status_unreachable_on_non_integer_media_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A critical reply whose media dimension is a non-integer (here an OCTET STRING) must be treated
+    as unreachable rather than decoding to a missing width that reads as benign — the loaded-media
+    geometry the print guard relies on was not actually measured."""
+    monkeypatch.setattr(snmp, "_new_request_id", lambda: _PINNED_REQUEST_ID)
+    degraded = _response(
+        _PINNED_REQUEST_ID,
+        [
+            _varbind(OID_HR_PRINTER_DETECTED_ERROR_STATE, snmp._encode_octet_string(b"\x00")),
+            _varbind(OID_PRT_CONSOLE_DISPLAY_BUFFER_TEXT, snmp._encode_octet_string("READY")),
+            _varbind(OID_PRT_INPUT_MEDIA_NAME, snmp._encode_octet_string('62mm / 2.4"')),
+            _varbind(
+                OID_PRT_INPUT_MEDIA_DIM_XFEED_DIR, snmp._encode_octet_string("6200")
+            ),  # wrong type
+            _varbind(OID_PRT_INPUT_MEDIA_DIM_FEED_DIR, snmp._encode_integer(-1)),
+        ],
+    )
+    fake = _SequencedUDPSocket([degraded])
+    _patch_udp(monkeypatch, fake)
+
+    status = query_snmp_status("192.168.5.14", "public", 161, 1.0)
+
+    assert status.reachable is False

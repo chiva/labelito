@@ -169,20 +169,36 @@
 
     function renderPrinterStatus(data) {
       setStateBadge(data.state);
-      const lines = [];
-      if (data.uri) lines.push(`<div>URI: <code>${data.uri}</code></div>`);
+      // Build the card with DOM nodes + textContent, never innerHTML: network status now comes
+      // from SNMP, so `model` (hrDeviceDescr) and `errors` (which can carry the printer's console
+      // text) are device/network-supplied and untrusted. A spoofed SNMP peer must not be able to
+      // inject markup into this token-bearing page. textContent escapes every value for us.
+      const detail = document.getElementById('printer-detail');
+      detail.replaceChildren();
+      const addLine = (cls) => {
+        const div = document.createElement('div');
+        if (cls) div.className = cls;
+        detail.appendChild(div);
+        return div;
+      };
+      if (data.uri) {
+        const line = addLine();
+        line.append('URI: ');
+        const code = document.createElement('code');
+        code.textContent = data.uri;
+        line.appendChild(code);
+      }
       if (data.reachable) {
-        if (data.model) lines.push(`<div>Model: ${data.model}</div>`);
+        if (data.model) addLine().textContent = `Model: ${data.model}`;
         if (data.media_type) {
           const len = data.media_length_mm ? `×${data.media_length_mm}mm` : '';
           const w = data.media_width_mm != null ? `${data.media_width_mm}mm${len}` : '';
-          lines.push(`<div>Media: ${data.media_type}${w ? ' (' + w + ')' : ''}</div>`);
+          addLine().textContent = `Media: ${data.media_type}${w ? ' (' + w + ')' : ''}`;
         }
       }
       if (Array.isArray(data.errors) && data.errors.length) {
-        lines.push(`<div class="detail-err">${data.errors.join('; ')}</div>`);
+        addLine('detail-err').textContent = data.errors.join('; ');
       }
-      document.getElementById('printer-detail').innerHTML = lines.join('');
     }
 
     async function refreshPrinterStatus() {
@@ -204,8 +220,12 @@
         renderPrinterStatus(data);
       } catch (e) {
         setStateBadge('off', 'Unreachable');
-        document.getElementById('printer-detail').innerHTML =
-          `<div class="detail-err">Network error: ${e.message}</div>`;
+        const detail = document.getElementById('printer-detail');
+        detail.replaceChildren();
+        const div = document.createElement('div');
+        div.className = 'detail-err';
+        div.textContent = `Network error: ${e.message}`;
+        detail.appendChild(div);
       }
     }
 

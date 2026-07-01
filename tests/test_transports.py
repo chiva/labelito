@@ -10,6 +10,7 @@ import pytest
 from app.transports.base import PrinterStatus, infer_transport
 from app.transports.file import FileTransport
 from app.transports.network import STATUS_INFORMATION_CMD, STATUS_PACKET_LEN, NetworkTransport
+from app.transports.snmp import PrinterSNMPStatus
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -104,6 +105,35 @@ def _patch_socket(monkeypatch: pytest.MonkeyPatch, fake: _FakeSocket) -> None:
     import app.transports.network as net_mod
 
     monkeypatch.setattr(net_mod.socket, "socket", lambda *a, **k: fake)
+
+
+def _disable_snmp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force NetworkTransport.query_status onto the legacy ESC i S fallback.
+
+    query_status now reads the printer over SNMP by default (the channel that actually answers on
+    the QL NIC). Tests that exercise the TCP ESC i S readback must disable SNMP so the fallback path
+    runs; mutating the shared settings singleton is reverted automatically by monkeypatch.
+    """
+    import app.transports.network as net_mod
+
+    monkeypatch.setattr(net_mod.settings, "snmp_enabled", False)
+
+
+def _patch_snmp(monkeypatch: pytest.MonkeyPatch, result: PrinterSNMPStatus) -> dict[str, object]:
+    """Patch query_snmp_status (as referenced by network.py) to return ``result`` and capture its
+    call kwargs, so the SNMP-backed query_status path can be tested without a real UDP socket."""
+    import app.transports.network as net_mod
+
+    captured: dict[str, object] = {}
+
+    def fake_query(host: str, **kwargs: object) -> PrinterSNMPStatus:
+        captured["host"] = host
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr(net_mod, "query_snmp_status", fake_query)
+    monkeypatch.setattr(net_mod.settings, "snmp_enabled", True)
+    return captured
 
 
 @pytest.mark.parametrize(
@@ -1032,6 +1062,7 @@ def test_network_query_status_sends_model_aware_request_and_parses_reply(
     interrupted job) treats it as raster data and never returns the status frame. The full
     library-built payload (NUL invalidate prefix + ESC i S) clears the buffer first.
     """
+    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
     reply = _status_packet_with_model(media_width=62, media_type=0x0A)
     fake = _FakeSocket(reply)
     _patch_socket(monkeypatch, fake)
@@ -1073,6 +1104,8 @@ def test_network_query_status_returns_unreachable_on_connection_error(
     """If the printer is not reachable (connection refused / timeout), query_status returns
     reachable=False with the error message — it must NOT raise and must NOT fabricate ok=True."""
 
+    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
+
     class _UnreachableSocket(_FakeSocket):
         def connect(self, addr: tuple[str, int]) -> None:
             raise ConnectionRefusedError("connection refused")
@@ -1091,6 +1124,7 @@ def test_network_query_status_returns_unreachable_on_empty_reply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A printer that accepts the connection but sends nothing (empty recv) → reachable=False."""
+    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
     fake = _FakeSocket(b"")
     _patch_socket(monkeypatch, fake)
 
@@ -1104,6 +1138,7 @@ def test_network_query_status_returns_unreachable_on_garbled_reply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A reply missing the 80:20:42 header (garbled) → reachable=False with an error message."""
+    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
     fake = _FakeSocket(b"\x00" * STATUS_PACKET_LEN)
     _patch_socket(monkeypatch, fake)
 
@@ -1119,6 +1154,7 @@ def test_network_query_status_surfaces_error_bits(
 ) -> None:
     """When the printer's status reply has error bits set, query_status returns ok=False
     with human-readable error strings — the printer is reachable but in an error state."""
+    _disable_snmp(monkeypatch)  # exercise the ESC i S fallback, not the default SNMP path
     reply = _status_packet_with_model(err1=1 << _ERR1_NO_MEDIA_BIT, err2=0)
     fake = _FakeSocket(reply)
     _patch_socket(monkeypatch, fake)
@@ -1131,6 +1167,142 @@ def test_network_query_status_surfaces_error_bits(
     assert any("No media" in e for e in status.errors), (
         f"expected a no-media error string; got {status.errors}"
     )
+
+
+# ── query_status() — NetworkTransport SNMP path (default) ─────────────────────────
+# A reachable QL-810W as the SNMP layer would decode it: 62mm continuous, clean, fully identified.
+_SNMP_REACHABLE = PrinterSNMPStatus(
+    reachable=True,
+    model="Brother QL-810W",
+    serial="B2Z160525",
+    firmware="Brother NC-36002w, Firmware Ver.1.00",
+    hostname="BRWF889D22FBB15",
+    console_text="READY",
+    error_state_bits=0,
+    printer_status=3,
+    media_name='62mm / 2.4"',
+    media_width_mm=62.0,
+    media_length_mm=None,
+    media_type="continuous",
+    cover_status=3,
+    label_lifecount=9,
+    errors=[],
+)
+
+
+def test_network_query_status_uses_snmp_and_maps_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With SNMP enabled (the default), query_status reads the printer over SNMP and maps the
+    decoded identity/media/error fields onto PrinterStatus — and must NOT open the TCP back-channel
+    (the ESC i S request bytes are ignored on the SNMP path)."""
+    import app.transports.network as net_mod
+
+    captured = _patch_snmp(monkeypatch, _SNMP_REACHABLE)
+    # The SNMP path must not touch the TCP socket at all: make any socket creation an error.
+    monkeypatch.setattr(
+        net_mod.socket,
+        "socket",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("SNMP path must not open a TCP socket")
+        ),
+    )
+
+    status = NetworkTransport("tcp://192.168.5.14:9100").query_status(_DUMMY_STATUS_REQUEST)
+
+    assert captured["host"] == "192.168.5.14", "SNMP must be queried against the transport's host"
+    assert status.reachable is True
+    assert status.ok is True, f"a clean SNMP status has no errors; got {status.errors}"
+    assert status.model == "Brother QL-810W"
+    assert status.media_width_mm == 62, "62.0mm must map to the int contract as 62"
+    assert status.media_type == "continuous"
+    assert status.serial == "B2Z160525"
+    assert status.firmware == "Brother NC-36002w, Firmware Ver.1.00"
+    assert status.hostname == "BRWF889D22FBB15"
+    assert status.console_text == "READY"
+    assert status.cover_status == 3
+    assert status.label_lifecount == 9
+    # status/phase are ESC i S concepts with no SNMP analogue.
+    assert status.status_type is None and status.phase_type is None
+    # The error bitmask, hrPrinterStatus enum and loaded-media name ride in raw, losslessly.
+    assert status.raw["error_state_bits"] == 0
+    assert status.raw["printer_status"] == 3
+    assert status.raw["media_name"] == '62mm / 2.4"'
+
+
+def test_network_query_status_snmp_unreachable_maps_to_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreachable SNMP agent (timeout / decode error) → reachable=False, ok=False, with a
+    descriptive error — so the caller fails open / returns 503, never a fabricated healthy status."""
+    _patch_snmp(monkeypatch, PrinterSNMPStatus.unreachable())
+
+    status = NetworkTransport("tcp://192.168.5.14:9100").query_status(_DUMMY_STATUS_REQUEST)
+
+    assert status.reachable is False, "an unreachable SNMP agent must yield reachable=False"
+    assert status.ok is False
+    assert status.errors, "at least one error string must describe the failure"
+
+
+def test_network_query_status_snmp_error_state_surfaces_ok_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reachable printer reporting an error condition (e.g. cover/door open) → reachable=True but
+    ok=False, carrying the SNMP error strings — the printer answered, but it is faulted."""
+    faulted = PrinterSNMPStatus(
+        reachable=True,
+        model="Brother QL-810W",
+        error_state_bits=1 << 11,  # arbitrary set bit
+        media_width_mm=62.0,
+        media_type="continuous",
+        errors=["doorOpen"],
+    )
+    _patch_snmp(monkeypatch, faulted)
+
+    status = NetworkTransport("tcp://192.168.5.14:9100").query_status(_DUMMY_STATUS_REQUEST)
+
+    assert status.reachable is True, "a printer that answered SNMP is reachable even when faulted"
+    assert status.ok is False, "a nonzero error state must surface as ok=False"
+    assert "doorOpen" in status.errors
+
+
+def test_network_query_status_snmp_uses_configured_community_port_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """query_status forwards the configured SNMP community / port / timeout to query_snmp_status,
+    not hardcoded defaults — so SNMP_COMMUNITY / SNMP_PORT / SNMP_TIMEOUT actually take effect."""
+    import app.transports.network as net_mod
+
+    captured = _patch_snmp(monkeypatch, _SNMP_REACHABLE)
+    monkeypatch.setattr(net_mod.settings, "snmp_community", "private")
+    monkeypatch.setattr(net_mod.settings, "snmp_port", 1161)
+    monkeypatch.setattr(net_mod.settings, "snmp_timeout", 5.5)
+
+    NetworkTransport("tcp://192.168.5.14:9100").query_status(_DUMMY_STATUS_REQUEST)
+
+    assert captured["community"] == "private"
+    assert captured["port"] == 1161
+    assert captured["timeout"] == 5.5
+
+
+def test_network_query_status_snmp_rounds_die_cut_length_to_int(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A die-cut roll's float width/length from SNMP map to the int PrinterStatus contract by
+    rounding — the unrounded float stays on PrinterSNMPStatus for the media guard's tolerance."""
+    die_cut = PrinterSNMPStatus(
+        reachable=True,
+        model="Brother QL-810W",
+        media_width_mm=62.0,
+        media_length_mm=29.0,
+        media_type="die_cut",
+        errors=[],
+    )
+    _patch_snmp(monkeypatch, die_cut)
+
+    status = NetworkTransport("tcp://192.168.5.14:9100").query_status(_DUMMY_STATUS_REQUEST)
+
+    assert status.media_width_mm == 62
+    assert status.media_length_mm == 29
+    assert status.media_type == "die_cut"
 
 
 # ── query_status() — FileTransport ───────────────────────────────────────────────

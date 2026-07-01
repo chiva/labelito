@@ -45,6 +45,12 @@ TAG_TIMETICKS = 0x43
 # reply to it is GetResponse, tag 2 ⇒ 0xA2.
 TAG_GET_REQUEST = 0xA0
 TAG_GET_RESPONSE = 0xA2
+# SNMPv2 per-varbind exception values (context-specific primitives) that a v2c-capable agent may
+# emit even to a v1 request: noSuchObject / noSuchInstance / endOfMibView. They mean "this OID has
+# no value", so a varbind carrying one was NOT actually answered. We reject them rather than let the
+# empty content decode to a value (e.g. an empty error-state mask reads as "no errors" — a critical
+# fault OID that was never read would otherwise look healthy).
+SNMP_EXCEPTION_TAGS = frozenset({0x80, 0x81, 0x82})
 
 
 # ── Named OID constants (verified live against the QL-810W; see docs/snmp-status-feature.md) ──
@@ -336,6 +342,14 @@ def _parse_response(data: bytes, expected_request_id: int) -> dict[str, object]:
             raise SNMPError(f"varbind name is not an OID (tag {name_tag:#04x})")
         oid = _decode_oid(name_content)
         val_tag, val_content, _ = _decode_tlv(vb_content, val_off)
+        if val_tag in SNMP_EXCEPTION_TAGS:
+            # noSuchObject/noSuchInstance/endOfMibView ⇒ the agent has no value for this OID. The
+            # empty content would otherwise decode to a falsely-benign value (e.g. a zero error
+            # mask), so fail the whole GET — query_snmp_status then degrades to unreachable for the
+            # critical read (fail open) rather than reporting a healthy printer it never measured.
+            raise SNMPError(
+                f"varbind {oid} carries SNMP exception {val_tag:#04x} (OID not available)"
+            )
         if oid == OID_HR_PRINTER_DETECTED_ERROR_STATE and val_tag == TAG_OCTET_STRING:
             # This OID is binary BITS data, not text. Keep the raw octets: a multi-octet error
             # mask can be valid UTF-8 (e.g. 0xdf 0xbf), and decoding then re-encoding it would
@@ -546,6 +560,30 @@ def query_snmp_status(
             host,
             port,
             missing,
+        )
+        return PrinterSNMPStatus.unreachable()
+    # Defence-in-depth beyond presence: a conformant agent answers each safety-critical OID with its
+    # expected type. A version-skewed or hostile agent could echo error-status=0 yet return the
+    # error-state OID as a NULL/OID (decoding to None/str) or a media dimension as a non-integer —
+    # values that would silently decode to a falsely-healthy status. The error mask must be the raw
+    # BITS octets (bytes) or an integer mask; the loaded-media dimensions must be integers. Anything
+    # else means we did not actually measure the fault state, so fail open as unreachable.
+    error_state = values.get(OID_HR_PRINTER_DETECTED_ERROR_STATE)
+    mistyped: list[str] = []
+    if not isinstance(error_state, bytes | int):
+        mistyped.append(OID_HR_PRINTER_DETECTED_ERROR_STATE)
+    mistyped.extend(
+        oid
+        for oid in (OID_PRT_INPUT_MEDIA_DIM_XFEED_DIR, OID_PRT_INPUT_MEDIA_DIM_FEED_DIR)
+        if not isinstance(values.get(oid), int)
+    )
+    if mistyped:
+        log.warning(
+            "SNMP reply from %s:%d returned unusable types for critical OIDs %s; treating as "
+            "unreachable",
+            host,
+            port,
+            mistyped,
         )
         return PrinterSNMPStatus.unreachable()
     try:

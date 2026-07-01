@@ -6,45 +6,22 @@
     "enabled": true,
     "schedule": ["before 4am on monday"]
   },
+  "minimumReleaseAge": "2 days",
   "packageRules": [
     {
-      "description": "Group all non-major bumps into one PR",
+      "description": "Group all non-major bumps into one PR.",
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "non-major dependencies"
     },
     {
-      "description": "Auto-merge PEP 735 dev dependency-group minor/patch bumps",
-      "matchDepTypes": ["dev", "test", "lint", "typing", "license"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "automerge": true
-    },
-    {
-      "description": "Auto-merge GitHub Actions patch bumps",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["patch"],
-      "automerge": true
-    },
-    {
-      "description": "Icon collections: own group (so they can auto-merge independently of the shared non-major group) + 2-day release-age cooldown as a supply-chain guard before any bump PR.",
+      "description": "Icon collections: kept in their own group (separate from the shared non-major PR) so a fetch-icons.sh CI failure is attributable to a single PR.",
       "matchManagers": ["npm"],
       "matchPackageNames": [
         "@fortawesome/fontawesome-free",
         "@material-symbols/svg-400",
         "@primer/octicons"
       ],
-      "groupName": "icon collections",
-      "minimumReleaseAge": "2 days"
-    },
-    {
-      "description": "Auto-merge minor/patch icon-collection bumps: CI's docker build runs fetch-icons.sh, so any upstream layout change fails the PR check before merge. Majors stay manual to eyeball glyph renames/removals, which otherwise degrade to silent blank strips (rendered HTTP 200, so CI can't catch them).",
-      "matchManagers": ["npm"],
-      "matchPackageNames": [
-        "@fortawesome/fontawesome-free",
-        "@material-symbols/svg-400",
-        "@primer/octicons"
-      ],
-      "matchUpdateTypes": ["minor", "patch"],
-      "automerge": true
+      "groupName": "icon collections"
     }
   ]
 }

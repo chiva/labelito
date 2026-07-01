@@ -808,3 +808,297 @@ def test_unauthenticated_preview_shows_auth_error(anon_page: Page) -> None:
     status = anon_page.locator(".status.err")
     expect(status).to_be_visible()
     expect(status).to_contain_text("Authentication required")
+
+
+# ── History page: loaded-roll size gating ──────────────────────────────────────────────────────────
+# The history page disables Reprint for rows whose template needs a roll different from the one
+# loaded — advisory UI in front of the server's existing /reprint SNMP preflight (which 409s the same
+# mismatch). It engages only when the loaded roll is KNOWN; otherwise every row stays reprintable.
+
+# Two templates spanning two sizes: a 62mm continuous and a 17x54 die-cut.
+_HISTORY_TEMPLATES = [
+    {
+        "name": "text-62",
+        "description": "62mm continuous",
+        "label": "62",
+        "rotate": 0,
+        "fields": {"required": ["title"], "optional": []},
+        "media": {"width_mm": 62.0, "media_type": "continuous"},
+    },
+    {
+        "name": "addr-17x54",
+        "description": "17x54 die-cut",
+        "label": "17x54",
+        "rotate": 0,
+        "fields": {"required": ["name"], "optional": []},
+        "media": {"width_mm": 17.0, "media_type": "die_cut", "length_mm": 54.0},
+    },
+]
+
+
+def _history_list_body() -> str:
+    """A /history/list page with one printed row per seeded template."""
+    import json
+
+    def row(template: str, field_key: str, field_val: str, job: str) -> dict[str, object]:
+        return {
+            "job_id": job,
+            "template": template,
+            "fields": {field_key: field_val},
+            "copies": 1,
+            "dry_run": False,
+            "timestamp": "2026-06-30T12:00:00",
+            "status": "printed",
+            "dither": False,
+            "image_stripped": False,
+            "sequence": None,
+        }
+
+    entries = [
+        row("text-62", "title", "Hello 62", "aaaaaaaa-0000-0000-0000-000000000001"),
+        row("addr-17x54", "name", "Jane Doe", "bbbbbbbb-0000-0000-0000-000000000002"),
+    ]
+    return json.dumps({"entries": entries, "total": len(entries), "offset": 0, "limit": 20})
+
+
+def _route_history_lists(page: Page) -> None:
+    """Mock the two static endpoints (templates + history list). Status is routed by the caller."""
+    import json
+
+    page.route(
+        "**/templates",
+        lambda r: r.fulfill(
+            status=200, content_type="application/json", body=json.dumps(_HISTORY_TEMPLATES)
+        ),
+    )
+    page.route(
+        "**/history/list*",
+        lambda r: r.fulfill(status=200, content_type="application/json", body=_history_list_body()),
+    )
+
+
+def _route_history(page: Page, status_body: str) -> None:
+    """Mock the three endpoints the history page reads, with a static printer-status body."""
+    _route_history_lists(page)
+    page.route(
+        "**/printer/status",
+        lambda r: r.fulfill(status=200, content_type="application/json", body=status_body),
+    )
+
+
+def test_history_disables_reprint_for_size_mismatched_rows(authed_page_snmp: Page) -> None:
+    """On the SNMP deployment with a 62mm continuous roll loaded, the 62mm row reprints normally while
+    the 17x54 die-cut row is size-gated: its Reprint is disabled, it carries a ✗ tag, the row is dimmed,
+    and Delete still works. A roll-note states which roll is loaded. (Gating is SNMP-only — see
+    test_history_does_not_probe_status_on_non_snmp for the non-SNMP fallback.)"""
+    _route_history(authed_page_snmp, _status_body(media_width_mm=62.0, media_type="continuous"))
+    authed_page_snmp.goto("/history")
+
+    expect(authed_page_snmp.locator("#roll-note")).to_be_visible()
+    expect(authed_page_snmp.locator("#roll-note")).to_contain_text("62mm continuous")
+
+    match_row = authed_page_snmp.locator("#history-body tr").filter(has_text="text-62")
+    mismatch_row = authed_page_snmp.locator("#history-body tr").filter(has_text="addr-17x54")
+
+    # Matching 62mm row: reprint enabled, no mismatch tag, not dimmed.
+    expect(match_row.locator("button.btn-reprint")).to_be_enabled()
+    expect(match_row.locator(".tag-mismatch")).to_have_count(0)
+    expect(match_row).not_to_have_class(re.compile("row-incompatible"))
+
+    # Mismatched 17x54 row: reprint disabled with a ✗ tag; the row is dimmed; Delete still enabled.
+    expect(mismatch_row.locator("button.btn-reprint")).to_be_disabled()
+    mismatch_tag = mismatch_row.locator(".tag-mismatch")
+    expect(mismatch_tag).to_contain_text("needs 17mm")
+    expect(mismatch_tag).to_contain_text("54mm die-cut")
+    expect(mismatch_row).to_have_class(re.compile("row-incompatible"))
+    expect(mismatch_row.locator("button.btn-delete")).to_be_enabled()
+
+
+def test_history_keeps_reprint_enabled_when_roll_unknown(authed_page_snmp: Page) -> None:
+    """On the SNMP deployment, when the printer is unreachable the loaded roll is unknown, so size
+    gating fails open: every row stays reprintable, no row is dimmed, and the roll-note is hidden."""
+    import json
+
+    unreachable = json.dumps(
+        {"state": "off", "uri": "tcp://192.0.2.10:9100", "reachable": False, "errors": []}
+    )
+    _route_history(authed_page_snmp, unreachable)
+    authed_page_snmp.goto("/history")
+
+    # Both rows render and neither reprint is gated.
+    rows = authed_page_snmp.locator("#history-body tr")
+    expect(rows).to_have_count(2)
+    expect(authed_page_snmp.locator("#history-body button.btn-reprint:disabled")).to_have_count(0)
+    expect(authed_page_snmp.locator("#history-body .tag-mismatch")).to_have_count(0)
+    expect(authed_page_snmp.locator("#history-body tr.row-incompatible")).to_have_count(0)
+    expect(authed_page_snmp.locator("#roll-note")).to_be_hidden()
+
+
+def test_history_regates_reprints_live_on_roll_swap(authed_page_snmp: Page) -> None:
+    """On the SNMP deployment (live_status_poll ON) the history page background-polls /printer/status,
+    so swapping the roll re-gates the rows with no reload — the print page's model applied to reprints.
+    Serve a 62mm roll first (gates the 17x54 row), then 17x54 on every later poll (gates the 62mm row
+    instead). Regression guard that the gating is driven live by the poll, not frozen at page load."""
+    import json
+
+    calls = {"n": 0}
+
+    def handle(route: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            media = {"media_width_mm": 62.0, "media_type": "continuous"}
+        else:
+            media = {"media_width_mm": 17.0, "media_type": "die_cut", "media_length_mm": 54.0}
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "state": "idle",
+                    "uri": "tcp://192.0.2.10:9100",
+                    "reachable": True,
+                    "model": "Brother QL-810W",
+                    "errors": [],
+                    **media,
+                }
+            ),
+        )
+
+    _route_history_lists(authed_page_snmp)
+    authed_page_snmp.route("**/printer/status", handle)
+    authed_page_snmp.goto("/history")
+
+    row_62 = authed_page_snmp.locator("#history-body tr").filter(has_text="text-62")
+    row_17 = authed_page_snmp.locator("#history-body tr").filter(has_text="addr-17x54")
+
+    # Initial 62mm roll: the 17x54 row is gated, the 62mm row is not.
+    expect(row_17.locator("button.btn-reprint")).to_be_disabled()
+    expect(row_62.locator("button.btn-reprint")).to_be_enabled()
+
+    # After the background poll reports the swapped 17x54 roll, the gating flips with no reload.
+    expect(row_62.locator("button.btn-reprint")).to_be_disabled(timeout=15000)
+    expect(row_17.locator("button.btn-reprint")).to_be_enabled()
+    expect(authed_page_snmp.locator("#roll-note")).to_contain_text("17mm")
+    assert calls["n"] >= 2, f"expected the background poll to fire at least twice; got {calls['n']}"
+
+
+def _history_list_body_custom(*rows: dict[str, object]) -> str:
+    """A /history/list page from explicit row dicts (for the dry-run / fail-open regression cases)."""
+    import json
+
+    return json.dumps({"entries": list(rows), "total": len(rows), "offset": 0, "limit": 20})
+
+
+def _hist_row(template: str, job: str, *, dry_run: bool = False, status: str = "printed") -> dict:
+    return {
+        "job_id": job,
+        "template": template,
+        "fields": {"name": "Jane Doe"},
+        "copies": 1,
+        "dry_run": dry_run,
+        "timestamp": "2026-06-30T12:00:00",
+        "status": status,
+        "dither": False,
+        "image_stripped": False,
+        "sequence": None,
+    }
+
+
+def test_history_does_not_gate_dry_run_reprints(authed_page_snmp: Page) -> None:
+    """A dry-run reprint sends nothing to the printer and the server skips the SNMP media preflight for
+    dry_run=True, so it is accepted regardless of the loaded roll. The size gate must therefore NEVER
+    disable a dry-run row — even one whose template mismatches the loaded roll. A printed row of the
+    same mismatching template is the control: it stays gated."""
+    import json
+
+    # Loaded 62mm roll; both rows use the 17x54 template (a mismatch), one dry-run, one printed.
+    authed_page_snmp.route(
+        "**/templates",
+        lambda r: r.fulfill(
+            status=200, content_type="application/json", body=json.dumps(_HISTORY_TEMPLATES)
+        ),
+    )
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda r: r.fulfill(
+            status=200,
+            content_type="application/json",
+            body=_status_body(media_width_mm=62.0, media_type="continuous"),
+        ),
+    )
+    authed_page_snmp.route(
+        "**/history/list*",
+        lambda r: r.fulfill(
+            status=200,
+            content_type="application/json",
+            body=_history_list_body_custom(
+                _hist_row(
+                    "addr-17x54",
+                    "dddddddd-0000-0000-0000-00000000000d",
+                    dry_run=True,
+                    status="dry-run",
+                ),
+                _hist_row("addr-17x54", "eeeeeeee-0000-0000-0000-00000000000e"),
+            ),
+        ),
+    )
+    authed_page_snmp.goto("/history")
+
+    dry_row = authed_page_snmp.locator("#history-body tr").filter(has_text="dry-run")
+    printed_row = authed_page_snmp.locator("#history-body tr").filter(has_text="printed")
+
+    # Control first: the printed row of the mismatching template IS gated — proves gating is active
+    # here, so the dry-run row's enabled state below is meaningful (not just gating being off).
+    expect(printed_row.locator("button.btn-reprint")).to_be_disabled()
+    # Dry-run row: reprintable despite the roll mismatch — not disabled, not dimmed, no ✗ tag.
+    expect(dry_row.locator("button.btn-reprint")).to_be_enabled()
+    expect(dry_row.locator(".tag-mismatch")).to_have_count(0)
+    expect(dry_row).not_to_have_class(re.compile("row-incompatible"))
+
+
+def test_history_renders_promptly_when_status_hangs(authed_page_snmp: Page) -> None:
+    """Loaded-roll detection is advisory and must fail open: even on the SNMP path, a slow/hung
+    /printer/status must not block the history list (the page's core content) from rendering. With
+    status never resolving, the rows must still appear well before the client's 8s abort would fire."""
+    _route_history_lists(authed_page_snmp)
+    # Never fulfil the status request — it hangs until the page's AbortController aborts it at ~8s.
+    authed_page_snmp.route("**/printer/status", lambda route: None)
+    authed_page_snmp.goto("/history")
+
+    # Rows must render promptly (< the 8s abort): if init blocked on status, they'd appear only at ~8s.
+    expect(authed_page_snmp.locator("#history-body tr")).to_have_count(2, timeout=4000)
+    # Status never resolved → roll unknown → nothing gated (fail-open default).
+    expect(authed_page_snmp.locator("#history-body button.btn-reprint:disabled")).to_have_count(0)
+
+
+def test_history_does_not_probe_status_on_non_snmp(authed_page: Page) -> None:
+    """On a non-SNMP deployment (the ``authed_page`` fixture, live_status_poll OFF) the History page
+    must NEVER fetch /printer/status: there the read serializes through the server's print lock, so a
+    probe could delay a concurrent /reprint — and the media type reads as unknown anyway, so the gate
+    could never fire. Assert zero status hits, that rows render, and that nothing is gated (fail-open).
+    Regression for the Codex finding that the unconditional init probe reintroduced lock contention."""
+    status_hits = {"n": 0}
+
+    def count_status(route: object) -> None:
+        status_hits["n"] += 1
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(media_width_mm=62.0, media_type="continuous"),
+        )
+
+    _route_history_lists(authed_page)
+    authed_page.route("**/printer/status", count_status)
+    authed_page.goto("/history")
+
+    # The list renders from /history/list with no dependency on the (forbidden) status probe.
+    expect(authed_page.locator("#history-body tr")).to_have_count(2)
+    # Give any errant init probe / scheduled poll ample time to fire (poll base interval is ~4s).
+    authed_page.wait_for_timeout(6000)
+    assert status_hits["n"] == 0, (
+        f"non-SNMP History must not probe /printer/status; got {status_hits['n']} hits"
+    )
+    # Even though a 62mm roll would mismatch the 17x54 row, nothing is gated (no status → no roll).
+    expect(authed_page.locator("#history-body button.btn-reprint:disabled")).to_have_count(0)
+    expect(authed_page.locator("#history-body tr.row-incompatible")).to_have_count(0)
+    expect(authed_page.locator("#roll-note")).to_be_hidden()

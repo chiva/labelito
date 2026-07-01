@@ -36,6 +36,13 @@
     .badge.dry-run { background: #dbeafe; color: #1e40af; }
     .badge.failed  { background: #fee2e2; color: #991b1b; }
     .tag-muted { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; background: #f1f5f9; color: #64748b; white-space: nowrap; margin-left: .4rem; }
+    .tag-mismatch { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; background: #fee2e2; color: #991b1b; white-space: nowrap; margin-left: .4rem; }
+    /* A row needing a different roll than the one loaded: dim the data cells to signal it's not for
+       the current roll, but keep the Actions cell crisp so the (still-enabled) Delete and the reason
+       tag stay legible. The disabled Reprint button dims itself via .btn:disabled. */
+    .row-incompatible td { opacity: .5; }
+    .row-incompatible td:last-child { opacity: 1; }
+    .roll-note { font-size: .85rem; color: #555; margin: 0 0 .75rem; }
     .legend { color: #999; font-size: .8rem; margin-top: 1rem; }
     .when { white-space: nowrap; color: #555; }
     .pager { display: flex; align-items: center; gap: 1rem; margin-top: 1rem; flex-wrap: wrap; }
@@ -56,6 +63,7 @@
   </div>
 
   <div class="card">
+    <p class="roll-note" id="roll-note" style="display:none"></p>
     <div class="table-wrap">
       <table>
         <thead>
@@ -81,6 +89,158 @@
     const PAGE_SIZE = 20;
     let offset = 0;
     let total = 0;
+
+    // ── Loaded-roll size gating ────────────────────────────────────────────────────────────────
+    // Reprints whose template needs a roll different from the one currently loaded are disabled here,
+    // mirroring the print page's advisory media check. This is purely advisory UI in front of an
+    // existing hard guard: /reprint runs the identical SNMP preflight server-side and 409s a real
+    // mismatch, so disabling only pre-empts a guaranteed rejection — it never blocks a reprint the
+    // server would accept, and Delete always stays enabled. It engages ONLY when the loaded roll is
+    // KNOWN (SNMP on a reachable network printer); when it can't be determined (non-SNMP, unreachable,
+    // unknown media) every row stays reprintable, exactly as before. Tolerances and the width/form/
+    // length rule mirror app.media.media_matches and loadedMedia()/mediaCompat() on the print page.
+    //
+    // On the lock-free SNMP path the page background-polls /printer/status (same gate, cadence and
+    // hidden-tab/backoff/abort behaviour as the print page) so a roll swap re-gates the rows LIVE,
+    // with no reload. On the ESC i S fallback there is no repeating poll (the read takes _print_lock)
+    // — the roll is read once at load and is unknown there anyway, so nothing is gated.
+    const WIDTH_TOLERANCE_MM = 1.0;
+    const LENGTH_TOLERANCE_MM = 1.0;
+    const STATUS_POLL_MS = 4000;              // base cadence while the printer is reachable
+    const STATUS_POLL_UNREACHABLE_MS = 15000; // slower cadence once a read comes back unknown/unreachable
+    const STATUS_FETCH_TIMEOUT_MS = 8000;     // abort a status fetch that hangs, so it can't wedge polling
+    const LIVE_STATUS_POLL = {{ live_status_poll | tojson }};
+    let statusPollTimer = null;
+    let statusInFlight = false;     // guards overlapping status reads (init vs poll)
+    let templateMediaByName = {};   // template name → required media ({width_mm, media_type, length_mm}) or null
+    let loadedRoll = null;          // the loaded roll as comparable media, or null when unknown
+    let loadedRollKey = null;       // group key of loadedRoll, to detect a roll swap between polls
+    let currentEntries = [];        // last rendered page, so a poll can re-gate the rows in place
+
+    // The loaded roll as {width_mm, media_type, length_mm}, or null when it can't be compared: SNMP
+    // unreachable, a non-network transport, or a media_type outside the SNMP-normalized set (e.g. the
+    // ESC i S fallback's brother_ql string). Mirrors loadedMedia() on the print page.
+    function loadedMediaFrom(s) {
+      if (!s || !s.reachable) return null;
+      if (typeof s.uri !== 'string' || !s.uri.startsWith('tcp://')) return null;
+      if (s.media_width_mm == null) return null;
+      if (s.media_type !== 'continuous' && s.media_type !== 'die_cut') return null;
+      return {width_mm: s.media_width_mm, media_type: s.media_type, length_mm: s.media_length_mm};
+    }
+
+    function mediaDesc(m) {
+      if (!m || m.width_mm == null || !m.media_type) return 'unknown media';
+      const kind = m.media_type === 'die_cut' ? 'die-cut' : m.media_type;
+      if (m.media_type === 'die_cut' && m.length_mm != null) {
+        return `${m.width_mm}mm×${m.length_mm}mm ${kind}`;
+      }
+      return `${m.width_mm}mm ${kind}`;
+    }
+
+    // 'match' | 'mismatch' | 'unknown' — mirrors app.media.media_matches and the print page.
+    function mediaCompat(required, loaded) {
+      if (!required || !loaded) return 'unknown';
+      if (Math.abs(required.width_mm - loaded.width_mm) > WIDTH_TOLERANCE_MM) return 'mismatch';
+      if (required.media_type !== loaded.media_type) return 'mismatch';
+      if (required.media_type === 'die_cut' && required.length_mm != null && loaded.length_mm != null
+          && Math.abs(required.length_mm - loaded.length_mm) > LENGTH_TOLERANCE_MM) {
+        return 'mismatch';
+      }
+      return 'match';
+    }
+
+    // The template's required media for a history row, looked up by its (current) template name — the
+    // same name /reprint resolves and runs its preflight against. null when the template was deleted/
+    // renamed since, or its label is not a known size; the row is then never disabled on size grounds.
+    function rowRequiredMedia(rec) {
+      return templateMediaByName[rec.template] || null;
+    }
+
+    // True only when we KNOW the row needs a roll different from the one loaded — the sole condition
+    // that gates reprint. Unknown loaded roll or unknown template media → false (reprint stays on).
+    function rowMediaMismatch(rec) {
+      const required = rowRequiredMedia(rec);
+      if (!loadedRoll || !required) return false;
+      return mediaCompat(required, loadedRoll) === 'mismatch';
+    }
+
+    // Load the template→media map once (templates change rarely). Best-effort: on any failure the map
+    // stays empty and no row is size-gated. /templates is unauthenticated but we send the token anyway.
+    async function loadTemplates() {
+      try {
+        const res = await fetch('/templates', {headers: authHeaders()});
+        if (!res.ok) return;
+        const list = await res.json();
+        const map = {};
+        for (const t of list) map[t.name] = t.media || null;
+        templateMediaByName = map;
+      } catch (e) { /* leave the map empty — size gating simply stays off */ }
+    }
+
+    // Stable key for the loaded roll, to detect a swap between polls (null roll → 'none'). Mirrors
+    // groupKeyOf() on the print page.
+    function rollKeyOf(m) {
+      if (!m || m.width_mm == null) return 'none';
+      if (m.media_type === 'die_cut') return `d:${m.width_mm}x${m.length_mm}`;
+      return `c:${m.width_mm}`;
+    }
+
+    // Read /printer/status into loadedRoll. Abortable (a hung fetch can't pin statusInFlight and wedge
+    // the poll) and guarded against overlap. Best-effort/advisory: any error (401, a 503 unreachable
+    // read, or a non-SNMP "unknown" body) clears the roll to null so every row stays reprintable.
+    // Returns true when the loaded roll changed since the last read, so the caller can re-gate rows.
+    async function refreshLoadedRoll() {
+      if (statusInFlight) return false;
+      statusInFlight = true;
+      const controller = new AbortController();
+      const abortTimer = setTimeout(() => controller.abort(), STATUS_FETCH_TIMEOUT_MS);
+      try {
+        const res = await fetch('/printer/status', {headers: authHeaders(), signal: controller.signal});
+        loadedRoll = res.ok ? loadedMediaFrom(await res.json()) : null;
+      } catch (e) {
+        loadedRoll = null;  // includes AbortError on timeout — treat any failure as unknown
+      } finally {
+        clearTimeout(abortTimer);
+        statusInFlight = false;
+      }
+      const key = rollKeyOf(loadedRoll);
+      const changed = key !== loadedRollKey;
+      loadedRollKey = key;
+      return changed;
+    }
+
+    // Self-scheduling poll (SNMP only): a setTimeout chain (not setInterval) so the cadence can vary
+    // with the last result and never stacks ticks. Skips work while hidden; backs off when the read
+    // comes back unknown/unreachable so a powered-off printer can't drive a tight retry loop.
+    function scheduleNextStatusPoll(ms) {
+      if (statusPollTimer !== null) clearTimeout(statusPollTimer);
+      statusPollTimer = setTimeout(pollStatus, ms);
+    }
+    async function pollStatus() {
+      if (document.hidden) { scheduleNextStatusPoll(STATUS_POLL_MS); return; }
+      const changed = await refreshLoadedRoll();
+      if (changed) regateRows();  // a roll swap re-enables/disables reprints in place — no list refetch
+      scheduleNextStatusPoll(loadedRoll ? STATUS_POLL_MS : STATUS_POLL_UNREACHABLE_MS);
+    }
+    // Resume immediately when the tab regains focus (polls paused while hidden go stale fast).
+    document.addEventListener('visibilitychange', () => {
+      if (LIVE_STATUS_POLL && !document.hidden) pollStatus();
+    });
+
+    // Re-render the currently displayed page against the latest loaded roll (after a poll detects a
+    // roll swap) — re-gates Reprint in place without re-fetching the list, preserving the page position.
+    function regateRows() {
+      renderRows(currentEntries);
+      updateRollNote();
+    }
+
+    function updateRollNote() {
+      const note = document.getElementById('roll-note');
+      if (!loadedRoll) { note.style.display = 'none'; note.textContent = ''; return; }
+      note.style.display = '';
+      note.textContent = `Loaded roll: ${mediaDesc(loadedRoll)} — reprints that need a different size `
+        + 'are disabled while it is loaded.';
+    }
 
     // ── Auth: shares the localStorage token with the print page; attached as a Bearer header. ──
     const TOKEN_KEY = 'labelito_api_token';
@@ -225,7 +385,9 @@
     // Threshold above which a reprint confirm dialog is shown.
     const REPRINT_CONFIRM_THRESHOLD = 10;
 
-    function actionsCell(rec) {
+    // ``gated`` (computed in renderRows) is true only for a reprintable row whose template needs a
+    // roll different from the one loaded — it disables Reprint while leaving Delete enabled.
+    function actionsCell(rec, gated) {
       const td = document.createElement('td');
 
       const reprint = document.createElement('button');
@@ -236,6 +398,11 @@
         reprint.title = rec.status === 'failed'
           ? 'This job failed to print and cannot be reprinted'
           : 'This job carried an image, which is not retained — re-submit the original print';
+      } else if (gated) {
+        reprint.disabled = true;
+        reprint.title = `This job needs ${mediaDesc(rowRequiredMedia(rec))} but `
+          + `${mediaDesc(loadedRoll)} is loaded; the printer would reject this reprint (409). `
+          + 'Load a matching roll and reload, or swap the roll.';
       } else {
         reprint.onclick = () => {
           if (rec.sequence && rec.sequence.count >= REPRINT_CONFIRM_THRESHOLD) {
@@ -264,15 +431,31 @@
         tag.className = 'tag-muted';
         tag.textContent = '🖼 image not retained';
         td.appendChild(tag);
+      } else if (gated) {
+        // Surface the size mismatch inline (not only in the disabled button's hover title) so the
+        // reason a roll-mismatched row can't be reprinted is visible at a glance.
+        const tag = document.createElement('span');
+        tag.className = 'tag-mismatch';
+        tag.textContent = `✗ needs ${mediaDesc(rowRequiredMedia(rec))}`;
+        td.appendChild(tag);
       }
       return td;
     }
 
     function renderRows(entries) {
+      currentEntries = entries || [];  // remembered so a poll-driven roll swap can re-gate in place
       const body = document.getElementById('history-body');
       body.innerHTML = '';
       for (const rec of entries) {
         const tr = document.createElement('tr');
+        // Reprintable rows only (failed/image-stripped are already hard-disabled and reprint-agnostic
+        // to the roll); a known size mismatch dims the row and disables its Reprint. Dry-run rows are
+        // NEVER gated: a dry-run reprint sends nothing to the printer and the server skips the SNMP
+        // media preflight for dry_run=True, so it would accept the replay regardless of loaded roll —
+        // gating it would block a reprint the server allows, breaking the advisory-only contract.
+        const gated = rec.status !== 'failed' && !rec.image_stripped && !rec.dry_run
+          && rowMediaMismatch(rec);
+        if (gated) tr.classList.add('row-incompatible');
 
         const when = document.createElement('td');
         when.className = 'when';
@@ -297,7 +480,7 @@
         tr.appendChild(status);
         tr.appendChild(ditherCell(rec));
         tr.appendChild(jobIdCell(rec));
-        tr.appendChild(actionsCell(rec));
+        tr.appendChild(actionsCell(rec, gated));
         body.appendChild(tr);
       }
     }
@@ -342,6 +525,7 @@
         }
         renderRows(data.entries);
         renderEmpty(total === 0);
+        updateRollNote();
         updatePager();
         clearStatus();
       } catch (e) {
@@ -386,7 +570,25 @@
       }
     }
 
-    loadPage();
+    // Init: render the history list FIRST — it is the page's core content and must never wait on the
+    // advisory printer-status read.
+    //
+    // The whole roll-detection machinery (template map + status read + live poll) runs ONLY on the
+    // SNMP path (LIVE_STATUS_POLL). Two reasons, both decisive: (1) off the SNMP path the media type
+    // reads as unknown, so the gate could never fire anyway; (2) there /printer/status serializes
+    // through the server's _print_lock, so probing it would risk delaying a concurrent /reprint for
+    // zero benefit — the same contention the print page avoids by gating its poll behind this flag.
+    // So on non-SNMP deployments History never touches /printer/status and every row stays reprintable
+    // (fail-open). On SNMP, the map + roll load in the background (best-effort) and re-gate the rows in
+    // place via regateRows() once they arrive — the list renders ungated until then (an unknown roll
+    // gates nothing) — and the live poll keeps the gating fresh on a roll swap.
+    (async () => {
+      if (LIVE_STATUS_POLL) {
+        Promise.allSettled([loadTemplates(), refreshLoadedRoll()]).then(regateRows);
+      }
+      await loadPage();
+      if (LIVE_STATUS_POLL) scheduleNextStatusPoll(STATUS_POLL_MS);  // visible-tab poll, SNMP only
+    })();
   </script>
 </body>
 </html>

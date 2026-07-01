@@ -1715,7 +1715,17 @@ async def history_page(request: Request) -> HTMLResponse:
     """Browse-history page shell. Public like ``GET /`` — it carries no history data (that is
     fetched client-side from the token-protected ``/history/list``) and must be reachable from a
     plain link so the browser can render its token input. 404s only when browsing is disabled."""
-    return jinja.TemplateResponse(request, "history.html", {})
+    return jinja.TemplateResponse(
+        request,
+        "history.html",
+        {
+            # Same gate as the print page (see the "/" route): only on the lock-free SNMP path may the
+            # page background-poll /printer/status to keep the loaded-roll reprint gating live. On the
+            # ESC i S fallback the status read takes _print_lock, so polling could delay a /reprint —
+            # there the roll is read once at load (and stays unknown anyway), with no repeating poll.
+            "live_status_poll": _snmp_guard_applies(),
+        },
+    )
 
 
 @app.get(

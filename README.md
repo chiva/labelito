@@ -357,7 +357,12 @@ With auth enabled, add `-H "Authorization: Bearer $API_TOKEN"`.
 Every print is recorded in a small SQLite store. That record powers two things:
 
 - **`/reprint/{job_id}`** — replays a recorded job (with its original date) so the label is
-  identical.
+  identical. On the History page, when the loaded roll is known (SNMP), rows whose template needs a
+  different roll are dimmed and their **Reprint** is disabled with the reason inline — advisory only,
+  mirroring the print page; the server still enforces the same media check and `409`s a real
+  mismatch. The page background-polls printer status on the SNMP path (same gate as the print page),
+  so swapping the roll re-gates the rows live with no reload. With the roll unknown (non-SNMP /
+  unreachable) there is no poll and every row stays reprintable.
 - **Idempotency** — pass `"idempotency_key": "<unique-id>"` in a `/print` body and a retry with
   the *same* key and payload returns the original job instead of printing a second label. Reusing
   a key with a *different* payload is rejected with `409`. Without a key, identical requests print

@@ -518,6 +518,23 @@ class PrinterStatusResponse(BaseModel):
         default_factory=list,
         description="Human-readable error strings reported by the printer, empty when ok.",
     )
+    # Identity/telemetry from the SNMP status read (network transport). All optional: absent over the
+    # file/USB transports and on the ESC i S fallback, which do not report them.
+    serial: str | None = Field(
+        default=None, description="Printer serial number (SNMP), e.g. 'B2Z160525'."
+    )
+    firmware: str | None = Field(
+        default=None,
+        description="Firmware / NIC description (SNMP sysDescr), e.g. 'Brother NC-36002w, Firmware Ver.1.00'.",
+    )
+    console_text: str | None = Field(
+        default=None,
+        description="The printer's console display line (SNMP), e.g. 'READY'; fault text when faulted.",
+    )
+    label_lifecount: int | None = Field(
+        default=None,
+        description="Lifetime label count from the printer's marker life counter (SNMP).",
+    )
 
 
 class ErrorDetail(BaseModel):

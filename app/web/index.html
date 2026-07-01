@@ -50,6 +50,12 @@
     .btn-refresh:hover { background: #f0f0f0; }
     .printer-detail { margin-top: .6rem; font-size: .85rem; color: #555; line-height: 1.5; }
     .printer-detail .detail-err { color: #991b1b; }
+    /* Per-template media compatibility badge vs the loaded roll (TCP/SNMP only). */
+    .media-badge { display: inline-block; margin: 0 0 .6rem; padding: .15rem .6rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
+    .media-badge:empty { display: none; }
+    .media-ok { background: #dcfce7; color: #166534; }
+    .media-bad { background: #fee2e2; color: #991b1b; }
+    .media-unknown { background: #e5e7eb; color: #555; }
   </style>
 </head>
 <body>
@@ -78,6 +84,7 @@
       <option value="{{ t.name }}" data-required="{{ t.required | join(',') }}" data-optional="{{ t.optional | join(',') }}" data-desc="{{ t.description }}">{{ t.name }} — {{ t.description }}</option>
       {% endfor %}
     </select>
+    <div id="media-badge" class="media-badge"></div>
     <div id="template-desc"></div>
 
     <div id="fields-container" class="fields-grid"></div>
@@ -130,6 +137,9 @@
   <script>
     const TEMPLATES = {{ templates | tojson }};
     const templateMap = Object.fromEntries(TEMPLATES.map(t => [t.name, t]));
+    // Latest /printer/status body, used to compare the loaded roll against each template's required
+    // media. Null until the first status arrives (or when the status query fails) → compat unknown.
+    let printerStatus = null;
 
     // ── Auth: the token is held only in this browser's localStorage and attached as a
     //    Bearer header on protected requests. Blank token → no header (unauthenticated servers).
@@ -168,6 +178,7 @@
     }
 
     function renderPrinterStatus(data) {
+      printerStatus = data;
       setStateBadge(data.state);
       // Build the card with DOM nodes + textContent, never innerHTML: network status now comes
       // from SNMP, so `model` (hrDeviceDescr) and `errors` (which can carry the printer's console
@@ -195,10 +206,19 @@
           const w = data.media_width_mm != null ? `${data.media_width_mm}mm${len}` : '';
           addLine().textContent = `Media: ${data.media_type}${w ? ' (' + w + ')' : ''}`;
         }
+        // SNMP identity/telemetry (network transport only; absent over file/USB and ESC i S). All
+        // device-supplied → textContent keeps them inert markup (see the XSS note above).
+        if (data.serial) addLine().textContent = `Serial: ${data.serial}`;
+        if (data.firmware) addLine().textContent = `Firmware: ${data.firmware}`;
+        if (data.label_lifecount != null) {
+          addLine().textContent = `Labels printed (lifetime): ${data.label_lifecount}`;
+        }
+        if (data.console_text) addLine().textContent = `Console: ${data.console_text}`;
       }
       if (Array.isArray(data.errors) && data.errors.length) {
         addLine('detail-err').textContent = data.errors.join('; ');
       }
+      applyMediaCompat();
     }
 
     async function refreshPrinterStatus() {
@@ -207,14 +227,18 @@
         if (res.status === 401) {
           handleAuthError(res);
           setStateBadge('off', 'Auth required');
-          document.getElementById('printer-detail').innerHTML = '';
+          document.getElementById('printer-detail').replaceChildren();
+          printerStatus = null;
+          applyMediaCompat();
           return;
         }
         // Both 200 and 503 carry the same body shape (state/uri/reachable/errors).
         const data = await res.json().catch(() => null);
         if (!data) {
           setStateBadge('off', 'Unknown');
-          document.getElementById('printer-detail').innerHTML = '';
+          document.getElementById('printer-detail').replaceChildren();
+          printerStatus = null;
+          applyMediaCompat();
           return;
         }
         renderPrinterStatus(data);
@@ -226,12 +250,110 @@
         div.className = 'detail-err';
         div.textContent = `Network error: ${e.message}`;
         detail.appendChild(div);
+        printerStatus = null;
+        applyMediaCompat();
       }
     }
 
     function currentTemplate() {
       const sel = document.getElementById('template-select');
       return templateMap[sel.value] || TEMPLATES[0];
+    }
+
+    // ── Media compatibility: a client-side mirror of the server's app.media.media_matches, so each
+    //    template can be badged ✓/✗/? against the loaded roll and mismatching ones disabled BEFORE
+    //    the user hits print (the server still enforces the same rule with a 409). Tolerances and the
+    //    width/form/length rule match the server exactly.
+    const WIDTH_TOLERANCE_MM = 1.0;
+    const LENGTH_TOLERANCE_MM = 1.0;
+
+    function isNetworkPrinter() {
+      return !!(printerStatus && typeof printerStatus.uri === 'string'
+        && printerStatus.uri.startsWith('tcp://'));
+    }
+
+    // The loaded roll as a {width_mm, media_type, length_mm} object, or null when it can't be
+    // compared: SNMP unreachable, a non-network transport, or a media_type that isn't one of the
+    // SNMP-normalized values (e.g. the ESC i S fallback's brother_ql string) → treated as unknown.
+    function loadedMedia() {
+      const s = printerStatus;
+      if (!s || !s.reachable || !isNetworkPrinter()) return null;
+      if (s.media_width_mm == null) return null;
+      if (s.media_type !== 'continuous' && s.media_type !== 'die_cut') return null;
+      return {width_mm: s.media_width_mm, media_type: s.media_type, length_mm: s.media_length_mm};
+    }
+
+    function mediaDesc(m) {
+      if (!m || m.width_mm == null || !m.media_type) return 'unknown media';
+      const kind = m.media_type === 'die_cut' ? 'die-cut' : m.media_type;
+      if (m.media_type === 'die_cut' && m.length_mm != null) {
+        return `${m.width_mm}mm×${m.length_mm}mm ${kind}`;
+      }
+      return `${m.width_mm}mm ${kind}`;
+    }
+
+    // 'match' | 'mismatch' | 'unknown' — mirrors app.media.media_matches.
+    function mediaCompat(required, loaded) {
+      if (!required || !loaded) return 'unknown';
+      if (Math.abs(required.width_mm - loaded.width_mm) > WIDTH_TOLERANCE_MM) return 'mismatch';
+      if (required.media_type !== loaded.media_type) return 'mismatch';
+      if (required.media_type === 'die_cut' && required.length_mm != null
+          && loaded.length_mm != null
+          && Math.abs(required.length_mm - loaded.length_mm) > LENGTH_TOLERANCE_MM) {
+        return 'mismatch';
+      }
+      return 'match';
+    }
+
+    function renderMediaBadge(required, compat, loaded) {
+      const badge = document.getElementById('media-badge');
+      if (!badge) return;
+      badge.className = 'media-badge';
+      if (!required) { badge.textContent = ''; return; }
+      if (compat === 'match') {
+        badge.classList.add('media-ok');
+        badge.textContent = `✓ ${mediaDesc(required)}`;
+        badge.title = 'The loaded roll matches this template.';
+      } else if (compat === 'mismatch') {
+        badge.classList.add('media-bad');
+        badge.textContent = `✗ needs ${mediaDesc(required)} — loaded ${mediaDesc(loaded)}`;
+        badge.title = 'The loaded roll does not match this template; printing is blocked.';
+      } else {
+        badge.classList.add('media-unknown');
+        badge.textContent = `media: ${mediaDesc(required)}`;
+        badge.title = 'Loaded media unknown (SNMP unavailable or non-network printer) — not checked.';
+      }
+    }
+
+    // Re-evaluate compatibility for the loaded roll: badge the current template, disable mismatching
+    // options in the dropdown (with a "(needs …)" hint), and disable the Print button when the
+    // selected template mismatches. Preview is never blocked. Called on status refresh and on
+    // template change. A no-op-ish 'unknown' (SNMP down / non-network) leaves everything enabled.
+    function applyMediaCompat() {
+      const loaded = loadedMedia();
+      const sel = document.getElementById('template-select');
+      for (const opt of sel.options) {
+        const t = templateMap[opt.value];
+        const base = t ? `${t.name} — ${t.description || ''}`.replace(/ — $/, '') : opt.value;
+        const compat = t ? mediaCompat(t.media, loaded) : 'unknown';
+        if (compat === 'mismatch') {
+          opt.disabled = true;
+          opt.textContent = `${base}  (needs ${mediaDesc(t.media)})`;
+        } else {
+          opt.disabled = false;
+          opt.textContent = base;
+        }
+      }
+      const t = currentTemplate();
+      const compat = t ? mediaCompat(t.media, loaded) : 'unknown';
+      renderMediaBadge(t ? t.media : null, compat, loaded);
+      const printBtn = document.querySelector('.btn-print');
+      if (printBtn) {
+        printBtn.disabled = compat === 'mismatch';
+        printBtn.title = compat === 'mismatch'
+          ? `Loaded media (${mediaDesc(loaded)}) does not match this template (needs ${mediaDesc(t.media)}). Load the matching roll or pick a compatible template.`
+          : '';
+      }
     }
 
     function renderFields() {
@@ -388,6 +510,7 @@
 
     document.getElementById('template-select').addEventListener('change', () => {
       renderFields();
+      applyMediaCompat();
       doPreview();
     });
 
@@ -409,6 +532,7 @@
 
     // Init
     renderFields();
+    applyMediaCompat();      // badge from required media immediately; refreshed once status loads
     refreshPrinterStatus();
     if (TEMPLATES.length > 0) doPreview();
   </script>

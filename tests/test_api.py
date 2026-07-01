@@ -1239,6 +1239,48 @@ def test_printer_status_happy_path_with_reachable_transport(
     assert data["errors"] == []
 
 
+def test_printer_status_surfaces_snmp_identity_fields(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The status response carries the SNMP identity/telemetry fields (serial, firmware, console,
+    lifecount) so the web status card can render them (Step 7)."""
+    import app.main as main_mod
+    from app.transports.base import PrinterStatus
+
+    class _SNMPTransport:
+        def __init__(self, uri: str) -> None:
+            pass
+
+        def send(self, data: bytes) -> PrinterStatus | None:
+            return None
+
+        def query_status(self, request: bytes) -> PrinterStatus:
+            return PrinterStatus(
+                ok=True,
+                errors=[],
+                raw={},
+                model="Brother QL-810W",
+                media_width_mm=62,
+                media_type="continuous",
+                reachable=True,
+                serial="B2Z160525",
+                firmware="Brother NC-36002w, Firmware Ver.1.00",
+                console_text="READY",
+                label_lifecount=9,
+            )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SNMPTransport)
+
+    data = client.get("/printer/status").json()
+    assert data["serial"] == "B2Z160525"
+    assert data["firmware"] == "Brother NC-36002w, Firmware Ver.1.00"
+    assert data["console_text"] == "READY"
+    assert data["label_lifecount"] == 9
+
+
 def test_printer_status_file_transport_returns_503_not_a_real_printer(client: TestClient) -> None:
     """With a file:// transport (the client fixture default), /printer/status returns 503 with
     reachable=False at the TOP level — same body shape as the 200 response."""

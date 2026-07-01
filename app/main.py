@@ -1040,6 +1040,10 @@ async def printer_status(
         status=status.status_type,
         phase=status.phase_type,
         errors=status.errors,
+        serial=status.serial,
+        firmware=status.firmware,
+        console_text=status.console_text,
+        label_lifecount=status.label_lifecount,
     )
 
 

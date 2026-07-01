@@ -8,6 +8,8 @@ into localStorage by the ``authed_page`` fixture, mirroring how the dev harness 
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 pytest.importorskip("playwright.sync_api")
@@ -127,6 +129,71 @@ def test_status_banner_does_not_execute_injected_markup(authed_page: Page) -> No
     assert not authed_page.evaluate("() => window.__xss_fired"), (
         "onerror from an injected tag must never fire"
     )
+
+
+def test_media_compatibility_badges_and_guards(authed_page: Page) -> None:
+    """The print page badges each template against the loaded roll and blocks a mismatch (Step 7).
+
+    Drives the client-side compatibility consumer deterministically: seed a continuous + a die-cut
+    template, set the loaded roll over a network (tcp://) printer, and assert the dropdown disables
+    the mismatching template, the Print button is disabled, and the badge reflects ✓/✗ — the same
+    width/form rule the server-side 409 guard applies. Preview is never blocked."""
+    authed_page.goto("/")
+    # Seed two known templates with explicit required media and options for them.
+    authed_page.evaluate(
+        """() => {
+          templateMap['__cont'] = {name:'__cont', description:'cont', required:[], optional:[],
+            media:{width_mm:62.0, media_type:'continuous', length_mm:null}};
+          templateMap['__dc'] = {name:'__dc', description:'die cut', required:[], optional:[],
+            media:{width_mm:62.0, media_type:'die_cut', length_mm:29.0}};
+          TEMPLATES.push(templateMap['__cont'], templateMap['__dc']);
+          const sel = document.getElementById('template-select');
+          for (const v of ['__cont','__dc']) {
+            const o = document.createElement('option'); o.value = v; o.textContent = v;
+            sel.appendChild(o);
+          }
+        }"""
+    )
+
+    # Loaded roll = 62mm continuous on a network printer; select the (mismatching) die-cut template.
+    authed_page.evaluate(
+        """() => {
+          printerStatus = {state:'idle', uri:'tcp://192.168.5.14:9100', reachable:true,
+            media_width_mm:62, media_type:'continuous', media_length_mm:null};
+          document.getElementById('template-select').value = '__dc';
+          renderFields();
+          applyMediaCompat();
+        }"""
+    )
+    assert (
+        authed_page.eval_on_selector("#template-select option[value='__dc']", "o => o.disabled")
+        is True
+    ), "the die-cut template must be disabled against a continuous roll"
+    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") is True, (
+        "Print must be blocked for the mismatching selected template"
+    )
+    assert authed_page.eval_on_selector(".btn-preview", "b => b.disabled") in (False, None), (
+        "Preview must never be blocked by a media mismatch"
+    )
+    badge = authed_page.locator("#media-badge")
+    expect(badge).to_have_class(re.compile(r"media-bad"))
+    expect(badge).to_contain_text("✗")
+    assert (
+        authed_page.eval_on_selector("#template-select option[value='__cont']", "o => o.disabled")
+        is False
+    ), "the matching continuous template must stay enabled"
+
+    # Swap the loaded roll to die-cut 62x29: now the die-cut template matches → Print re-enabled, ✓.
+    authed_page.evaluate(
+        """() => {
+          printerStatus = {state:'idle', uri:'tcp://192.168.5.14:9100', reachable:true,
+            media_width_mm:62, media_type:'die_cut', media_length_mm:29};
+          applyMediaCompat();
+        }"""
+    )
+    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") is False
+    expect(authed_page.locator("#media-badge")).to_have_class(re.compile(r"media-ok"))
+    expect(authed_page.locator("#media-badge")).to_contain_text("✓")
 
 
 def test_unauthenticated_preview_shows_auth_error(anon_page: Page) -> None:

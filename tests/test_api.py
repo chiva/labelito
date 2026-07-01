@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import base64
 import io
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -2862,6 +2864,36 @@ def test_editor_page_served(client: TestClient) -> None:
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
     assert "Template Studio" in resp.text
+
+
+def test_editor_embeds_label_reference(client: TestClient) -> None:
+    """The studio embeds a label-reference list (id + required media in mm) for the configured model.
+
+    This is what the bottom "Label reference" panel renders and what the "Use" button reads — it must
+    carry every supported label and the media each requires, sourced from the same required_media_for
+    the /print guard uses (Step 8). Assert the embedded LABELS JSON carries a continuous label ("62" →
+    62mm continuous) and a die-cut one ("62x29" -> 62x29mm die-cut, length present).
+    """
+    page = client.get("/editor").text
+    assert 'id="label-ref-body"' in page
+    assert 'id="your-printer"' in page
+    # The embedded JSON drives the panel; parse it out of `const LABELS = [...];`.
+    m = re.search(r"const LABELS = (\[.*?\]);", page, re.DOTALL)
+    assert m, "editor must embed a LABELS JSON array"
+    labels = json.loads(m.group(1))
+    by_id = {entry["id"]: entry["media"] for entry in labels}
+    assert "62" in by_id, f"continuous 62mm label missing from {sorted(by_id)}"
+    assert by_id["62"]["media_type"] == "continuous"
+    assert by_id["62"]["width_mm"] == pytest.approx(62.0)
+    assert "62x29" in by_id, f"die-cut 62x29 label missing from {sorted(by_id)}"
+    assert by_id["62x29"]["media_type"] == "die_cut"
+    assert by_id["62x29"]["width_mm"] == pytest.approx(62.0)
+    assert by_id["62x29"]["length_mm"] == pytest.approx(29.0)
+    # Red/black two-colour media is flagged so the studio can avoid badging it a definite match
+    # against a roll whose colour SNMP can't verify (62 and 62red share the same geometry).
+    red_by_id = {entry["id"]: entry["red"] for entry in labels}
+    assert red_by_id["62"] is False
+    assert red_by_id.get("62red") is True, "the two-colour 62red label must be flagged red"
 
 
 # ── Load an existing template's source (GET /templates/{name}/source) ──

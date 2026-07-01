@@ -194,6 +194,202 @@ def test_media_compatibility_badges_are_advisory(authed_page: Page) -> None:
     assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") in (False, None)
 
 
+def test_editor_label_reference_lists_labels_and_use_button_sets_yaml(authed_page: Page) -> None:
+    """The studio's label-reference panel lists supported labels and "Use" writes the YAML (Step 8).
+
+    Drives the deterministic, server-embedded half: the table is populated from the editor route's
+    LABELS context (no printer needed), and clicking a row's "Use" button replaces the top-level
+    ``label:`` in the editor textarea so an author can pick a valid media without hand-typing.
+    """
+    authed_page.goto("/editor")
+    body = authed_page.locator("#label-ref-body")
+    expect(body.locator("tr").first).to_be_visible()
+    assert body.locator("tr").count() > 0, "the label reference must list the model's labels"
+    # The seeded starter YAML uses label "62"; switch it to the die-cut 62x29 via its Use button.
+    assert 'label: "62"' in authed_page.locator("#yaml").input_value()
+    row = body.locator("tr").filter(has_text="62x29").first
+    expect(row).to_contain_text("die-cut")
+    row.locator("button:has-text('Use')").click()
+    assert 'label: "62x29"' in authed_page.locator("#yaml").input_value()
+
+
+def test_editor_label_reference_renders_when_status_never_resolves(authed_page: Page) -> None:
+    """The static label table must not be gated on the (optional) live printer-status fetch.
+
+    Regression for the Codex finding that rows only appeared after /printer/status resolved: a stuck
+    SNMP/TCP query would otherwise hide the core picker. Hang the status request so it never returns,
+    then assert the reference rows still populate from the server-embedded LABELS.
+    """
+    # Intercept /printer/status and never fulfil it — simulates a stuck SNMP/TCP query.
+    authed_page.route("**/printer/status", lambda route: None)
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#label-ref-body tr").first).to_be_visible()
+    assert authed_page.locator("#label-ref-body tr").count() > 0, (
+        "the static label table must render even when printer status never resolves"
+    )
+
+
+def test_editor_use_button_replaces_noncanonical_label_key(authed_page: Page) -> None:
+    """ "Use" replaces a non-canonical top-level ``label`` key in place — never duplicates it.
+
+    Regression for the Codex finding: ``label : "62"`` (whitespace before the colon) is valid YAML but
+    the old exact-match regex missed it and inserted a second ``label`` key. Seed that form, click Use
+    for 62x29, and assert exactly one top-level label key remains and it is the selected id.
+    """
+    authed_page.goto("/editor")
+    authed_page.evaluate(
+        """() => { document.getElementById('yaml').value =
+`name: my-label
+description: A new label
+label : "62"
+rotate: 0
+`; }"""
+    )
+    row = authed_page.locator("#label-ref-body tr").filter(has_text="62x29").first
+    row.locator("button:has-text('Use')").click()
+    yaml = authed_page.locator("#yaml").input_value()
+    label_keys = re.findall(r'^["\']?label["\']?\s*:', yaml, re.MULTILINE)
+    assert len(label_keys) == 1, (
+        f"expected exactly one top-level label key, got {len(label_keys)}: {yaml!r}"
+    )
+    assert 'label: "62x29"' in yaml, yaml
+
+
+def test_editor_your_printer_highlights_matching_labels(authed_page: Page) -> None:
+    """When the printer answers SNMP, the studio flags the loaded roll and the matching label id(s).
+
+    The e2e server uses a file:// transport (no network printer), so the live highlight is driven
+    deterministically: inject a 62mm-continuous network status through the same client functions the
+    real /printer/status fetch uses, then assert the "Your Printer" box names the loaded media and at
+    least one reference row is marked as matching.
+    """
+    authed_page.goto("/editor")
+    authed_page.evaluate(
+        """() => {
+          const status = {state:'idle', uri:'tcp://192.168.5.14:9100', reachable:true,
+            media_width_mm:62, media_type:'continuous', media_length_mm:null};
+          const loaded = renderYourPrinter(status);
+          renderLabelReference(loaded);
+        }"""
+    )
+    yp = authed_page.locator("#your-printer")
+    expect(yp).to_contain_text("Your Printer")
+    expect(yp).to_contain_text("62mm continuous")
+    expect(yp).to_contain_text("Matching label id(s)")
+    assert authed_page.locator("#label-ref-body tr.match").count() >= 1, (
+        "the loaded 62mm continuous roll must highlight at least the matching '62' label"
+    )
+
+
+def test_editor_label_reference_refetches_status_on_token_entry(anon_page: Page) -> None:
+    """First-run recovery: entering the API token refetches printer status for the label panel.
+
+    On a secured deployment the first visitor lands tokenless, so the initial /printer/status load
+    401s and the "Your Printer" highlight stays blank. Typing the token must trigger a fresh status
+    fetch (the fix for the Codex first-run finding) — asserted by waiting for a /printer/status
+    request after the field is filled. The e2e server's file:// transport can't produce a real
+    highlight, so this asserts the refetch wiring, not the highlight content.
+    """
+    anon_page.goto("/editor")
+    # The reference table itself populates from the server-embedded LABELS regardless of auth.
+    expect(anon_page.locator("#label-ref-body tr").first).to_be_visible()
+    # Let the tokenless initial /printer/status load settle so the response we capture below is the
+    # one the token entry triggers, not the page-load one.
+    anon_page.wait_for_load_state("networkidle")
+    with anon_page.expect_response(lambda r: r.url.endswith("/printer/status")) as resp_info:
+        anon_page.fill("#api-token", "a-token")  # 'input' → debounced loadLabelReference()
+    assert resp_info.value.url.endswith("/printer/status"), (
+        "entering the token must refetch /printer/status so the panel can recover from a 401"
+    )
+
+
+def test_editor_red_label_is_geometry_only_match(authed_page: Page) -> None:
+    """A red/black label is shown as a geometry-only match, not a definite one (Step 8 / Codex iter 3).
+
+    62 and 62red share the same 62mm-continuous geometry, but SNMP can't prove the loaded roll is red.
+    With a plain 62mm-continuous roll, the plain ``62`` row must be a definite match (``tr.match``)
+    while ``62red`` must be the qualified geometry-only class (``tr.match-geo``) and appear under the
+    "roll colour not verified" line — never in the definite "Matching label id(s)" list.
+    """
+    authed_page.goto("/editor")
+    authed_page.evaluate(
+        """() => {
+          const status = {state:'idle', uri:'tcp://192.168.5.14:9100', reachable:true,
+            media_width_mm:62, media_type:'continuous', media_length_mm:null};
+          const loaded = renderYourPrinter(status);
+          renderLabelReference(loaded);
+        }"""
+    )
+    # The plain 62 row is a definite match; the 62red row is geometry-only (amber), not tr.match.
+    row62 = authed_page.locator("#label-ref-body tr").filter(has_text=re.compile(r"^62\b")).first
+    red_row = authed_page.locator("#label-ref-body tr").filter(has_text="62red").first
+    expect(red_row).to_have_class(re.compile(r"match-geo"))
+    assert "match-geo" not in (row62.get_attribute("class") or ""), (
+        "plain 62 must be a definite match"
+    )
+    # "Your Printer": 62red is listed under the red caveat, never the definite matching line.
+    yp = authed_page.locator("#your-printer")
+    expect(yp.locator(".yp-matches")).not_to_contain_text("62red")
+    expect(yp.locator(".yp-red")).to_contain_text("62red")
+
+
+def test_editor_use_collapses_duplicate_label_keys(authed_page: Page) -> None:
+    """ "Use" collapses a duplicate-key draft to exactly one ``label`` so no stale value survives.
+
+    Regression for the Codex finding: PyYAML keeps the LAST of duplicate mapping keys, so leaving any
+    duplicate ``label:`` (even with equal values) keeps the template structurally ambiguous — a later
+    edit to only the first line would silently revert preview/save to the stale later key. Seed two
+    top-level ``label`` keys, click Use, and assert exactly one ``label`` key remains with the id.
+    """
+    authed_page.goto("/editor")
+    authed_page.evaluate(
+        """() => { document.getElementById('yaml').value =
+`name: my-label
+label: "62"
+description: A new label
+label: "29"
+rotate: 0
+`; }"""
+    )
+    row = authed_page.locator("#label-ref-body tr").filter(has_text="62x29").first
+    row.locator("button:has-text('Use')").click()
+    yaml = authed_page.locator("#yaml").input_value()
+    label_keys = re.findall(r'^["\']?label["\']?\s*:', yaml, re.MULTILINE)
+    assert len(label_keys) == 1, f"duplicate label keys must collapse to exactly one: {yaml!r}"
+    assert 'label: "62x29"' in yaml, yaml
+
+
+def test_editor_use_preserves_indented_root_mapping(authed_page: Page) -> None:
+    """ "Use" edits the label at the document's root indentation, not always column 0 (Codex iter 5).
+
+    PyYAML accepts a uniformly-indented root mapping, so a column-0 label insert would mix indentation
+    levels and turn valid YAML into a parse error. Seed a 2-space-indented root mapping, click Use,
+    and assert the new label keeps that indentation, no column-0 ``label:`` is introduced, and exactly
+    one label key remains — i.e. every root key stays at a single consistent indent.
+    """
+    authed_page.goto("/editor")
+    authed_page.evaluate(
+        """() => { document.getElementById('yaml').value =
+`  name: my-label
+  description: A new label
+  label: "62"
+  rotate: 0
+`; }"""
+    )
+    row = authed_page.locator("#label-ref-body tr").filter(has_text="62x29").first
+    row.locator("button:has-text('Use')").click()
+    yaml = authed_page.locator("#yaml").input_value()
+    assert '  label: "62x29"' in yaml, yaml
+    assert re.search(r"^label:", yaml, re.MULTILINE) is None, (
+        f"must not introduce a column-0 label that mixes indentation: {yaml!r}"
+    )
+    assert len(re.findall(r'^\s*["\']?label["\']?\s*:', yaml, re.MULTILINE)) == 1, yaml
+    # Every non-blank line shares the same 2-space root indent — the mapping stays consistent/valid.
+    for ln in yaml.splitlines():
+        if ln.strip():
+            assert ln.startswith("  ") and not ln.startswith("   "), f"indentation drifted: {ln!r}"
+
+
 def test_unauthenticated_preview_shows_auth_error(anon_page: Page) -> None:
     """With no token seeded, the server rejects /preview and the UI surfaces the auth prompt."""
     anon_page.goto("/")

@@ -2069,6 +2069,25 @@ async def editor_page(request: Request) -> HTMLResponse:
     preview / parse / save calls are made client-side with the saved Bearer token. ``two_color`` /
     ``templates_writable`` toggle UI affordances only. 404s when EDITOR_ENABLED=false.
     """
+    # The label-reference panel: every label the configured model supports, each with the media it
+    # requires (mm). Sourced from the same _template_media()/required_media_for() the print-page
+    # badge and the /print media guard use, so the studio author sees exactly the media the server
+    # will enforce. Embedded server-side (like index.html's TEMPLATES) so the panel renders without a
+    # round-trip; the live "Your Printer" highlight is layered on client-side from /printer/status.
+    # ``red`` flags black/red two-colour media (e.g. 62red). Geometry-only media matching treats
+    # 62red and plain 62 as the same roll (see app.media.media_matches — SNMP reports no roll colour),
+    # so the studio must NOT badge a red label as a definite match against a roll whose colour it can't
+    # verify; the client surfaces red matches as geometry-only to avoid steering authors onto red
+    # media that would print black-only on a plain roll.
+    red_labels = set(_driver_cls.CAPABILITY.red_labels)
+    labels = [
+        {
+            "id": label_id,
+            "media": (m.model_dump() if (m := _template_media(label_id)) is not None else None),
+            "red": label_id in red_labels,
+        }
+        for label_id in _driver_cls.CAPABILITY.supported_labels
+    ]
     return jinja.TemplateResponse(
         request,
         "editor.html",
@@ -2076,6 +2095,7 @@ async def editor_page(request: Request) -> HTMLResponse:
             "history_ui": settings.history_ui,
             "templates_writable": settings.templates_writable,
             "templates_loadable": settings.templates_loadable,
+            "labels": labels,
         },
     )
 

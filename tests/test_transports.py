@@ -1212,7 +1212,7 @@ def test_network_query_status_uses_snmp_and_maps_fields(monkeypatch: pytest.Monk
     assert status.reachable is True
     assert status.ok is True, f"a clean SNMP status has no errors; got {status.errors}"
     assert status.model == "Brother QL-810W"
-    assert status.media_width_mm == 62, "62.0mm must map to the int contract as 62"
+    assert status.media_width_mm == 62.0, "SNMP media width flows through as a float (not rounded)"
     assert status.media_type == "continuous"
     assert status.serial == "B2Z160525"
     assert status.firmware == "Brother NC-36002w, Firmware Ver.1.00"
@@ -1283,16 +1283,19 @@ def test_network_query_status_snmp_uses_configured_community_port_timeout(
     assert captured["timeout"] == 5.5
 
 
-def test_network_query_status_snmp_rounds_die_cut_length_to_int(
+def test_network_query_status_snmp_preserves_fractional_media_dimensions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A die-cut roll's float width/length from SNMP map to the int PrinterStatus contract by
-    rounding — the unrounded float stays on PrinterSNMPStatus for the media guard's tolerance."""
+    """A die-cut roll's float width/length from SNMP flow through to PrinterStatus UNROUNDED.
+
+    Rounding here would let the web UI (which reads these via /printer/status) disagree with the
+    server-side media guard (which compares the same unrounded floats with a ±1mm tolerance) at the
+    tolerance boundary. A fractional value proves the precision is preserved, not rounded to int."""
     die_cut = PrinterSNMPStatus(
         reachable=True,
         model="Brother QL-810W",
-        media_width_mm=62.0,
-        media_length_mm=29.0,
+        media_width_mm=62.4,
+        media_length_mm=29.6,
         media_type="die_cut",
         errors=[],
     )
@@ -1300,8 +1303,8 @@ def test_network_query_status_snmp_rounds_die_cut_length_to_int(
 
     status = NetworkTransport("tcp://192.168.5.14:9100").query_status(_DUMMY_STATUS_REQUEST)
 
-    assert status.media_width_mm == 62
-    assert status.media_length_mm == 29
+    assert status.media_width_mm == 62.4, "width must keep full precision (no rounding to 62)"
+    assert status.media_length_mm == 29.6, "length must keep full precision (no rounding to 30)"
     assert status.media_type == "die_cut"
 
 

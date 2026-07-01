@@ -325,33 +325,36 @@
       }
     }
 
-    // Re-evaluate compatibility for the loaded roll: badge the current template, disable mismatching
-    // options in the dropdown (with a "(needs …)" hint), and disable the Print button when the
-    // selected template mismatches. Preview is never blocked. Called on status refresh and on
-    // template change. A no-op-ish 'unknown' (SNMP down / non-network) leaves everything enabled.
+    // Re-evaluate compatibility for the loaded roll: badge the current template, annotate (but never
+    // disable) mismatching options, and disable ONLY a real-print of a mismatching template. Called
+    // on status refresh, template change, and dry-run toggle. 'unknown' (SNMP down / non-network)
+    // leaves everything enabled — the server stays authoritative via its 409.
     function applyMediaCompat() {
       const loaded = loadedMedia();
       const sel = document.getElementById('template-select');
+      // Annotate mismatching options with a "(needs …)" hint but keep every template selectable:
+      // previewing a label meant for another roll is legitimate, and the server SKIPS the media
+      // guard for dry runs — disabling the option would lock out both. The print button is the guard.
       for (const opt of sel.options) {
         const t = templateMap[opt.value];
-        const base = t ? `${t.name} — ${t.description || ''}`.replace(/ — $/, '') : opt.value;
-        const compat = t ? mediaCompat(t.media, loaded) : 'unknown';
-        if (compat === 'mismatch') {
-          opt.disabled = true;
-          opt.textContent = `${base}  (needs ${mediaDesc(t.media)})`;
-        } else {
-          opt.disabled = false;
-          opt.textContent = base;
-        }
+        if (!t) continue;
+        const base = `${t.name} — ${t.description || ''}`.replace(/ — $/, '');
+        opt.textContent = mediaCompat(t.media, loaded) === 'mismatch'
+          ? `${base}  (needs ${mediaDesc(t.media)})`
+          : base;
       }
       const t = currentTemplate();
       const compat = t ? mediaCompat(t.media, loaded) : 'unknown';
       renderMediaBadge(t ? t.media : null, compat, loaded);
+      // Block only a real (non-dry-run) print of a mismatching template — mirrors the server, which
+      // 409s a mismatch but exempts dry_run. Preview is never blocked.
+      const dryRun = document.getElementById('dry-run').checked;
       const printBtn = document.querySelector('.btn-print');
       if (printBtn) {
-        printBtn.disabled = compat === 'mismatch';
-        printBtn.title = compat === 'mismatch'
-          ? `Loaded media (${mediaDesc(loaded)}) does not match this template (needs ${mediaDesc(t.media)}). Load the matching roll or pick a compatible template.`
+        const block = compat === 'mismatch' && !dryRun;
+        printBtn.disabled = block;
+        printBtn.title = block
+          ? `Loaded media (${mediaDesc(loaded)}) does not match this template (needs ${mediaDesc(t.media)}). Load the matching roll, pick a compatible template, or tick “Dry run”.`
           : '';
       }
     }
@@ -529,6 +532,10 @@
     }
     document.getElementById('dither').addEventListener('change', syncThresholdToggledByDither);
     syncThresholdToggledByDither();
+
+    // Toggling Dry run flips whether a media mismatch blocks the Print button (a dry run is exempt,
+    // matching the server), so re-evaluate the guard whenever it changes.
+    document.getElementById('dry-run').addEventListener('change', applyMediaCompat);
 
     // Init
     renderFields();

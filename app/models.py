@@ -494,13 +494,14 @@ class PrinterStatusResponse(BaseModel):
         default=None,
         description="Printer model name as reported by the device, e.g. 'QL-800'.",
     )
-    media_width_mm: int | None = Field(
+    media_width_mm: float | None = Field(
         default=None,
-        description="Width of the loaded media in millimetres (e.g. 62).",
+        description="Width of the loaded media in millimetres (e.g. 62). Float so the UI's media "
+        "compatibility check reads the same precision the server-side guard compares.",
     )
-    media_length_mm: int | None = Field(
+    media_length_mm: float | None = Field(
         default=None,
-        description="Length of the loaded die-cut media in mm; 0 for continuous tape.",
+        description="Length of the loaded die-cut media in mm; null/0 for continuous tape.",
     )
     media_type: str | None = Field(
         default=None,

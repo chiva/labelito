@@ -36,8 +36,12 @@ class PrinterStatus:
     # Extended fields populated by query_status() from interpret_response (None when not queried
     # or when the transport is not backed by a real printer).
     model: str | None = None
-    media_width_mm: int | None = None
-    media_length_mm: int | None = None
+    # Float, not int: the SNMP media guard compares these against the printer's reported dimensions
+    # with a ±1mm tolerance, and the web UI mirrors that comparison off this same value (via
+    # /printer/status). Rounding here would let the UI read a different number than the server-side
+    # guard's unrounded compare and disagree at the tolerance boundary, so we keep full precision.
+    media_width_mm: float | None = None
+    media_length_mm: float | None = None
     media_type: str | None = None
     status_type: str | None = None
     phase_type: str | None = None
@@ -84,8 +88,8 @@ class PrinterStatus:
             errors=errors,
             raw=decoded,
             model=str(decoded["model_name"]) if "model_name" in decoded else None,
-            media_width_mm=int(media_width) if isinstance(media_width, int) else None,
-            media_length_mm=int(media_length) if isinstance(media_length, int) else None,
+            media_width_mm=float(media_width) if isinstance(media_width, int) else None,
+            media_length_mm=float(media_length) if isinstance(media_length, int) else None,
             media_type=str(decoded["media_type"]) if "media_type" in decoded else None,
             status_type=str(decoded["status_type"]) if "status_type" in decoded else None,
             phase_type=str(decoded["phase_type"]) if "phase_type" in decoded else None,
@@ -103,9 +107,9 @@ class PrinterStatus:
         SNMP layer surfaced any error string (a nonzero hrPrinterDetectedErrorState or a non-READY
         console line), mirroring the ESC i S path's ``errors`` ⇒ ``ok=False`` contract.
 
-        Media width/length are reported by the QL in whole millimetres, so the SNMP layer's float is
-        rounded to the int contract of this dataclass without loss; the unrounded float remains on
-        :class:`PrinterSNMPStatus` for the media-compatibility guard (which uses a ±1mm tolerance).
+        Media width/length carry the SNMP layer's full float precision (no rounding): the media
+        guard compares them with a ±1mm tolerance and the web UI mirrors that compare off the same
+        value via /printer/status, so rounding here would let the two disagree at the boundary.
         ``status_type``/``phase_type`` stay None — those are ESC i S concepts with no SNMP analogue.
         The error bitmask, hrPrinterStatus enum and authoritative loaded-media name ride in ``raw``
         so later consumers (metrics, the status card) can recover them without a second query.
@@ -121,12 +125,8 @@ class PrinterStatus:
                 "media_name": snmp.media_name,
             },
             model=snmp.model,
-            media_width_mm=(
-                round(snmp.media_width_mm) if snmp.media_width_mm is not None else None
-            ),
-            media_length_mm=(
-                round(snmp.media_length_mm) if snmp.media_length_mm is not None else None
-            ),
+            media_width_mm=snmp.media_width_mm,
+            media_length_mm=snmp.media_length_mm,
             media_type=snmp.media_type,
             status_type=None,
             phase_type=None,

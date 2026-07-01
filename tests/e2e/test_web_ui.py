@@ -132,12 +132,13 @@ def test_status_banner_does_not_execute_injected_markup(authed_page: Page) -> No
 
 
 def test_media_compatibility_badges_and_guards(authed_page: Page) -> None:
-    """The print page badges each template against the loaded roll and blocks a mismatch (Step 7).
+    """The print page badges each template against the loaded roll and blocks a mismatched real print.
 
     Drives the client-side compatibility consumer deterministically: seed a continuous + a die-cut
-    template, set the loaded roll over a network (tcp://) printer, and assert the dropdown disables
-    the mismatching template, the Print button is disabled, and the badge reflects ✓/✗ — the same
-    width/form rule the server-side 409 guard applies. Preview is never blocked."""
+    template, set the loaded roll over a network (tcp://) printer, and assert the badge reflects ✓/✗
+    (the same width/form rule the server-side 409 guard applies), the Print button is blocked for a
+    mismatched real print, the mismatching option stays SELECTABLE (preview/dry-run must work), the
+    dry-run checkbox lifts the block (server exempts dry runs), and Preview is never blocked."""
     authed_page.goto("/")
     # Seed two known templates with explicit required media and options for them.
     authed_page.evaluate(
@@ -161,31 +162,38 @@ def test_media_compatibility_badges_and_guards(authed_page: Page) -> None:
           printerStatus = {state:'idle', uri:'tcp://192.168.5.14:9100', reachable:true,
             media_width_mm:62, media_type:'continuous', media_length_mm:null};
           document.getElementById('template-select').value = '__dc';
+          document.getElementById('dry-run').checked = false;
           renderFields();
           applyMediaCompat();
         }"""
     )
+    # Mismatch: real print blocked, badge ✗ — but the template stays selectable (preview/dry-run).
+    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") is True, (
+        "a mismatched real print must be blocked"
+    )
     assert (
         authed_page.eval_on_selector("#template-select option[value='__dc']", "o => o.disabled")
-        is True
-    ), "the die-cut template must be disabled against a continuous roll"
-    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") is True, (
-        "Print must be blocked for the mismatching selected template"
-    )
+        is False
+    ), "the mismatching template must stay SELECTABLE so it can be previewed / dry-run"
     assert authed_page.eval_on_selector(".btn-preview", "b => b.disabled") in (False, None), (
         "Preview must never be blocked by a media mismatch"
     )
     badge = authed_page.locator("#media-badge")
     expect(badge).to_have_class(re.compile(r"media-bad"))
     expect(badge).to_contain_text("✗")
-    assert (
-        authed_page.eval_on_selector("#template-select option[value='__cont']", "o => o.disabled")
-        is False
-    ), "the matching continuous template must stay enabled"
 
-    # Swap the loaded roll to die-cut 62x29: now the die-cut template matches → Print re-enabled, ✓.
+    # Ticking Dry run lifts the block — the server skips the media guard for dry runs.
+    authed_page.evaluate(
+        "() => { document.getElementById('dry-run').checked = true; applyMediaCompat(); }"
+    )
+    assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") is False, (
+        "a dry run of a mismatching template must be allowed"
+    )
+
+    # Untick dry-run and swap the loaded roll to die-cut 62x29: now it matches → Print enabled, ✓.
     authed_page.evaluate(
         """() => {
+          document.getElementById('dry-run').checked = false;
           printerStatus = {state:'idle', uri:'tcp://192.168.5.14:9100', reachable:true,
             media_width_mm:62, media_type:'die_cut', media_length_mm:29};
           applyMediaCompat();

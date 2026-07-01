@@ -106,6 +106,29 @@ def test_editor_download_yaml_uses_yaml_extension(authed_page: Page) -> None:
     )
 
 
+def test_status_banner_does_not_execute_injected_markup(authed_page: Page) -> None:
+    """The status banner renders untrusted text as text, never markup (SNMP-to-browser XSS guard).
+
+    A /print failure stringifies the server's 409 detail into ``showStatus``; that detail now carries
+    device/network-supplied values (the printer's SNMP ``media_name`` and console-derived error
+    strings). A spoofed/hostile printer string containing HTML must not be parsed into DOM on this
+    token-bearing page — otherwise an injected ``onerror`` could exfiltrate the localStorage API
+    token. Drives ``showStatus`` directly with a malicious payload and asserts no element/script
+    materialises and the markup survives as literal text.
+    """
+    authed_page.goto("/")
+    payload = '<img src=x onerror="window.__xss_fired = true">'
+    authed_page.evaluate("(m) => window.showStatus('Print error: ' + m, 'err')", payload)
+
+    banner = authed_page.locator(".status.err")
+    expect(banner).to_be_visible()
+    expect(banner).to_contain_text("<img src=x onerror=")  # shown verbatim, not parsed
+    assert authed_page.locator(".status.err img").count() == 0, "injected <img> must not become DOM"
+    assert not authed_page.evaluate("() => window.__xss_fired"), (
+        "onerror from an injected tag must never fire"
+    )
+
+
 def test_unauthenticated_preview_shows_auth_error(anon_page: Page) -> None:
     """With no token seeded, the server rejects /preview and the UI surfaces the auth prompt."""
     anon_page.goto("/")

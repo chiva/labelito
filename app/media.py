@@ -101,6 +101,16 @@ def media_matches(required: RequiredMedia, loaded: PrinterSNMPStatus | None) -> 
     Otherwise compares roll width (±:data:`WIDTH_TOLERANCE_MM`) and the continuous-vs-die-cut form;
     for two die-cut media it also compares the label length (±:data:`LENGTH_TOLERANCE_MM`) when the
     printer reports one. A difference on any compared axis is a :attr:`MediaMatch.MISMATCH`.
+
+    Scope — geometry only, deliberately NOT media colour. A two-colour label (e.g. ``62red``) maps to
+    the same :class:`RequiredMedia` as plain ``62`` continuous, so a red/black template can MATCH a
+    plain black/white 62mm roll here. This is intentional: SNMP exposes no reliable loaded-media
+    colour signal on the QL (``prtInputMediaName`` is ``"62mm / 2.4\""`` for both, and no verified
+    colour OID exists), so guessing colour from a media-name string would risk false mismatches that
+    block valid prints — against this guard's fail-open contract. Two-colour capability is enforced
+    separately and statically by ``_validate_two_color_supported`` in :mod:`app.main` (model + media
+    binding); a red job on plain media degrades to a black-only print (brother_ql drops the red
+    layer), a wrong-output case, not the silent prints-nothing failure this guard targets.
     """
     if loaded is None or not loaded.reachable:
         return MediaMatch.UNKNOWN

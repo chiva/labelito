@@ -345,10 +345,24 @@
     function showStatus(msg, type, {sticky} = {}) {
       const area = document.getElementById('status-area');
       if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
-      const close = sticky
-        ? '<button type="button" class="close" onclick="clearStatus({force: true})" aria-label="Dismiss">×</button>'
-        : '';
-      area.innerHTML = `<div class="status ${type}">${close}${msg}</div>`;
+      // Build the banner with DOM nodes + textContent, never innerHTML: `msg` can embed
+      // device/network-supplied text (a /print 409 detail carries the printer's SNMP media_name and
+      // console-derived error strings). Interpolating that into innerHTML on this token-bearing page
+      // is an XSS sink — a spoofed/hostile printer string could run script and exfiltrate the API
+      // token from localStorage. JSON.stringify does NOT escape <,>,/ so it is no defence here.
+      const div = document.createElement('div');
+      div.className = `status ${type}`;
+      if (sticky) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'close';
+        btn.setAttribute('aria-label', 'Dismiss');
+        btn.textContent = '×';
+        btn.addEventListener('click', () => clearStatus({force: true}));
+        div.appendChild(btn);
+      }
+      div.appendChild(document.createTextNode(msg));
+      area.replaceChildren(div);
       if (sticky) {
         area.dataset.sticky = '1';
         statusTimer = setTimeout(() => clearStatus({force: true}), STATUS_STICKY_MS);
@@ -359,7 +373,7 @@
     function clearStatus({force} = {}) {
       const area = document.getElementById('status-area');
       if (area.dataset.sticky && !force) return;
-      area.innerHTML = '';
+      area.replaceChildren();
       delete area.dataset.sticky;
       if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
     }

@@ -321,7 +321,13 @@ def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> No
 
     # A non-zero hrPrinterDetectedErrorState is a hard fault (cover open, no media, jam): the job
     # would red-blink and print nothing. Reject before sending so the failure is explicit, not a
-    # phantom 200. Console-only anomalies (bits==0) are surfaced on the status card but not blocked.
+    # phantom 200. We gate on the bitmask ONLY — the RFC 3805 machine-readable fault signal — and
+    # deliberately NOT on console text. build_snmp_status also flags any console line != "READY" as
+    # an error (so /printer/status shows ERROR for it), but transient non-fault display states
+    # (PRINTING / RECEIVING / COOLING) are exactly those non-READY lines: blocking on them would
+    # 409 a perfectly valid back-to-back print whose predecessor is still processing. Genuine faults
+    # set a bit here regardless, so the bitmask is both the correct and the false-positive-free gate;
+    # console text remains visible on the status card but is not a print blocker.
     if loaded.error_state_bits != 0:
         LABEL_ERRORS.labels(reason="printer_error").inc()
         raise HTTPException(

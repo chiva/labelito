@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 from brother_ql.exceptions import BrotherQLUnsupportedCmd
 from fastapi import (
@@ -49,6 +50,7 @@ from app.loader import (
     TemplateRegistry,
     validate_template_from_string,
 )
+from app.media import MediaMatch, RequiredMedia, media_matches, required_media_for
 from app.models import (
     CapabilityResponse,
     DraftPreviewRequest,
@@ -79,6 +81,7 @@ from app.render.i18n import Translator
 from app.transports.base import PrinterStatus, Transport, get_transport, infer_transport
 from app.transports.file import FileTransport  # noqa: F401 — registers transport
 from app.transports.network import NetworkTransport  # noqa: F401 — registers transport
+from app.transports.snmp import PrinterSNMPStatus, query_snmp_status
 from app.transports.usb import USBTransport  # noqa: F401 — registers transport
 
 log = logging.getLogger(__name__)
@@ -255,6 +258,123 @@ def _resolve_transport() -> type[Transport]:
     """Transport class for the configured printer_uri, resolved per call so a runtime-overridden
     URI (e.g. monkeypatched in tests) is always honoured."""
     return get_transport(infer_transport(settings.printer_uri))
+
+
+# ── SNMP print preflight (close the phantom-success hole) ──────────────────────────────
+# The QL-810W rasterises a job and only THEN rejects it at the hardware level when the loaded roll
+# does not match the template's media (red blink, prints nothing) — yet its :9100 NIC never returns
+# the status back-channel, so the send still records a 200. SNMP (UDP 161) is the channel that does
+# answer, so before a real print we ask SNMP what is actually loaded and refuse a mismatch up front.
+
+
+def _snmp_guard_applies() -> bool:
+    """True when the SNMP media/fault preflight should run for a real print.
+
+    Only the network transport has an SNMP agent to query, and only when SNMP is enabled. File/USB
+    transports and a disabled-SNMP deployment skip the guard entirely (the latter is the documented
+    opt-out for sites that cannot reach UDP 161)."""
+    return settings.snmp_enabled and infer_transport(settings.printer_uri) == "network"
+
+
+def _query_loaded_media() -> PrinterSNMPStatus:
+    """Blocking SNMP query of the configured network printer's loaded media + fault state.
+
+    Runs off the event loop (call via ``run_in_threadpool`` while holding ``_print_lock``, like the
+    print itself). Never raises: an unreachable/undecodable agent yields ``reachable=False`` so the
+    caller fails open. The SNMP host is the ``printer_uri`` hostname; the UDP 161 port/community/
+    timeout come from settings (independent of the :9100 print port)."""
+    host = urlparse(settings.printer_uri).hostname or ""
+    return query_snmp_status(
+        host,
+        community=settings.snmp_community,
+        port=settings.snmp_port,
+        timeout=settings.snmp_timeout,
+    )
+
+
+def _describe_media(width_mm: float | None, media_type: str | None, length_mm: float | None) -> str:
+    """Human-readable media description for a 409 detail, e.g. ``62mm continuous`` or ``62x29mm
+    die-cut``. ``:g`` trims the trailing ``.0`` from whole-millimetre values."""
+    if width_mm is None or media_type is None:
+        return "unknown media"
+    kind = "die-cut" if media_type == "die_cut" else media_type
+    if media_type == "die_cut" and length_mm is not None:
+        return f"{width_mm:g}x{length_mm:g}mm {kind}"
+    return f"{width_mm:g}mm {kind}"
+
+
+def _describe_required(required: RequiredMedia) -> str:
+    return _describe_media(required.width_mm, required.media_type, required.length_mm)
+
+
+def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> None:
+    """Reject a print up front on a hard printer fault or a loaded-vs-required media mismatch.
+
+    Pure decision logic over an already-fetched :class:`PrinterSNMPStatus` (no I/O), so it is safe to
+    call from the async handler and unit-testable without a socket. Fails open — returns without
+    raising — when SNMP is unreachable or reports no comparable media (``MediaMatch.UNKNOWN``), or
+    when the template's label is unknown to brother_ql (the downstream render surfaces that). Raises
+    :class:`HTTPException` 409 otherwise, incrementing the matching ``label_errors_total`` series."""
+    if not loaded.reachable:
+        log.warning("SNMP preflight: printer unreachable; allowing print (fail-open)")
+        return
+
+    # A non-zero hrPrinterDetectedErrorState is a hard fault (cover open, no media, jam): the job
+    # would red-blink and print nothing. Reject before sending so the failure is explicit, not a
+    # phantom 200. Console-only anomalies (bits==0) are surfaced on the status card but not blocked.
+    if loaded.error_state_bits != 0:
+        LABEL_ERRORS.labels(reason="printer_error").inc()
+        raise HTTPException(
+            409,
+            detail={
+                "msg": "Printer reports a fault and cannot print; clear it and retry",
+                "errors": loaded.errors,
+                "media_loaded": _describe_media(
+                    loaded.media_width_mm, loaded.media_type, loaded.media_length_mm
+                ),
+            },
+        )
+
+    try:
+        required = required_media_for(label_id)
+    except ValueError:
+        # An unknown label can't be compared; the render path will surface it. Don't block here.
+        log.warning("SNMP preflight: unknown label %r; skipping media check (fail-open)", label_id)
+        return
+
+    if media_matches(required, loaded) == MediaMatch.MISMATCH:
+        LABEL_ERRORS.labels(reason="media_mismatch").inc()
+        loaded_desc = (
+            loaded.media_name
+            if loaded.media_name
+            else _describe_media(loaded.media_width_mm, loaded.media_type, loaded.media_length_mm)
+        )
+        raise HTTPException(
+            409,
+            detail={
+                "msg": (
+                    f"Loaded media ({loaded_desc}) does not match the media required by template "
+                    f"label {label_id!r} ({_describe_required(required)}). Load the matching roll "
+                    "or print a template that matches what is loaded."
+                ),
+                "label": label_id,
+                "media_required": _describe_required(required),
+                "media_loaded": loaded_desc,
+            },
+        )
+
+
+async def _enforce_print_preflight(label_id: str, *, dry_run: bool) -> None:
+    """Run the SNMP media/fault preflight for a real network print, if applicable.
+
+    A no-op for dry runs (nothing reaches the printer), for non-network transports, and when SNMP is
+    disabled. Otherwise queries SNMP off the event loop and raises 409 on a fault or media mismatch
+    (fail-open on an unreachable agent). Call inside ``_print_lock`` so the query cannot race an
+    in-flight print on the same transport."""
+    if dry_run or not _snmp_guard_applies():
+        return
+    loaded = await run_in_threadpool(_query_loaded_media)
+    _raise_if_media_incompatible(label_id, loaded)
 
 
 # Job history backend (idempotency de-dup + reprint substrate). Rebuilt in startup() so runtime
@@ -1108,6 +1228,10 @@ async def print_label(request: PrintRequest) -> PrintResponse:
                     copies=prior.copies,
                     dry_run=prior.dry_run,
                 )
+        # Pre-flight the loaded media over SNMP before committing the (silent-on-this-NIC) raster
+        # send: a media mismatch or a hard printer fault is rejected with 409 here rather than
+        # recorded as a phantom success. Held inside _print_lock so the query can't race a print.
+        await _enforce_print_preflight(tmpl.label, dry_run=request.dry_run)
         return await run_in_threadpool(
             _execute_print,
             tmpl,
@@ -1222,6 +1346,9 @@ async def reprint(job_id: str) -> PrintResponse:
     # Replay the frozen reference instant so the reprinted label's computed dates are identical.
     now = datetime.fromisoformat(record.render_now) if record.render_now else datetime.now()
     async with _print_lock:
+        # Same SNMP media/fault preflight as /print: a saved job replayed against a printer now
+        # loaded with different media (or in a fault state) is rejected with 409, not phantom-printed.
+        await _enforce_print_preflight(tmpl.label, dry_run=record.dry_run)
         return await run_in_threadpool(
             _execute_print,
             tmpl,

@@ -3228,3 +3228,264 @@ def test_save_template_duplicate_internal_name_rolls_back(
     assert any("already declares the internal name" in e for e in detail["errors"])
     # The file we wrote was rolled back (it did not exist before).
     assert not (tdir / "dup-name.yaml").exists()
+
+
+# ── Step 5: SNMP media/fault print preflight (closes the phantom-success hole) ──────────
+# The QL-810W rasterises a job and only then rejects a media mismatch at the hardware level (red
+# blink, prints nothing) while its :9100 NIC stays silent — so a mismatch used to record a phantom
+# 200. /print and /reprint now query SNMP first and refuse a mismatch or a hard fault with 409.
+
+
+def _write_label_template(main_mod: object, name: str, label: str) -> None:
+    """Write a minimal no-field template bound to ``label`` into the live registry."""
+    import textwrap
+
+    yaml = textwrap.dedent(f"""\
+        name: {name}
+        description: Template bound to the {label} label
+        label: "{label}"
+        rotate: 0
+        fields:
+          required: []
+          optional: []
+        layout:
+          - {{type: text, text: "hello"}}
+    """)
+    (main_mod.registry.templates_dir / f"{name}.yaml").write_text(yaml)  # type: ignore[attr-defined]
+    main_mod.registry.load_all()  # type: ignore[attr-defined]
+
+
+def _arm_network_snmp(monkeypatch: pytest.MonkeyPatch, main_mod: object, loaded: object) -> None:
+    """Point the app at a network printer with SNMP enabled and stub the SNMP read to ``loaded``."""
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://192.168.5.14:9100")  # type: ignore[attr-defined]
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", True)  # type: ignore[attr-defined]
+    monkeypatch.setattr(main_mod, "_query_loaded_media", lambda: loaded)  # type: ignore[attr-defined]
+
+
+class _SilentNetworkTransport:
+    """A network transport whose send/query succeed without touching a socket (match-path prints)."""
+
+    def __init__(self, uri: str) -> None:
+        pass
+
+    def send(self, data: bytes):  # type: ignore[no-untyped-def]
+        from app.transports.base import PrinterStatus
+
+        return PrinterStatus.synthetic_ok()
+
+    def query_status(self, request: bytes):  # type: ignore[no-untyped-def]
+        from app.transports.base import PrinterStatus
+
+        return PrinterStatus.synthetic_ok()
+
+    def close(self) -> None:
+        pass
+
+
+def _loaded_62_continuous() -> object:
+    from app.transports.snmp import PrinterSNMPStatus
+
+    return PrinterSNMPStatus(
+        reachable=True,
+        model="Brother QL-810W",
+        media_name='62mm / 2.4"',
+        media_width_mm=62.0,
+        media_length_mm=None,
+        media_type="continuous",
+    )
+
+
+def test_print_media_mismatch_returns_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 62x29 die-cut template against the loaded 62mm continuous roll is refused with 409.
+
+    This is exactly the production failure (HTTP 200, red-blink-prints-nothing) the guard closes.
+    """
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "diecut", "62x29")
+    _arm_network_snmp(monkeypatch, main_mod, _loaded_62_continuous())
+    # If the guard let the print through it would hit the transport; make that loud.
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
+    detail = resp.json()["detail"]
+    assert detail["label"] == "62x29"
+    assert "62x29" in detail["media_required"]
+    assert "62mm" in detail["media_loaded"]
+    # The driver must never have been asked to rasterise a job that can't physically print.
+    assert main_mod._driver.render_payload.call_count == 0
+
+
+def test_print_media_match_prints(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A continuous 62 template against the loaded 62mm continuous roll passes the guard and prints."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "cont", "62")
+    _arm_network_snmp(monkeypatch, main_mod, _loaded_62_continuous())
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post("/print", json={"template": "cont", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert main_mod._driver.render_payload.call_count == 1
+
+
+def test_print_snmp_unreachable_fails_open(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SNMP unreachable ⇒ fail open: the print proceeds (we don't block on an unverifiable state)."""
+    import app.main as main_mod
+    from app.transports.snmp import PrinterSNMPStatus
+
+    _write_label_template(main_mod, "diecut", "62x29")  # would mismatch IF we could read media
+    _arm_network_snmp(monkeypatch, main_mod, PrinterSNMPStatus.unreachable())
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 200, f"Expected 200 (fail-open), got {resp.status_code}: {resp.text}"
+    assert main_mod._driver.render_payload.call_count == 1
+
+
+def test_print_printer_fault_returns_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hard printer fault (cover open / no media) reported over SNMP refuses the print with 409."""
+    import app.main as main_mod
+    from app.transports.snmp import PrinterSNMPStatus
+
+    faulted = PrinterSNMPStatus(
+        reachable=True,
+        media_width_mm=62.0,
+        media_type="continuous",
+        error_state_bits=0x10,  # a non-zero detected-error mask
+        errors=["doorOpen"],
+    )
+    _write_label_template(main_mod, "cont", "62")  # media itself matches; the fault is the blocker
+    _arm_network_snmp(monkeypatch, main_mod, faulted)
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post("/print", json={"template": "cont", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
+    detail = resp.json()["detail"]
+    assert "fault" in detail["msg"].lower()
+    assert "doorOpen" in detail["errors"]
+    assert main_mod._driver.render_payload.call_count == 0
+
+
+def test_print_dry_run_skips_snmp_guard(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dry run never reaches the printer, so the guard must not even query SNMP."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "diecut", "62x29")
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://192.168.5.14:9100")
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", True)
+
+    def _boom() -> object:
+        raise AssertionError("SNMP must not be queried for a dry run")
+
+    monkeypatch.setattr(main_mod, "_query_loaded_media", _boom)
+
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": True})
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+
+def test_print_snmp_disabled_skips_guard(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With SNMP_ENABLED=false (the documented opt-out) the guard is bypassed and a mismatch prints."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "diecut", "62x29")
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://192.168.5.14:9100")
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", False)
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    def _boom() -> object:
+        raise AssertionError("SNMP must not be queried when SNMP is disabled")
+
+    monkeypatch.setattr(main_mod, "_query_loaded_media", _boom)
+
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert main_mod._driver.render_payload.call_count == 1
+
+
+def test_print_non_network_transport_skips_guard(client: TestClient) -> None:
+    """The default file:// transport has no SNMP agent, so a die-cut template prints unguarded."""
+    import app.main as main_mod
+
+    # client fixture leaves printer_uri as file://… and snmp_enabled at its default.
+    _write_label_template(main_mod, "diecut", "62x29")
+
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert main_mod._driver.render_payload.call_count == 1
+
+
+def test_print_media_mismatch_increments_metric(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A media mismatch increments label_errors_total{reason="media_mismatch"}."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "diecut", "62x29")
+    _arm_network_snmp(monkeypatch, main_mod, _loaded_62_continuous())
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    before = main_mod.LABEL_ERRORS.labels(reason="media_mismatch")._value.get()
+    resp = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
+    assert resp.status_code == 409
+    after = main_mod.LABEL_ERRORS.labels(reason="media_mismatch")._value.get()
+    assert after == before + 1, "media_mismatch metric must increment on a rejected print"
+
+
+def test_reprint_media_mismatch_returns_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved job replayed against a printer now loaded with mismatching media is refused with 409.
+
+    First print the die-cut template over the unguarded file:// transport to seed history, then
+    switch to a network printer reporting 62mm continuous loaded and reprint — the guard fires.
+    """
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "diecut", "62x29")
+    seed = client.post("/print", json={"template": "diecut", "fields": {}, "dry_run": False})
+    assert seed.status_code == 200, f"seed print failed: {seed.text}"
+    job_id = seed.json()["job_id"]
+
+    _arm_network_snmp(monkeypatch, main_mod, _loaded_62_continuous())
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post(f"/reprint/{job_id}")
+
+    assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
+    assert resp.json()["detail"]["label"] == "62x29"
+
+
+def test_reprint_media_match_prints(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A saved continuous job replayed against the matching loaded roll reprints successfully."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "cont", "62")
+    seed = client.post("/print", json={"template": "cont", "fields": {}, "dry_run": False})
+    assert seed.status_code == 200, f"seed print failed: {seed.text}"
+    job_id = seed.json()["job_id"]
+
+    _arm_network_snmp(monkeypatch, main_mod, _loaded_62_continuous())
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post(f"/reprint/{job_id}")
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"

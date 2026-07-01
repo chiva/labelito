@@ -5,6 +5,43 @@ are deliberate trade-offs for that scope rather than bugs. They are recorded her
 conscious choice, not a surprise — and so the mitigations are ready if the project ever outgrows
 the home setup.
 
+## The network back-channel is silent → SNMP is the status channel
+
+Brother's network NIC (e.g. the QL-810W's `Brother NC-36002w`) **accepts the `:9100` TCP connection
+and the raster bytes but never returns the status frame** that the same printer returns over USB.
+Verified live: `recv` on the back-channel times out. So `NetworkTransport`'s readback sees `None`,
+which the print path treats as "no error reported" — and a job the **hardware** rejects (most often
+because the loaded media does not match the template's `label`: a `62x29` die-cut template against a
+62 mm continuous roll) makes the printer **blink red and print nothing while `/print` returns `200`
+success**. The status channel that actually works on this hardware is **SNMP** (UDP 161, community
+`public`), which answers instantly with loaded media, a reliable error bitmask, console text, and
+identity (see [docs/snmp-status.md](snmp-status.md)).
+
+**What is done about it:** over the **network** transport, `/printer/status` reads via SNMP rather
+than the unreliable `:9100` readback, and `/print` + `/reprint` run a **pre-flight media-mismatch
+guard** that rejects a loaded-vs-required mismatch with `409` before sending. This closes the common
+phantom-success case (wrong media loaded) for network printers.
+
+**Residual (accepted): the guard is fail-open, not fail-closed.** When SNMP is unreachable or
+`SNMP_ENABLED=false`, the guard does **not** block — it logs a warning and proceeds, and the UI
+badges status as unknown (`?`). A print sent while SNMP is down can therefore still hit the original
+phantom-success hole (raster accepted, hardware rejects, `200` reported). This is deliberate: a home
+print service should keep working when its *optional* status sidecar is briefly unreachable, and
+failing closed would turn every SNMP blip into a hard print outage. The guard only ever *adds*
+certainty.
+
+**Other residuals:** the guard cross-checks **media geometry**, not every possible hardware fault —
+a fault SNMP does not surface (or one that appears only after the raster is accepted) can still slip
+through. It is also **network-only**: `usb://` keeps its existing best-effort readback (which works
+at print time over USB), and `file://` is a synthetic-OK debug sink. And because the raster `send()`
+path is unchanged, a job that passes the pre-flight check but is rejected *after* the bytes are sent
+still reports `None` (unknown) → recorded `printed`, exactly as before — the pre-flight SNMP check is
+a backstop in front of that path, not a replacement for it.
+
+**Mitigation if needed later:** poll SNMP during/after the send for a post-print error transition, or
+move to a printer/firmware that returns the `:9100` status frame, so the send path itself can confirm
+the outcome instead of relying on a separate pre-flight read.
+
 ## Reprint replays the *current* template, not the original
 
 `/reprint/{job_id}` re-renders the named template from the live registry using the original

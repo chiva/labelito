@@ -9,6 +9,10 @@ repos:
     rev: v1.16.0
     hooks:
       - id: mypy
+        # Mirror [tool.mypy] exclude in pyproject.toml: tests are not type-checked.
+        # pre-commit passes staged filenames explicitly, which bypasses mypy's own
+        # exclude, so it must be restated here.
+        exclude: ^tests/
         additional_dependencies:
           - types-PyYAML
           - pydantic>=2.8.0

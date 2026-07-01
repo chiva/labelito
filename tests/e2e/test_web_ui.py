@@ -194,6 +194,16 @@ def test_media_compatibility_badges_are_advisory(authed_page: Page) -> None:
     assert authed_page.eval_on_selector(".btn-print", "b => b.disabled") in (False, None)
 
 
+def _expand_label_table(page: Page) -> None:
+    """Reveal the collapsed "All supported labels" table so its rows are visible and clickable.
+
+    The reference table now lives inside a <details> (collapsed by default). Its rows are populated
+    regardless of open state, so `.count()`/class assertions still work closed — but Playwright
+    visibility checks and `.click()` actionability need the disclosure open.
+    """
+    page.locator("details.label-table > summary").click()
+
+
 def test_editor_label_reference_lists_labels_and_use_button_sets_yaml(authed_page: Page) -> None:
     """The studio's label-reference panel lists supported labels and "Use" writes the YAML (Step 8).
 
@@ -202,6 +212,7 @@ def test_editor_label_reference_lists_labels_and_use_button_sets_yaml(authed_pag
     ``label:`` in the editor textarea so an author can pick a valid media without hand-typing.
     """
     authed_page.goto("/editor")
+    _expand_label_table(authed_page)
     body = authed_page.locator("#label-ref-body")
     expect(body.locator("tr").first).to_be_visible()
     assert body.locator("tr").count() > 0, "the label reference must list the model's labels"
@@ -223,6 +234,7 @@ def test_editor_label_reference_renders_when_status_never_resolves(authed_page: 
     # Intercept /printer/status and never fulfil it — simulates a stuck SNMP/TCP query.
     authed_page.route("**/printer/status", lambda route: None)
     authed_page.goto("/editor")
+    _expand_label_table(authed_page)
     expect(authed_page.locator("#label-ref-body tr").first).to_be_visible()
     assert authed_page.locator("#label-ref-body tr").count() > 0, (
         "the static label table must render even when printer status never resolves"
@@ -237,6 +249,7 @@ def test_editor_use_button_replaces_noncanonical_label_key(authed_page: Page) ->
     for 62x29, and assert exactly one top-level label key remains and it is the selected id.
     """
     authed_page.goto("/editor")
+    _expand_label_table(authed_page)
     authed_page.evaluate(
         """() => { document.getElementById('yaml').value =
 `name: my-label
@@ -291,6 +304,7 @@ def test_editor_label_reference_refetches_status_on_token_entry(anon_page: Page)
     highlight, so this asserts the refetch wiring, not the highlight content.
     """
     anon_page.goto("/editor")
+    _expand_label_table(anon_page)
     # The reference table itself populates from the server-embedded LABELS regardless of auth.
     expect(anon_page.locator("#label-ref-body tr").first).to_be_visible()
     # Let the tokenless initial /printer/status load settle so the response we capture below is the
@@ -342,6 +356,7 @@ def test_editor_use_collapses_duplicate_label_keys(authed_page: Page) -> None:
     top-level ``label`` keys, click Use, and assert exactly one ``label`` key remains with the id.
     """
     authed_page.goto("/editor")
+    _expand_label_table(authed_page)
     authed_page.evaluate(
         """() => { document.getElementById('yaml').value =
 `name: my-label
@@ -368,6 +383,7 @@ def test_editor_use_preserves_indented_root_mapping(authed_page: Page) -> None:
     one label key remains — i.e. every root key stays at a single consistent indent.
     """
     authed_page.goto("/editor")
+    _expand_label_table(authed_page)
     authed_page.evaluate(
         """() => { document.getElementById('yaml').value =
 `  name: my-label
@@ -399,6 +415,7 @@ def test_editor_use_handles_document_marker_and_indented_root(authed_page: Page)
     deriving the root indent, so the real indented `label:` is replaced in place.
     """
     authed_page.goto("/editor")
+    _expand_label_table(authed_page)
     authed_page.evaluate(
         """() => { document.getElementById('yaml').value =
 `---

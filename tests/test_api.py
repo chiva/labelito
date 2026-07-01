@@ -2989,6 +2989,25 @@ def test_editor_embeds_label_reference(client: TestClient) -> None:
     assert red_by_id.get("62red") is True, "the two-colour 62red label must be flagged red"
 
 
+def test_editor_starter_template_preserves_field_tokens(client: TestClient) -> None:
+    """The seed YAML's {{title}}/{{subtitle}} placeholders survive Jinja rendering of editor.html.
+
+    editor.html is served through Jinja2Templates, which processes the whole file including <script>.
+    The starter template's tokens must be wrapped in {% raw %}; without it Jinja resolves them as
+    undefined context vars and emits empty strings, silently stripping the new-label template's field
+    placeholders (regression for that bug). The {% raw %} tags themselves are stripped on render, so
+    the served page must carry the literal tokens.
+    """
+    page = client.get("/editor").text
+    assert 'text: "{{title}}"' in page, "starter YAML lost its {{title}} placeholder to Jinja"
+    assert 'text: "{{subtitle}}"' in page, "starter YAML lost its {{subtitle}} placeholder to Jinja"
+    # A correctly-rendered page never carries literal raw tags — Jinja consumes them. A stray one
+    # (e.g. a comment mentioning the tag, which reopens the block early) would emit `{% raw %}` into
+    # the <script> as a JS syntax error that a plain token-presence check cannot see.
+    assert "{% raw %}" not in page, "a literal {% raw %} leaked into the page — JS will not parse"
+    assert "{% endraw %}" not in page, "a literal {% endraw %} leaked into the page"
+
+
 def test_editor_includes_template_format_help(client: TestClient) -> None:
     """The studio carries the template-format cheatsheet pointing at the full doc (Step 9).
 

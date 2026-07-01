@@ -36,6 +36,7 @@
     dialog#confirm-dialog { border: none; border-radius: 8px; padding: 1.5rem; max-width: 26rem; color: #222; box-shadow: 0 4px 24px rgba(0,0,0,.25); }
     dialog#confirm-dialog::backdrop { background: rgba(0,0,0,.35); }
     dialog#confirm-dialog p { margin: 0; font-size: .95rem; line-height: 1.5; }
+    .label-ref summary { cursor: pointer; font-weight: 600; margin: .2rem 0 .4rem; }
     .label-ref table { width: 100%; border-collapse: collapse; font-size: .9rem; }
     .label-ref th, .label-ref td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #eee; vertical-align: middle; }
     .label-ref th { font-size: .8rem; color: #666; text-transform: uppercase; letter-spacing: .03em; }
@@ -108,15 +109,19 @@
     <div class="section-title">Label reference</div>
     <p class="muted">Every label your configured printer model supports — use one of these <code>id</code>s as the <code>label:</code> value in the YAML above. <strong>Use</strong> sets it for you. When the printer answers SNMP, the loaded roll and the matching label id(s) are highlighted below.</p>
     <div id="your-printer"></div>
-    <table>
-      <thead><tr><th>id</th><th>media</th><th></th></tr></thead>
-      <tbody id="label-ref-body"></tbody>
-    </table>
+    <details class="label-table">
+      <summary>All supported labels</summary>
+      <table>
+        <thead><tr><th>id</th><th>media</th><th></th></tr></thead>
+        <tbody id="label-ref-body"></tbody>
+      </table>
+    </details>
   </div>
 
   <!-- ── Template format cheatsheet — a quick reference; docs/template-format.md is authoritative ──
-       Wrapped in {% raw %} so the literal {{name}}/{{date}}/{{now}}/{{seq}} token examples below are
-       emitted verbatim and not interpreted as (empty) Jinja variables when this page is rendered. -->
+       The block below is wrapped in a Jinja raw guard so the literal token examples (name/date/now/
+       seq placeholders and the [[key]] form) are emitted verbatim, not interpreted as empty Jinja
+       variables on render. This comment carries no template tags so it cannot reopen the guard. -->
   {% raw %}
   <div class="card help-ref">
     <details>
@@ -683,6 +688,12 @@
     document.getElementById('yaml').addEventListener('input', debounce(doPreview, 600));
 
     // Seed with a minimal, valid starter template so the studio renders something immediately.
+    {% raw %}
+    // The title/subtitle placeholders below must survive Jinja: editor.html renders through Jinja2,
+    // which would otherwise resolve them as undefined variables and emit empty strings — silently
+    // stripping the starter template's field tokens. (The labels JSON far above sits outside this
+    // block because it genuinely needs interpolation.) Keep this comment inside the block so it
+    // carries no stray template tags that would prematurely open or close the guard.
     document.getElementById('yaml').value =
 `name: my-label
 description: A new label
@@ -695,6 +706,7 @@ layout:
   - {type: title, text: "{{title}}"}
   - {type: subtitle, text: "{{subtitle}}"}
 `;
+    {% endraw %}
     lastLoadedYaml = document.getElementById('yaml').value;  // seed counts as "not dirty"
     populateLoadSelect();
     loadLabelReference();

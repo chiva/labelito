@@ -39,7 +39,7 @@ RUN bash scripts/fetch-icons.sh /icons
 # the venv is built against the builder's glibc, so builder and runtime must not drift apart.
 # A bare `python:3.13-slim` floats to whatever Debian is current, silently diverging from the
 # builder on the next Debian release. Renovate's dockerfile manager bumps both tag and digest.
-FROM python:3.13-slim-trixie@sha256:2b7445fb71ca9cb15e9aab053fe8cb3162796f8e1d92ada12a49c766a811bc1e
+FROM python:3.14-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 
 # libcairo2 is the runtime backing cairosvg (icon-collection SVG rasterization).
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -130,6 +130,11 @@ HR_PRINTER_ERROR_BITS: tuple[tuple[int, str], ...] = (
 
 # Console text the printer shows when idle/ready; anything else is surfaced as an error string.
 CONSOLE_READY = "READY"
+# hrPrinterStatus (HOST-RESOURCES-MIB hrPrinterStatus) enum value other(1). idle(3)/printing(4)/
+# warmup(5) are the normal and transient-busy states; other(1) is what the QL-810W reports for a
+# latched fault that leaves hrPrinterDetectedErrorState at 00 (verified live 2026-06-30). The print
+# preflight gates on it (plus a non-READY console) to reject that bitmask-invisible latch.
+HR_PRINTER_STATUS_OTHER = 1
 # prtInputMediaDimFeedDir sentinels meaning "no discrete length" ⇒ continuous tape.
 CONTINUOUS_FEED_SENTINELS = (-1, -2)
 MEDIA_TYPE_CONTINUOUS = "continuous"

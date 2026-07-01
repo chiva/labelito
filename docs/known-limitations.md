@@ -61,6 +61,14 @@ alerting and recovery:
   **flushed the buffered job**, so the held label then printed. There is no remote recovery once
   latched.
 
+**Now guarded (when SNMP is reachable).** The print preflight gained a second gate alongside the error
+bitmask: a job is rejected with `409` when `hrPrinterStatus=other(1)` **and** the console line is not
+`READY` — the exact signature of this latch. Idle reads `idle(3)`/`READY` and transient-busy states
+read `printing(4)`/`warmup(5)`, so the gate fires only on the latch, not on valid back-to-back prints.
+This turns the buffered phantom-`200` into an explicit `409` rather than silently queueing labels that
+never print. The residual stands only when SNMP is unreachable or disabled (the guard is fail-open),
+and a manual reset is still the only way to *clear* an existing latch.
+
 This is the strongest argument for the guard being **pre-flight**: the failure it prevents is not a
 clean one-shot rejection but a device-side lockout that silently buffers jobs behind a `200` and needs
 someone physically at the printer to clear. The only reliable fix is to never send the mismatching job.

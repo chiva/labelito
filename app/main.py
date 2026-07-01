@@ -85,7 +85,13 @@ from app.render.i18n import Translator
 from app.transports.base import PrinterStatus, Transport, get_transport, infer_transport
 from app.transports.file import FileTransport  # noqa: F401 — registers transport
 from app.transports.network import NetworkTransport  # noqa: F401 — registers transport
-from app.transports.snmp import HR_PRINTER_ERROR_BITS, PrinterSNMPStatus, query_snmp_status
+from app.transports.snmp import (
+    CONSOLE_READY,
+    HR_PRINTER_ERROR_BITS,
+    HR_PRINTER_STATUS_OTHER,
+    PrinterSNMPStatus,
+    query_snmp_status,
+)
 from app.transports.usb import USBTransport  # noqa: F401 — registers transport
 
 log = logging.getLogger(__name__)
@@ -475,16 +481,38 @@ def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> No
         )
         return
 
-    # A non-zero hrPrinterDetectedErrorState is a hard fault (cover open, no media, jam): the job
-    # would red-blink and print nothing. Reject before sending so the failure is explicit, not a
-    # phantom 200. We gate on the bitmask ONLY — the RFC 3805 machine-readable fault signal — and
-    # deliberately NOT on console text. build_snmp_status also flags any console line != "READY" as
-    # an error (so /printer/status shows ERROR for it), but transient non-fault display states
-    # (PRINTING / RECEIVING / COOLING) are exactly those non-READY lines: blocking on them would
-    # 409 a perfectly valid back-to-back print whose predecessor is still processing. Genuine faults
-    # set a bit here regardless, so the bitmask is both the correct and the false-positive-free gate;
-    # console text remains visible on the status card but is not a print blocker.
+    # Two fault gates, both rejecting before send so a fault is an explicit 409, never a phantom 200.
+    #
+    # (1) A non-zero hrPrinterDetectedErrorState — the RFC 3805 machine-readable fault signal (cover
+    # open, no media, jam): the job would red-blink and print nothing. We gate on the bitmask, NOT on
+    # console text: build_snmp_status flags any console line != "READY" as an error, but transient
+    # non-fault display states (PRINTING / RECEIVING / COOLING) are also non-READY, and blocking on
+    # them would 409 a valid back-to-back print whose predecessor is still processing.
     if loaded.error_state_bits != 0:
+        LABEL_ERRORS.labels(reason="printer_error").inc()
+        raise HTTPException(
+            409,
+            detail={
+                "msg": "Printer reports a fault and cannot print; clear it and retry",
+                "errors": loaded.errors,
+                "media_loaded": _describe_media(
+                    loaded.media_width_mm, loaded.media_type, loaded.media_length_mm
+                ),
+            },
+        )
+
+    # (2) A latched fault the bitmask MISSES. Verified live on the QL-810W (2026-06-30): sending a
+    # die-cut template to a continuous roll red-blinks and *latches* the printer — every later job,
+    # even a media-matching one, is buffered and silently returns 200 until a manual reset — yet
+    # hrPrinterDetectedErrorState stays 00. It surfaces only as hrPrinterStatus=other(1) with a
+    # non-READY console line. Gate on BOTH signals so we reject the latch without re-introducing the
+    # transient-state false positives gate (1) avoids: idle reads idle(3)/"READY" and PRINTING/WARMUP
+    # read printing(4)/warmup(5), so other(1) + a non-READY console uniquely identifies the latch.
+    if (
+        loaded.printer_status == HR_PRINTER_STATUS_OTHER
+        and loaded.console_text is not None
+        and loaded.console_text.strip().upper() != CONSOLE_READY
+    ):
         LABEL_ERRORS.labels(reason="printer_error").inc()
         raise HTTPException(
             409,

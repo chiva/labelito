@@ -151,6 +151,12 @@ and file transports ignore SNMP entirely.
   template shows a red **✗** media badge and a `(needs …)` suffix on its dropdown option, but the
   option and the Print button stay enabled (preview/dry-run still work, and a stale client status
   must never hard-block) — the server's 409 is the authoritative gate. The editor is untouched.
+- **Pre-flight fault gate (two signals).** Before sending, the same guard also `409`s on a printer
+  fault, incrementing `label_errors_total{reason="printer_error"}`: (1) a non-zero
+  `hrPrinterDetectedErrorState` bitmask (cover open, no media, jam), and (2) a *latched* fault that
+  the bitmask misses — `hrPrinterStatus=other(1)` with a non-`READY` console — verified live on the
+  QL-810W (see [known limitations](known-limitations.md)). Transient states (`printing(4)`/`warmup(5)`)
+  pass, so back-to-back prints are not blocked.
 - **Fail-open.** SNMP unreachable or `SNMP_ENABLED=false` ⇒ the guard logs a warning and proceeds;
   the UI badges status unknown (`?`). See the [accepted residuals](known-limitations.md#the-network-back-channel-is-silent--snmp-is-the-status-channel).
 - **Telemetry** (opt-in, `METRICS_ENABLED=true`). SNMP-derived gauges — `printer_up`,

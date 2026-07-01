@@ -3919,6 +3919,62 @@ def test_print_printer_fault_returns_409(
     assert main_mod._driver.render_payload.call_count == 0
 
 
+def test_print_latched_fault_without_error_bits_returns_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The QL-810W latch verified live (2026-06-30): a fault that leaves the error bitmask at 00 but
+    shows hrPrinterStatus=other(1) with a non-READY console must still 409 — even with matching media,
+    so the media gate cannot be what catches it. Otherwise the job buffers and returns a phantom 200."""
+    import app.main as main_mod
+    from app.transports.snmp import HR_PRINTER_STATUS_OTHER, PrinterSNMPStatus
+
+    latched = PrinterSNMPStatus(
+        reachable=True,
+        media_width_mm=62.0,
+        media_type="continuous",  # media MATCHES the template below; the latch is the only blocker
+        error_state_bits=0,  # the bitmask is blind to this fault class
+        printer_status=HR_PRINTER_STATUS_OTHER,
+        console_text="ERROR",
+        errors=["console: ERROR"],
+    )
+    _write_label_template(main_mod, "cont", "62")
+    _arm_network_snmp(monkeypatch, main_mod, latched)
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post("/print", json={"template": "cont", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
+    assert "fault" in resp.json()["detail"]["msg"].lower()
+    assert main_mod._driver.render_payload.call_count == 0
+
+
+def test_print_transient_busy_state_still_prints(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The latch gate must not over-block: a transiently-busy printer (hrPrinterStatus=printing(4),
+    non-READY console) with matching media is not a fault and must print, not 409 — this is the
+    back-to-back-print false positive the bitmask-only gate was originally written to avoid."""
+    import app.main as main_mod
+    from app.transports.snmp import PrinterSNMPStatus
+
+    busy = PrinterSNMPStatus(
+        reachable=True,
+        media_width_mm=62.0,
+        media_type="continuous",
+        error_state_bits=0,
+        printer_status=4,  # hrPrinterStatus printing(4) — transient, not other(1)
+        console_text="PRINTING",
+    )
+    _write_label_template(main_mod, "cont", "62")
+    _arm_network_snmp(monkeypatch, main_mod, busy)
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    resp = client.post("/print", json={"template": "cont", "fields": {}, "dry_run": False})
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert main_mod._driver.render_payload.call_count == 1
+
+
 def test_print_dry_run_skips_snmp_guard(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

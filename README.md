@@ -51,7 +51,7 @@ Highlights:
 - **Pluggable drivers & transports** — adding a Brother QL model is a single capability-table
   entry; the transport layer (network / USB / file) is a registry of small classes.
 - **Web UI** — template picker with dynamic field inputs, live preview, and a print button at `/`.
-- **Observability** — Prometheus counters at `/metrics` and a `/health` endpoint for container
+- **Observability** — opt-in Prometheus metrics at `/metrics` (set `METRICS_ENABLED=true`) and a `/health` endpoint for container
   health checks.
 - **Fail-closed auth** — set `API_TOKEN` to require a bearer token on all write/preview
   endpoints. The service refuses to start with neither a token nor an explicit
@@ -169,6 +169,8 @@ working directory; names are case-insensitive). Defaults come from `app/config.p
 | `TEMPLATES_LOADABLE` | `true` | Permit the studio to load an existing template's raw YAML for editing via `GET /templates/{name}/source` (and show the "Load existing template" picker). Default true — read-only and safe: the name is resolved by an in-memory registry lookup, never as a filesystem path, so traversal/unrelated-file reads are impossible. Set `false` to hide the picker and 404 the route. Requires `EDITOR_ENABLED=true`. |
 | `MIN_LENGTH_PX` | `200` | Minimum rendered length for **continuous** labels (clamps tiny labels up). |
 | `MAX_LENGTH_PX` | `6000` | Maximum rendered length for continuous labels (guards against runaway height). |
+| `METRICS_ENABLED` | `false` | Prometheus exposition is **opt-in**. While disabled (default) the metrics endpoint 404s as if absent; set `true` to expose it. Telemetry gauges are still updated in-memory regardless — just not served until enabled. The endpoint carries **no auth** (Prometheus scrapers don't send tokens), so restrict it at the network layer if the deployment is not trusted. `printer_info` exposes only the model; serial/firmware/hostname stay on the token-protected `/printer/status`. |
+| `METRICS_PATH` | `/metrics` | Path the exposition is served at (when enabled) — on the **same port/app** as the web UI (there is no separate metrics port). Relocate it (e.g. `/internal/metrics`) if convenient; it is not advertised in `/openapi.json`. Read at startup. |
 
 **`PRINTER_URI` formats by transport:**
 
@@ -263,7 +265,7 @@ Interactive OpenAPI docs are served by FastAPI at `/docs` (and the schema at `/o
 | `GET` | `/history/list` | ✓ | Paginated job history (`?offset=&limit=`), newest first. 404 when `HISTORY_UI=false`. |
 | `DELETE` | `/history/{job_id}` | ✓ | Delete a single history entry. 404 when the entry is missing or `HISTORY_UI=false`. |
 | `POST` | `/reload` | ✓ | Hot-reload all templates and translation catalogs. Valid files load; any malformed file is skipped and reported with a `422` (so a YAML typo can't silently drop a template). Returns `200` only when everything loaded cleanly. |
-| `GET` | `/metrics` | – | Prometheus exposition (`labels_printed_total`, `label_errors_total`, `last_print_timestamp_seconds`). |
+| `GET` | `/metrics` | – | Prometheus exposition. **Opt-in** — 404s unless `METRICS_ENABLED=true`. Print metrics (`labels_printed_total`, `label_errors_total`, `last_print_timestamp_seconds`) plus SNMP-derived printer telemetry (`printer_up`, `printer_detected_error_state{condition}`, `printer_label_lifecount`, `printer_info`, `printer_media_info`, `printer_status_last_query_timestamp_seconds`). The printer gauges reflect the **last** SNMP query (on a print or a `/printer/status` call); a scrape never triggers a live query. |
 
 \* Only enforced when `API_TOKEN` is set.
 

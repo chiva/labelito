@@ -85,3 +85,65 @@ def test_snmp_timeout_inf_rejected() -> None:
 def test_snmp_timeout_valid_loads() -> None:
     """A valid SNMP_TIMEOUT (e.g. 10.0) loads successfully and is stored as-is."""
     assert Settings(snmp_timeout=10.0).snmp_timeout == 10.0
+
+
+# ── Metrics path (METRICS_PATH) ────────────────────────────────────────────────────
+def test_metrics_path_default() -> None:
+    """The Prometheus exposition defaults to /metrics (same app/port as the rest of the API)."""
+    assert Settings().metrics_path == "/metrics"
+
+
+def test_metrics_path_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """METRICS_PATH relocates the exposition path."""
+    monkeypatch.setenv("METRICS_PATH", "/internal/telemetry")
+    assert Settings().metrics_path == "/internal/telemetry"
+
+
+def test_metrics_path_adds_leading_slash() -> None:
+    """A path without a leading slash is normalized to a valid route mount."""
+    assert Settings(metrics_path="telemetry").metrics_path == "/telemetry"
+
+
+def test_metrics_path_strips_trailing_slash() -> None:
+    """A trailing slash is stripped so it matches a scrape of the bare path."""
+    assert Settings(metrics_path="/metrics/").metrics_path == "/metrics"
+
+
+def test_metrics_path_empty_rejected() -> None:
+    """An empty or root METRICS_PATH would shadow the web UI and is rejected."""
+    with pytest.raises(ValidationError):
+        Settings(metrics_path="/")
+    with pytest.raises(ValidationError):
+        Settings(metrics_path="")
+
+
+def test_metrics_enabled_default_off() -> None:
+    """Metrics are opt-in: the exposition is disabled by default."""
+    assert Settings().metrics_enabled is False
+
+
+def test_metrics_enabled_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """METRICS_ENABLED=true opts into the Prometheus exposition."""
+    monkeypatch.setenv("METRICS_ENABLED", "true")
+    assert Settings().metrics_enabled is True
+
+
+def test_metrics_path_nested_literal_allowed() -> None:
+    """A nested literal path is fine (it is mounted verbatim)."""
+    assert Settings(metrics_path="/internal/metrics").metrics_path == "/internal/metrics"
+    assert Settings(metrics_path="/m-1_2.3").metrics_path == "/m-1_2.3"
+
+
+def test_metrics_path_rejects_path_parameters_and_wildcards() -> None:
+    """Brace path-parameters / converters must be rejected — they would register a catch-all route
+    in FastAPI (``/{p:path}`` shadows every page; ``/metrics/{x}`` serves metrics for any suffix)."""
+    for bad in ("/{path:path}", "/metrics/{secret}", "/{x}"):
+        with pytest.raises(ValidationError):
+            Settings(metrics_path=bad)
+
+
+def test_metrics_path_rejects_non_literal_characters() -> None:
+    """Query/fragment/space and empty internal segments are rejected (literal segments only)."""
+    for bad in ("/a?b=c", "/a#frag", "/a b", "/a//b"):
+        with pytest.raises(ValidationError):
+            Settings(metrics_path=bad)

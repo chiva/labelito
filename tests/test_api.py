@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 import re
 from pathlib import Path
 
@@ -3510,6 +3511,273 @@ def _loaded_62_continuous() -> object:
         media_length_mm=None,
         media_type="continuous",
     )
+
+
+# ── SNMP-derived telemetry metrics (Step 11) ─────────────────────────────────────────────────────
+def _loaded_faulted() -> object:
+    """A reachable printer with a hard fault (doorOpen), built from real SNMP BITS bytes.
+
+    Goes through the production decoder (``build_snmp_status``) so error_state_bits and the decoded
+    ``errors`` carry exactly what a live printer would produce (mask 8, ``['doorOpen']``) — not a
+    synthetic ``1 << 4`` that would mask the BITS bit-numbering bug.
+    """
+    from app.transports.snmp import (
+        OID_HR_DEVICE_DESCR,
+        OID_HR_PRINTER_DETECTED_ERROR_STATE,
+        OID_PRT_INPUT_MEDIA_DIM_FEED_DIR,
+        OID_PRT_INPUT_MEDIA_DIM_XFEED_DIR,
+        OID_PRT_INPUT_MEDIA_NAME,
+        OID_PRT_MARKER_LIFE_COUNT,
+        build_snmp_status,
+    )
+
+    return build_snmp_status(
+        {
+            OID_HR_DEVICE_DESCR: "Brother QL-810W",
+            OID_HR_PRINTER_DETECTED_ERROR_STATE: b"\x08",  # doorOpen (BITS, MSB-first)
+            OID_PRT_INPUT_MEDIA_NAME: '62mm / 2.4"',
+            OID_PRT_INPUT_MEDIA_DIM_XFEED_DIR: 6200,  # 62.00 mm
+            OID_PRT_INPUT_MEDIA_DIM_FEED_DIR: -1,  # continuous
+            OID_PRT_MARKER_LIFE_COUNT: 42,
+        }
+    )
+
+
+def _metric_sample(metric: object, **labels: str) -> float | None:
+    """Read a Prometheus sample value by exact label match (None if absent)."""
+    for fam in metric.collect():  # type: ignore[attr-defined]
+        for s in fam.samples:
+            if all(s.labels.get(k) == v for k, v in labels.items()):
+                return s.value
+    return None
+
+
+def test_print_records_snmp_telemetry_metrics(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real network print refreshes the SNMP telemetry gauges from the preflight query (Step 11)."""
+    import app.main as main_mod
+
+    _write_label_template(main_mod, "plain62", "62")
+    _arm_network_snmp(monkeypatch, main_mod, _loaded_faulted())
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    # The fault makes the print 409, but telemetry is recorded before the guard decision.
+    resp = client.post("/print", json={"template": "plain62", "fields": {}})
+    assert resp.status_code == 409
+
+    assert _metric_sample(main_mod.PRINTER_UP) == 1
+    # Real BITS decode: doorOpen (mask 8) — NOT noToner, which the buggy 1<<index math produced.
+    assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="doorOpen") == 1
+    assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="noToner") == 0
+    assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="jammed") == 0
+    assert _metric_sample(main_mod.PRINTER_LABEL_LIFECOUNT) == 42
+    # printer_info exposes only the model (already public via /health); serial/firmware/hostname are
+    # deliberately NOT on the unauthenticated metrics surface.
+    assert _metric_sample(main_mod.PRINTER_INFO, model="Brother QL-810W") == 1
+    info_label_keys = {
+        k for fam in main_mod.PRINTER_INFO.collect() for s in fam.samples for k in s.labels
+    }
+    assert info_label_keys <= {"model"}, (
+        f"printer_info must not leak identity labels: {info_label_keys}"
+    )
+    assert _metric_sample(main_mod.PRINTER_MEDIA_INFO, media_type="continuous", width_mm="62") == 1
+
+
+def test_print_snmp_unreachable_sets_printer_down(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreachable agent on a print sets printer_up=0 and clears every error condition."""
+    import app.main as main_mod
+    from app.transports.snmp import PrinterSNMPStatus
+
+    _write_label_template(main_mod, "plain62b", "62")
+    _arm_network_snmp(monkeypatch, main_mod, PrinterSNMPStatus.unreachable())
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _SilentNetworkTransport)
+
+    # Fail-open: the print proceeds (200) without a media/fault check.
+    assert client.post("/print", json={"template": "plain62b", "fields": {}}).status_code == 200
+    # printer_up=0 means "queried and did not answer"; fault conditions become unknown (NaN), not a
+    # misleading 0 ("confirmed no fault") on a printer that did not respond.
+    assert _metric_sample(main_mod.PRINTER_UP) == 0
+    assert math.isnan(_metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="doorOpen"))
+    assert math.isnan(_metric_sample(main_mod.PRINTER_LABEL_LIFECOUNT))
+
+
+def test_label_lifecount_resets_to_unknown_when_missing_after_success() -> None:
+    """A previously-observed life-count must not linger as if current when the OID later drops out.
+
+    Regression for the Codex finding: record a reachable printer reporting count 42, then a reachable
+    printer whose optional prtMarkerLifeCount is absent — the gauge must become NaN (unknown), not
+    keep showing 42 with a freshly-refreshed query timestamp.
+    """
+    import app.main as main_mod
+    from app.transports.snmp import PrinterSNMPStatus
+
+    main_mod._record_snmp_metrics(_loaded_faulted())  # count 42 observed
+    assert _metric_sample(main_mod.PRINTER_LABEL_LIFECOUNT) == 42
+
+    main_mod._record_snmp_metrics(
+        PrinterSNMPStatus(reachable=True, model="Brother QL-810W", label_lifecount=None)
+    )
+    assert math.isnan(_metric_sample(main_mod.PRINTER_LABEL_LIFECOUNT)), (
+        "a dropped optional counter must read unknown, not the stale prior value"
+    )
+
+
+def test_printer_status_refreshes_telemetry_metrics(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A /printer/status query (network + SNMP) refreshes the telemetry gauges too (Step 11)."""
+    import app.main as main_mod
+    from app.transports.base import PrinterStatus
+
+    class _FromSnmpTransport:
+        def __init__(self, uri: str) -> None:
+            pass
+
+        def send(self, data: bytes) -> PrinterStatus | None:
+            return None
+
+        def query_status(self, request: bytes) -> PrinterStatus:
+            return PrinterStatus.from_snmp(_loaded_faulted())  # type: ignore[arg-type]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://192.168.5.14:9100")
+    monkeypatch.setattr(main_mod.settings, "snmp_enabled", True)
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _FromSnmpTransport)
+
+    client.get("/printer/status")
+    assert _metric_sample(main_mod.PRINTER_UP) == 1
+    assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="doorOpen") == 1
+    assert _metric_sample(main_mod.PRINTER_LABEL_LIFECOUNT) == 42
+
+
+def test_metrics_route_is_mounted_at_configured_path() -> None:
+    """The /metrics route is registered from settings.metrics_path, not a hardcoded literal (Step 11).
+
+    Guards against a regression to a hardcoded "/metrics" that would ignore METRICS_PATH. The path is
+    resolved at import, so this asserts the wiring binds the `metrics` handler to the configured path.
+    """
+    import app.main as main_mod
+
+    metrics_paths = [
+        route.path
+        for route in main_mod.app.routes
+        if getattr(route, "endpoint", None) is main_mod.metrics
+    ]
+    assert metrics_paths == [main_mod.settings.metrics_path], metrics_paths
+
+
+def test_metrics_disabled_returns_404_for_all_methods(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """METRICS_ENABLED=false makes the path TRULY absent — every method 404s like a missing path.
+
+    Regression for the Codex finding: a per-route dependency would 404 GET but 405 (Allow: GET) a
+    POST, leaking that the (possibly relocated) path exists. The middleware gate must 404 uniformly,
+    matching a genuinely-missing path's status for the same methods.
+    """
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "metrics_enabled", False)
+    missing_get = client.get("/no-such-route-xyz").status_code
+    missing_post = client.post("/no-such-route-xyz").status_code
+    assert client.get("/metrics").status_code == missing_get == 404
+    assert client.post("/metrics").status_code == missing_post == 404
+    assert (
+        client.options("/metrics").status_code == client.options("/no-such-route-xyz").status_code
+    )
+
+
+def test_unknown_snmp_error_bits_surface_as_unknown_condition(client: TestClient) -> None:
+    """A nonzero-but-unrecognized fault bit surfaces as condition="unknown"=1, not a silent healthy.
+
+    Regression for the Codex finding: an ``unknownErrorBits:*`` fault (firmware skew / nonstandard
+    bit) would otherwise leave every known condition at 0 and read as healthy while the print guard
+    rejects. Built from the real ``b"\\x00\\x01"`` unknown-bit fixture through the production decoder.
+    """
+    import app.main as main_mod
+    from app.transports.snmp import OID_HR_PRINTER_DETECTED_ERROR_STATE, build_snmp_status
+
+    status = build_snmp_status({OID_HR_PRINTER_DETECTED_ERROR_STATE: b"\x00\x01"})
+    assert any(e.startswith("unknownErrorBits") for e in status.errors), status.errors
+    main_mod._record_snmp_metrics(status)
+    assert _metric_sample(main_mod.PRINTER_UP) == 1
+    assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="unknown") == 1
+    assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="doorOpen") == 0
+
+
+def test_metrics_path_is_literal_not_a_prefix(client: TestClient) -> None:
+    """The metrics route is a literal path, not a catch-all/prefix — a suffix does not match it."""
+    assert client.get("/metrics").status_code == 200
+    assert client.get("/metrics/anything").status_code == 404
+
+
+def test_metrics_path_collision_is_rejected() -> None:
+    """A METRICS_PATH equal to an existing route is rejected fail-fast (Codex finding).
+
+    /metrics is already registered at import, so re-running the registration detects the collision —
+    exercising the guard without re-importing the module.
+    """
+    import app.main as main_mod
+
+    with pytest.raises(RuntimeError, match="already served"):
+        main_mod._register_metrics_route()
+
+
+def test_metrics_path_shadowed_by_dynamic_route_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A literal METRICS_PATH captured by a DYNAMIC route is rejected (Codex finding).
+
+    /templates/foo/source is a literal string that no exact-match guard would flag, yet the earlier
+    GET /templates/{name}/source route fully matches it — so a scrape would silently hit the template
+    handler. The matcher-based guard must detect this parameterized shadowing.
+    """
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "metrics_path", "/templates/foo/source")
+    with pytest.raises(RuntimeError, match="already served"):
+        main_mod._register_metrics_route()
+
+
+def test_metrics_route_absent_from_openapi_schema(client: TestClient) -> None:
+    """The metrics route is not advertised in /openapi.json (even when enabled) — Codex finding.
+
+    Otherwise the unauthenticated schema would disclose a relocated METRICS_PATH, undermining the
+    point of moving telemetry off a well-known URL.
+    """
+    import app.main as main_mod
+
+    paths = client.get("/openapi.json").json()["paths"]
+    assert main_mod.settings.metrics_path not in paths
+
+
+def test_metrics_scrape_does_not_trigger_live_snmp(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare /metrics scrape reports last-known gauges and never triggers a live SNMP query (model A)."""
+    import app.main as main_mod
+    import app.transports.snmp as snmp_mod
+
+    calls = {"n": 0}
+
+    def _counting_query(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        from app.transports.snmp import PrinterSNMPStatus
+
+        return PrinterSNMPStatus.unreachable()
+
+    monkeypatch.setattr(snmp_mod, "query_snmp_status", _counting_query)
+    monkeypatch.setattr(main_mod, "query_snmp_status", _counting_query)
+
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert "printer_up" in resp.text
+    assert calls["n"] == 0, "/metrics must not perform a live SNMP query per scrape"
 
 
 def test_print_media_mismatch_returns_409(

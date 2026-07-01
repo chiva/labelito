@@ -312,6 +312,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     monkeypatch.setattr(main_mod.settings, "allow_unauthenticated", True)
     monkeypatch.setattr(main_mod.settings, "history_mode", "memory")
     monkeypatch.setattr(main_mod.settings, "editor_enabled", True)
+    # Metrics are opt-in (default off); enable them in the harness so metrics-behaviour tests exercise
+    # the live endpoint. The dedicated disabled-gate test overrides this back to False.
+    monkeypatch.setattr(main_mod.settings, "metrics_enabled", True)
 
     # Fresh in-memory history per test (TestClient is not entered as a context manager, so the
     # startup() rebuild does not fire — build it here, mirroring registry/translator/engine).

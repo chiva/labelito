@@ -40,6 +40,7 @@ from PIL import Image, UnidentifiedImageError
 from prometheus_client import Counter, Gauge, generate_latest
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
+from starlette.routing import Match
 
 from app.config import settings
 from app.drivers.brother_ql import BrotherQLDriver
@@ -84,7 +85,7 @@ from app.render.i18n import Translator
 from app.transports.base import PrinterStatus, Transport, get_transport, infer_transport
 from app.transports.file import FileTransport  # noqa: F401 — registers transport
 from app.transports.network import NetworkTransport  # noqa: F401 — registers transport
-from app.transports.snmp import PrinterSNMPStatus, query_snmp_status
+from app.transports.snmp import HR_PRINTER_ERROR_BITS, PrinterSNMPStatus, query_snmp_status
 from app.transports.usb import USBTransport  # noqa: F401 — registers transport
 
 log = logging.getLogger(__name__)
@@ -102,6 +103,142 @@ PREFLIGHT_SNMP_UNREACHABLE = Counter(
     "print_preflight_snmp_unreachable_total",
     "Real prints allowed without an SNMP media/fault check because SNMP was unreachable",
 )
+
+# ── SNMP-derived printer telemetry (network transport only) ───────────────────────────────────────
+# Freshness model (A) — last-known, refreshed lazily. The app has no background printer poll
+# (docs/known-limitations.md), so these gauges are refreshed only when the printer is actually queried
+# over SNMP: on a /print preflight and on a /printer/status query. /metrics reports the last-known
+# values (which may be stale) and NEVER triggers a live SNMP query per scrape — that would add UDP 161
+# traffic and print-lock contention for no real benefit on a home app. PRINTER_STATUS_LAST_QUERY_TS
+# makes the staleness visible so an alert can flag "last queried too long ago" if desired.
+#
+# State model — unknown/not-applicable is NaN, never a misleading 0. A scalar gauge defaults to 0,
+# which would read as "printer down" / "zero labels" on a cold start, on a non-network (USB/file)
+# deployment, or with SNMP disabled — none of which ever query SNMP. So these are initialized to NaN
+# (Prometheus treats NaN as no-data: `printer_up == 0` alerts do not fire on it) and only take a
+# concrete value once an SNMP query actually observes one. ``printer_up`` 0 therefore means "queried
+# and did not answer" (genuinely down), distinct from NaN "never queried / not applicable".
+_METRIC_UNKNOWN = float("nan")
+PRINTER_UP = Gauge(
+    "printer_up", "1 printer answered the last SNMP query, 0 queried-but-down, NaN not-queried"
+)
+PRINTER_UP.set(_METRIC_UNKNOWN)
+PRINTER_DETECTED_ERROR_STATE = Gauge(
+    "printer_detected_error_state",
+    "hrPrinterDetectedErrorState per condition: 1 set, 0 clear, NaN when the printer is unreachable",
+    ["condition"],
+)
+PRINTER_LABEL_LIFECOUNT = Gauge(
+    "printer_label_lifecount", "Lifetime label count from prtMarkerLifeCount (NaN when unobserved)"
+)
+PRINTER_LABEL_LIFECOUNT.set(_METRIC_UNKNOWN)
+# Only the model is exported (already public via /health). serial/firmware/hostname are stable device
+# identifiers and are deliberately NOT put on the unauthenticated metrics surface — they stay on the
+# token-protected /printer/status. (/metrics carries no token; leaking identifiers there would be a
+# weaker gate than the status route that returns the same fields.)
+PRINTER_INFO = Gauge("printer_info", "Printer model (value always 1)", ["model"])
+PRINTER_MEDIA_INFO = Gauge(
+    "printer_media_info",
+    "Currently loaded media (value always 1)",
+    ["media_name", "media_type", "width_mm"],
+)
+PRINTER_STATUS_LAST_QUERY_TS = Gauge(
+    "printer_status_last_query_timestamp_seconds",
+    "Unix timestamp of the last SNMP printer query (NaN until one happens, so staleness is visible)",
+)
+PRINTER_STATUS_LAST_QUERY_TS.set(_METRIC_UNKNOWN)
+
+
+def _set_printer_metrics(
+    *,
+    reachable: bool,
+    error_conditions: list[str],
+    label_lifecount: int | None,
+    model: str | None,
+    media_name: str | None,
+    media_type: str | None,
+    media_width_mm: float | None,
+) -> None:
+    """Update the SNMP telemetry gauges from one query's decoded values.
+
+    The single sink for both the /print preflight and the /printer/status query. Per-condition error
+    gauges are driven off the SNMP layer's already-DECODED condition names (``error_conditions``), not
+    re-derived from the raw bitmask: hrPrinterDetectedErrorState is a BITS value whose bit numbering
+    (MSB-first, octet-width-dependent) does not match a plain ``1 << index``, so re-bit-shifting the
+    mask here would misclassify real faults. ``printer_info``/``printer_media_info`` are cleared before
+    each set so a changed model/loaded-media never leaves a stale series exported at 1.
+
+    Unknown is represented as NaN, never a misleading concrete value: when the printer is unreachable
+    ``printer_up`` is 0 (queried-and-down) but every per-condition gauge and the life-count become NaN
+    — we cannot know fault state or the counter on a printer that did not answer, and a stale prior
+    value must not look current just because the query timestamp refreshed.
+    """
+    active = set(error_conditions)
+    PRINTER_UP.set(1 if reachable else 0)
+    PRINTER_STATUS_LAST_QUERY_TS.set_to_current_time()
+    for _bit, name in HR_PRINTER_ERROR_BITS:
+        PRINTER_DETECTED_ERROR_STATE.labels(condition=name).set(
+            (1 if name in active else 0) if reachable else _METRIC_UNKNOWN
+        )
+    # A nonzero hrPrinterDetectedErrorState the SNMP layer couldn't map to a known RFC 3805 bit is
+    # surfaced as an ``unknownErrorBits:*`` string (firmware version skew / nonstandard bit). Without
+    # a catch-all series, such a fault would leave every known condition at 0 and read as healthy
+    # while the print preflight rejects the job. Expose it as condition="unknown" so alerting still
+    # fires on any fault the guard would block.
+    has_unknown_fault = any(e.startswith("unknownErrorBits") for e in active)
+    PRINTER_DETECTED_ERROR_STATE.labels(condition="unknown").set(
+        (1 if has_unknown_fault else 0) if reachable else _METRIC_UNKNOWN
+    )
+    PRINTER_INFO.clear()
+    if reachable and model:
+        PRINTER_INFO.labels(model=model).set(1)
+    PRINTER_MEDIA_INFO.clear()
+    if reachable and (media_name or media_type or media_width_mm is not None):
+        PRINTER_MEDIA_INFO.labels(
+            media_name=media_name or "",
+            media_type=media_type or "",
+            width_mm=(f"{media_width_mm:g}" if media_width_mm is not None else ""),
+        ).set(1)
+    # Reset to unknown (NaN) when the printer is down or the optional counter OID is absent, so a
+    # previously-observed count never lingers as if current.
+    PRINTER_LABEL_LIFECOUNT.set(
+        label_lifecount if (reachable and label_lifecount is not None) else _METRIC_UNKNOWN
+    )
+
+
+def _record_snmp_metrics(snmp: PrinterSNMPStatus) -> None:
+    """Record telemetry from a print-preflight :class:`PrinterSNMPStatus`.
+
+    ``snmp.errors`` carries the decoded HR condition names (plus any console/unknown strings, which
+    the recorder ignores — it only matches the known condition names)."""
+    _set_printer_metrics(
+        reachable=snmp.reachable,
+        error_conditions=snmp.errors,
+        label_lifecount=snmp.label_lifecount,
+        model=snmp.model,
+        media_name=snmp.media_name,
+        media_type=snmp.media_type,
+        media_width_mm=snmp.media_width_mm,
+    )
+
+
+def _record_status_metrics(status: PrinterStatus) -> None:
+    """Record telemetry from a /printer/status :class:`PrinterStatus`.
+
+    ``status.errors`` carries the same decoded condition names as the SNMP layer (PrinterStatus.from_snmp
+    copies them); the loaded-media name rides in ``raw`` so no second SNMP query is needed."""
+    raw = status.raw if isinstance(status.raw, dict) else {}
+    media_name = raw.get("media_name")
+    _set_printer_metrics(
+        reachable=status.reachable,
+        error_conditions=status.errors,
+        label_lifecount=status.label_lifecount,
+        model=status.model,
+        media_name=media_name if isinstance(media_name, str) else None,
+        media_type=status.media_type,
+        media_width_mm=status.media_width_mm,
+    )
+
 
 # ── Image upload limits ──────────────────────────────────────────────────────────
 # A label is a small thermal print (≤ ~696 px wide at 300 dpi, downscaled before printing),
@@ -399,6 +536,9 @@ async def _enforce_print_preflight(label_id: str, *, dry_run: bool) -> None:
     if dry_run or not _snmp_guard_applies():
         return
     loaded = await run_in_threadpool(_query_loaded_media)
+    # Refresh the SNMP telemetry gauges from this query (freshness model A) before the guard decision,
+    # so a print that is about to be rejected on a fault still updates printer_up / error-state.
+    _record_snmp_metrics(loaded)
     _raise_if_media_incompatible(label_id, loaded)
 
 
@@ -1074,6 +1214,11 @@ async def printer_status(
         finally:
             transport.close()
 
+    # Refresh the SNMP telemetry gauges from this query (freshness model A) — network + SNMP only.
+    # File/USB status is synthetic or unsupported, not a real printer, so it must not drive the gauges.
+    if _snmp_guard_applies():
+        _record_status_metrics(status)
+
     if not status.reachable:
         return JSONResponse(
             status_code=503,
@@ -1555,8 +1700,10 @@ def reload_templates() -> dict[str, Any]:
     return {"loaded": len(loaded), "templates": loaded, "languages": langs}
 
 
-@app.get("/metrics", tags=["System"])
 def metrics() -> Response:
+    """Prometheus exposition handler. Registered at settings.metrics_path at the END of this module
+    (see ``_register_metrics_route``) so it is mounted AFTER every fixed route — a misconfigured
+    METRICS_PATH that happens to equal a real route can never shadow it (first-registered wins)."""
     return Response(content=generate_latest(), media_type="text/plain; version=0.0.4")
 
 
@@ -2187,3 +2334,56 @@ async def web_ui(request: Request) -> HTMLResponse:
             "two_color": _driver_cls.CAPABILITY.two_color,
         },
     )
+
+
+# ── Metrics route (registered LAST) ───────────────────────────────────────────────────────────────
+# Registered here, after every other route is defined, at the env-configured settings.metrics_path
+# (default /metrics; charset already restricted to a literal by Settings._normalize_metrics_path, so
+# no path parameter/wildcard can reach the router). Registering last is a safety property: Starlette
+# matches the FIRST-registered route, so a misconfigured METRICS_PATH equal to a real route can never
+# shadow that page/endpoint. A direct collision is still a config mistake (metrics would be
+# unreachable there), so it is rejected fail-fast at import rather than silently swallowed.
+@app.middleware("http")
+async def _metrics_disabled_gate(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Make the metrics path behave as TRULY ABSENT when METRICS_ENABLED=false — for every method.
+
+    A per-route dependency only runs on the matched (GET) route, so a disabled GET /metrics 404s but
+    POST /metrics returns 405 (Starlette resolves method-not-allowed before dependencies), and that
+    405 + ``Allow: GET`` leaks that the (possibly relocated) path exists. Gating in middleware — which
+    runs before routing — returns a uniform 404 for any method to the path while disabled, matching a
+    genuinely missing path. Runtime-toggleable (reads the setting per request). When enabled it is a
+    no-op and normal routing applies (a 405 on POST is then the honest "real endpoint" response).
+    """
+    if not settings.metrics_enabled and request.url.path == settings.metrics_path:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    return await call_next(request)
+
+
+def _register_metrics_route() -> None:
+    # Reject any path a GET would already resolve to — using Starlette's real route matching, not a
+    # literal string compare. A string compare misses DYNAMIC shadowing: a literal METRICS_PATH like
+    # /templates/foo/source is captured by the earlier /templates/{name}/source route, so (since
+    # metrics registers last) a scrape would silently hit that handler instead of the exposition.
+    # Match.FULL = an existing route fully handles GET at this path; reject so the misconfig fails fast.
+    probe = {"type": "http", "method": "GET", "path": settings.metrics_path}
+    for route in app.routes:
+        match, _ = route.matches(probe)
+        if match == Match.FULL:
+            raise RuntimeError(
+                f"METRICS_PATH {settings.metrics_path!r} is already served by route "
+                f"{getattr(route, 'path', route)!r}; choose a different path."
+            )
+    # Always registered (so the harness/an enabled deployment serves it); the disabled state is
+    # enforced uniformly by _metrics_disabled_gate above, not a per-route dependency.
+    app.add_api_route(
+        settings.metrics_path,
+        metrics,
+        methods=["GET"],
+        tags=["System"],
+        include_in_schema=False,  # not advertised via the unauthenticated /openapi.json
+    )
+
+
+_register_metrics_route()

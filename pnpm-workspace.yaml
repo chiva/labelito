@@ -1,0 +1,10 @@
+# pnpm 11 reads project settings from this file (not .npmrc). No `packages:` key — this is a
+# single-package manifest, present only to fetch the bundled icon collections at build time.
+
+# Flat node_modules so the Docker/normalize copy step reads real files, not content-store symlinks.
+nodeLinker: hoisted
+
+# Supply-chain cooldown: refuse to resolve a version published less than 2 days (2880 min) ago,
+# complementing Renovate's own minimumReleaseAge. The frozen-lockfile image build never resolves
+# versions, so this only gates `pnpm update` / lockfile regeneration.
+minimumReleaseAge: 2880

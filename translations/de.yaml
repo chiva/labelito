@@ -1,0 +1,8 @@
+# German — author-supplied seed; native review welcome (see CONTRIBUTING).
+frozen: "Eingefroren"
+stored: "Gelagert"
+expires: "Haltbar bis"
+_date_format: "%d.%m.%Y"
+_datetime_format: "%d.%m.%Y %H:%M"
+_weekdays_abbr: [Mo, Di, Mi, Do, Fr, Sa, So]
+_weekdays_full: [Montag, Dienstag, Mittwoch, Donnerstag, Freitag, Samstag, Sonntag]

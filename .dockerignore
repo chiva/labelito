@@ -1,0 +1,51 @@
+# Docker does NOT honor .gitignore, so secrets/local state must be excluded here explicitly,
+# or `COPY . /app` would bake them into image layers (a published image would leak them).
+
+# Secrets and local runtime state
+.env
+.env.*
+data/
+*.jsonl
+*.db
+*.db-wal
+*.db-shm
+
+# Vendored icon collections — fetched fresh in the `icons` build stage, never from the build
+# context. Without this, `COPY . /app` would bake a developer's locally-fetched copy (~24 MB) into
+# the builder layer, defeating the pinned/reproducible-asset guarantee and leaking local state.
+assets/icon-collections/
+
+# Node dependencies — the icons stage runs `pnpm install` itself from the committed lockfile; a local
+# node_modules must never enter the build context (large, and would bloat the builder's COPY . /app).
+node_modules/
+
+# Locally-fetched DejaVu fonts — the image installs them via the fonts-dejavu-core apt package,
+# never from the build context. Without this, a dev's fetched ./fonts would bake into /app/fonts.
+fonts/
+
+# Version control / project metadata
+.git/
+.gitignore
+.github/
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Test / tooling caches and reports
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store

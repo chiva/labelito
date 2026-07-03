@@ -1,0 +1,37 @@
+{#
+  Shared <head> content: include inside each page's <head> AFTER its <title>.
+  Expects from the route context (see _web_ctx in app/main.py): asset_v, base_path.
+  base_path is the reverse-proxy prefix ("" when served directly); every href/src
+  is prefixed with it, and the JS layer receives it as window.LABELITO_BASE so
+  the api() fetch helper stays prefix-correct under Home Assistant ingress.
+#}
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="{{ base_path | default('') }}/favicon.svg" type="image/svg+xml" />
+<script>
+  // FOUC-free theme init: must run before the stylesheets paint. Dark is the default;
+  // an explicit choice in localStorage wins over the OS preference.
+  (function () {
+    var t = null;
+    try {
+      t = localStorage.getItem("labelito_theme");
+    } catch (e) {
+      /* storage disabled — fall through to the media query */
+    }
+    if (t !== "light" && t !== "dark") {
+      t =
+        window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light"
+          : "dark";
+    }
+    document.documentElement.dataset.theme = t;
+  })();
+</script>
+<link rel="stylesheet" href="{{ base_path | default('') }}/static/css/tokens.css?v={{ asset_v }}" />
+<link rel="stylesheet" href="{{ base_path | default('') }}/static/css/app.css?v={{ asset_v }}" />
+<script>
+  // Proxy path prefix for every client-side fetch — labelito.js's api() reads it. Must be set
+  // before that script loads. tojson keeps an attacker-shaped prefix inert inside the literal.
+  window.LABELITO_BASE = {{ base_path | default("") | tojson }};
+</script>
+<script src="{{ base_path | default('') }}/static/js/labelito.js?v={{ asset_v }}"></script>

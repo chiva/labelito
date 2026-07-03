@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+{% from "partials/_icons.html" import icon %}
+<html lang="en">
+<head>
+  <title>Labelito — History</title>
+  {% include "partials/_head.html" %}
+  <style>
+    /* History-page-specific styles; shared components (.list-card, .job-row, pills…) live in app.css. */
+
+    .roll-note { margin: 0 0 14px; }
+
+    /* Status icon tile per row: ✓ printed / 👁 dry-run / ⚠ failed. */
+    .job-icon .icon { width: 15px; height: 15px; }
+    .job-icon.icon-printed { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green-light); }
+    .job-icon.icon-dry-run { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue-light); }
+    .job-icon.icon-failed { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
+    [data-theme="light"] .job-icon.icon-printed { color: var(--green); }
+    [data-theme="light"] .job-icon.icon-dry-run { color: var(--blue-deep); }
+
+    /* Field summary: muted keys, slightly brighter values. */
+    .job-summary .val { color: var(--ink2); }
+
+    /* Inline reason tags next to the status pill (classes e2e-pinned). */
+    .tag-mismatch, .tag-muted { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: 10px; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
+    .tag-mismatch { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+    .tag-muted { background: color-mix(in srgb, var(--ink3) 16%, transparent); color: var(--ink3); }
+
+    .job-meta .pill { vertical-align: middle; }
+
+    /* Tiny inline copy-id button in the meta column. */
+    .btn-copy { background: none; border: none; color: var(--ink3); cursor: pointer; padding: 0 2px; vertical-align: -1px; }
+    .btn-copy:hover { color: var(--ink); }
+    .btn-copy .icon { width: 12px; height: 12px; }
+
+    .job-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+    .job-actions .btn-reprint { padding: 7px 13px; font-size: 12.5px; }
+
+    .list-empty small { display: block; margin-top: 8px; font-size: 12px; }
+    .list-foot .pager-btns { display: flex; gap: 8px; }
+    .list-foot .btn { padding: 6px 12px; font-size: 12px; }
+
+    .legend { display: block; margin: 14px 2px 0; }
+    .token-card { margin-top: 18px; }
+
+    @media (max-width: 640px) {
+      .job-row { flex-wrap: wrap; }
+      .job-meta { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  {% include "partials/_nav.html" %}
+
+  <div class="page page-narrow">
+    <div class="page-head">
+      <h1>History</h1>
+      <span class="subtitle" id="history-count"></span>
+    </div>
+
+    <p class="hint roll-note" id="roll-note" style="display:none"></p>
+
+    <div class="list-card">
+      <div id="history-body"></div>
+      <div id="empty-area"></div>
+      <div class="list-foot">
+        <span id="page-count"></span>
+        <span class="pager-btns">
+          <button type="button" class="btn" id="prev-btn" onclick="prevPage()">← Prev</button>
+          <button type="button" class="btn" id="next-btn" onclick="nextPage()">Next →</button>
+        </span>
+      </div>
+    </div>
+
+    <p class="hint legend">Text, QR, barcode and icon labels can be reprinted from their saved fields (the result may differ if you've since edited the template or its icons).<br>Labels built from an uploaded image can't be reprinted — the image isn't stored; re-submit the original print.</p>
+
+    <div class="card token-card">
+      <div class="card-head">
+        <span class="card-title">API token</span>
+      </div>
+      <div class="field">
+        <input type="password" id="api-token" class="input" placeholder="Bearer token" autocomplete="off">
+        <span class="hint">Saved in this browser only; leave blank if the server runs unauthenticated.</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="status-area"></div>
+
+  <script>
+    const PAGE_SIZE = 20;
+    let offset = 0;
+    let total = 0;
+
+    // ── Loaded-roll size gating ────────────────────────────────────────────────────────────────
+    // Reprints whose template needs a roll different from the one currently loaded are disabled here,
+    // mirroring the print page's advisory media check. This is purely advisory UI in front of an
+    // existing hard guard: /reprint runs the identical SNMP preflight server-side and 409s a real
+    // mismatch, so disabling only pre-empts a guaranteed rejection — it never blocks a reprint the
+    // server would accept, and Delete always stays enabled. It engages ONLY when the loaded roll is
+    // KNOWN (SNMP on a reachable network printer); when it can't be determined (non-SNMP, unreachable,
+    // unknown media) every row stays reprintable, exactly as before. Tolerances and the width/form/
+    // length rule live in the shared mediaCompat/loadedMediaFrom (labelito.js), mirroring
+    // app.media.media_matches and the print page.
+    //
+    // On the lock-free SNMP path the page background-polls /printer/status (same shared
+    // createStatusPoller cadence and hidden-tab/backoff/abort behaviour as the print page) so a roll
+    // swap re-gates the rows LIVE, with no reload. On the ESC i S fallback there is no repeating poll
+    // (the read takes _print_lock) — the roll is read once at load instead.
+    const LIVE_STATUS_POLL = {{ live_status_poll | tojson }};   // background-poll /printer/status (SNMP only)
+    const STATUS_SUPPORTED = {{ status_supported | tojson }};   // a loaded-media read is possible at all (SNMP or USB)
+    // Only HARD-disable a size-mismatched reprint when the loaded roll is kept live by the background
+    // poll (SNMP). On USB the roll is read ONCE at load and never refreshed (no poll), so a stale
+    // disable would block a reprint the server would now accept after a roll swap — with no recovery
+    // but a full reload. There we stay advisory (✗ tag, button ENABLED) and let the server-side
+    // /reprint 409 preflight be the authoritative gate, exactly like the print page's Print button.
+    const GATE_DISABLES_REPRINT = LIVE_STATUS_POLL;
+    let statusInFlight = false;     // guards overlapping status reads (init vs poll)
+    let templateMediaByName = {};   // template name → required media ({width_mm, media_type, length_mm}) or null
+    let loadedRoll = null;          // the loaded roll as comparable media, or null when unknown
+    let loadedRollKey = null;       // group key of loadedRoll, to detect a roll swap between polls
+    let currentEntries = [];        // last rendered page, so a poll can re-gate the rows in place
+
+    // The template's required media for a history row, looked up by its (current) template name — the
+    // same name /reprint resolves and runs its preflight against. null when the template was deleted/
+    // renamed since, or its label is not a known size; the row is then never disabled on size grounds.
+    function rowRequiredMedia(rec) {
+      return templateMediaByName[rec.template] || null;
+    }
+
+    // True only when we KNOW the row needs a roll different from the one loaded — the sole condition
+    // that gates reprint. Unknown loaded roll or unknown template media → false (reprint stays on).
+    function rowMediaMismatch(rec) {
+      const required = rowRequiredMedia(rec);
+      if (!loadedRoll || !required) return false;
+      return mediaCompat(required, loadedRoll) === 'mismatch';
+    }
+
+    // Load the template→media map once (templates change rarely). Best-effort: on any failure the map
+    // stays empty and no row is size-gated. /templates is unauthenticated but we send the token anyway.
+    async function loadTemplates() {
+      try {
+        const res = await fetch(api('/templates'), {headers: authHeaders()});
+        if (!res.ok) return;
+        const list = await res.json();
+        const map = {};
+        for (const t of list) map[t.name] = t.media || null;
+        templateMediaByName = map;
+      } catch (e) { /* leave the map empty — size gating simply stays off */ }
+    }
+
+    // Read /printer/status into loadedRoll. Abortable (a hung fetch can't pin statusInFlight and wedge
+    // the poll) and guarded against overlap. Best-effort/advisory: any error (401, a 503 unreachable
+    // read, or a non-SNMP "unknown" body) clears the roll to null so every row stays reprintable.
+    // Returns true when the loaded roll changed since the last read, so the caller can re-gate rows.
+    async function refreshLoadedRoll() {
+      if (statusInFlight) return false;
+      statusInFlight = true;
+      try {
+        const res = await abortableFetch(api('/printer/status'), {headers: authHeaders()});
+        loadedRoll = res.ok ? loadedMediaFrom(await res.json()) : null;
+      } catch (e) {
+        loadedRoll = null;  // includes AbortError on timeout — treat any failure as unknown
+      } finally {
+        statusInFlight = false;
+      }
+      const key = groupKeyOf(loadedRoll);
+      const changed = key !== loadedRollKey;
+      loadedRollKey = key;
+      return changed;
+    }
+
+    // Shared self-scheduling poll (labelito.js): varies cadence with the last result, pauses on
+    // hidden tabs, resumes on visibilitychange. Started at init only when LIVE_STATUS_POLL (SNMP).
+    const statusPoller = createStatusPoller({
+      tick: async () => { if (await refreshLoadedRoll()) regateRows(); },
+      isHealthy: () => !!loadedRoll,
+    });
+
+    // Re-render the currently displayed page against the latest loaded roll (after a poll detects a
+    // roll swap) — re-gates Reprint in place without re-fetching the list, preserving the page position.
+    function regateRows() {
+      renderRows(currentEntries);
+      updateRollNote();
+    }
+
+    function updateRollNote() {
+      const note = document.getElementById('roll-note');
+      if (!loadedRoll) { note.style.display = 'none'; note.textContent = ''; return; }
+      note.style.display = '';
+      // The note reflects whether mismatched reprints are hard-disabled (SNMP, roll kept live) or
+      // merely flagged (USB one-shot read — the server 409 enforces, so the button stays enabled).
+      note.textContent = GATE_DISABLES_REPRINT
+        ? `Loaded roll: ${mediaDesc(loadedRoll)} — reprints that need a different size are disabled `
+          + 'while it is loaded.'
+        : `Loaded roll at page load: ${mediaDesc(loadedRoll)} — reprints that need a different size `
+          + 'are flagged ✗; the printer will reject them unless you swap the roll.';
+    }
+
+    function fmtWhen(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts);
+      return isNaN(d.getTime()) ? ts : d.toLocaleString();
+    }
+
+    // The row's status kind: 'failed' | 'dry-run' | 'printed' (same vocabulary as the old badge).
+    function statusKindOf(rec) {
+      return rec.status === 'failed' ? 'failed' : (rec.dry_run ? 'dry-run' : 'printed');
+    }
+
+    const STATUS_ICONS = {printed: 'check', 'dry-run': 'eye', failed: 'triangle-exclamation'};
+    const STATUS_PILLS = {printed: 'pill-green', 'dry-run': 'pill-blue', failed: 'pill-red'};
+
+    function jobIconTile(kind) {
+      const tile = document.createElement('div');
+      tile.className = `job-icon icon-${kind}`;
+      tile.title = kind;
+      const svg = iconNode(STATUS_ICONS[kind]);
+      if (svg) tile.appendChild(svg);
+      return tile;
+    }
+
+    function statusPill(kind) {
+      const span = document.createElement('span');
+      span.className = `pill ${STATUS_PILLS[kind]}`;
+      span.textContent = kind;
+      return span;
+    }
+
+    // Build the fields summary via DOM (textContent) — label contents are user-controlled, never innerHTML.
+    function fieldsSummary(fields) {
+      const wrap = document.createElement('div');
+      wrap.className = 'job-summary';
+      const keys = Object.keys(fields || {});
+      if (keys.length === 0) {
+        wrap.textContent = '—';
+        return wrap;
+      }
+      keys.forEach((k, i) => {
+        if (i > 0) wrap.appendChild(document.createTextNode(' · '));
+        const key = document.createElement('span');
+        key.className = 'key';
+        key.textContent = k + ': ';
+        wrap.appendChild(key);
+        const val = document.createElement('span');
+        val.className = 'val';
+        val.textContent = String(fields[k]);
+        wrap.appendChild(val);
+      });
+      return wrap;
+    }
+
+    // Short, monospace, selectable job id (full id in title) plus a tiny copy button.
+    // navigator.clipboard is unavailable in non-secure contexts — degrade gracefully there.
+    function jobIdFragment(rec) {
+      const frag = document.createDocumentFragment();
+      const jobId = rec.job_id || '';
+
+      const span = document.createElement('span');
+      span.className = 'job-id mono';
+      span.textContent = jobId ? jobId.slice(0, 8) : '—';
+      span.title = jobId;
+      frag.appendChild(span);
+
+      if (!jobId) return frag;
+
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'btn-copy';
+      copy.title = 'Copy job id';
+      copy.setAttribute('aria-label', 'Copy job id');
+      const setIcon = (name) => {
+        const svg = iconNode(name);
+        if (svg) copy.replaceChildren(svg); else copy.textContent = 'Copy';
+      };
+      setIcon('copy');
+      copy.onclick = () => {
+        const flash = () => {
+          setIcon('check');
+          setTimeout(() => setIcon('copy'), 1200);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(jobId).then(flash).catch(selectFallback);
+        } else {
+          selectFallback();
+        }
+      };
+
+      // Non-secure context (no Clipboard API): select the span text so the user can copy manually.
+      function selectFallback() {
+        const range = document.createRange();
+        range.selectNodeContents(span);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+
+      frag.appendChild(copy);
+      return frag;
+    }
+
+    // Compute zero-padded sequence range label, mirroring str(value).zfill(padding) in Python.
+    function seqLabel(value, padding) {
+      const s = String(Math.abs(value));
+      const padded = padding > 0 ? s.padStart(padding, '0') : s;
+      return value < 0 ? '-' + padded : padded;
+    }
+
+    // For a sequence job return a node showing e.g. "×40 (001..040)"; for plain copies, "×N".
+    function copiesLabel(rec) {
+      const span = document.createElement('span');
+      if (!rec.sequence) {
+        span.textContent = `×${rec.copies}`;
+        return span;
+      }
+      const { start, count, step, padding } = rec.sequence;
+      const last = start + (count - 1) * step;
+      const firstLabel = seqLabel(start, padding);
+      const lastLabel = seqLabel(last, padding);
+      span.title = `Sequence batch: ${count} labels, seq ${firstLabel}..${lastLabel}`;
+      span.textContent = `×${count} (${firstLabel}..${lastLabel})`;
+      return span;
+    }
+
+    // Threshold above which a reprint confirm dialog is shown.
+    const REPRINT_CONFIRM_THRESHOLD = 10;
+
+    // ``gated`` (computed in renderRows) is true only for a reprintable row whose template needs a
+    // roll different from the one loaded — it disables Reprint while leaving Delete enabled.
+    function jobActions(rec, gated) {
+      const wrap = document.createElement('div');
+      wrap.className = 'job-actions';
+
+      const reprint = document.createElement('button');
+      reprint.type = 'button';
+      reprint.className = 'btn btn-reprint';
+      const reprintIcon = iconNode('rotate-left');
+      if (reprintIcon) reprint.appendChild(reprintIcon);
+      reprint.appendChild(document.createTextNode('Reprint'));
+      if (rec.status === 'failed' || rec.image_stripped) {
+        reprint.disabled = true;
+        reprint.title = rec.status === 'failed'
+          ? 'This job failed to print and cannot be reprinted'
+          : 'This job carried an image, which is not retained — re-submit the original print';
+      } else if (gated && GATE_DISABLES_REPRINT) {
+        // SNMP: the loaded roll is kept fresh by the poll, so a hard disable can't go stale.
+        reprint.disabled = true;
+        reprint.title = `This job needs ${mediaDesc(rowRequiredMedia(rec))} but `
+          + `${mediaDesc(loadedRoll)} is loaded; the printer would reject this reprint (409). `
+          + 'Load a matching roll, or swap the roll.';
+      } else {
+        if (gated) {
+          // USB (one-shot roll read, no poll): advisory only — keep Reprint ENABLED and warn, so a
+          // roll swap after load is never blocked by a stale disable. The server /reprint 409 gates it.
+          reprint.title = `This job needs ${mediaDesc(rowRequiredMedia(rec))} but `
+            + `${mediaDesc(loadedRoll)} was loaded at page load; if that roll is still in, the printer `
+            + 'will reject this reprint (409). Swap to a matching roll first, or reprint to let the '
+            + 'server check.';
+        }
+        reprint.onclick = () => {
+          if (rec.sequence && rec.sequence.count >= REPRINT_CONFIRM_THRESHOLD) {
+            const { start, count, step, padding } = rec.sequence;
+            const last = start + (count - 1) * step;
+            const firstLabel = seqLabel(start, padding);
+            const lastLabel = seqLabel(last, padding);
+            if (!confirm(`Reprint this job? It will print ${count} labels (${firstLabel}..${lastLabel}).`)) return;
+          }
+          doReprint(rec.job_id);
+        };
+      }
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'btn-icon btn-delete';
+      del.title = 'Delete entry';
+      del.setAttribute('aria-label', 'Delete entry');
+      const delIcon = iconNode('trash-can');
+      if (delIcon) del.appendChild(delIcon);
+      del.onclick = () => doDelete(rec.job_id);
+
+      wrap.appendChild(reprint);
+      wrap.appendChild(del);
+      return wrap;
+    }
+
+    function renderRows(entries) {
+      currentEntries = entries || [];  // remembered so a poll-driven roll swap can re-gate in place
+      const body = document.getElementById('history-body');
+      body.replaceChildren();
+      for (const rec of currentEntries) {
+        // Reprintable rows only (failed/image-stripped are already hard-disabled and reprint-agnostic
+        // to the roll); a known size mismatch dims the row and disables its Reprint. Dry-run rows are
+        // NEVER gated: a dry-run reprint sends nothing to the printer and the server skips the SNMP
+        // media preflight for dry_run=True, so it would accept the replay regardless of loaded roll —
+        // gating it would block a reprint the server allows, breaking the advisory-only contract.
+        const gated = rec.status !== 'failed' && !rec.image_stripped && !rec.dry_run
+          && rowMediaMismatch(rec);
+        const kind = statusKindOf(rec);
+
+        const row = document.createElement('div');
+        row.className = 'job-row';
+        // Dim the row only when the reprint is actually disabled (SNMP). On USB the row stays a normal
+        // enabled row carrying just the advisory ✗ tag (dimming would imply a disabled action).
+        if (gated && GATE_DISABLES_REPRINT) row.classList.add('row-incompatible');
+
+        row.appendChild(jobIconTile(kind));
+
+        const main = document.createElement('div');
+        main.className = 'job-main';
+        const title = document.createElement('div');
+        title.className = 'job-title';
+        const tmpl = document.createElement('span');
+        tmpl.className = 'job-template';
+        tmpl.textContent = rec.template;
+        title.appendChild(tmpl);
+        title.appendChild(statusPill(kind));
+        // An image job's blob is dropped from history → not reprintable. Surface that inline
+        // (not just in the disabled button's hover title) so the reason is visible at a glance.
+        // Icon/text/QR/barcode jobs carry no stored blob and reprint normally, so get no tag.
+        if (rec.image_stripped) {
+          const tag = document.createElement('span');
+          tag.className = 'tag-muted';
+          tag.textContent = '🖼 image not retained';
+          title.appendChild(tag);
+        } else if (gated) {
+          // Surface the size mismatch inline (not only in the disabled button's hover title) so the
+          // reason a roll-mismatched row can't be reprinted is visible at a glance.
+          const tag = document.createElement('span');
+          tag.className = 'tag-mismatch';
+          tag.textContent = `✗ needs ${mediaDesc(rowRequiredMedia(rec))}`;
+          title.appendChild(tag);
+        }
+        main.appendChild(title);
+        main.appendChild(fieldsSummary(rec.fields));
+        row.appendChild(main);
+
+        const meta = document.createElement('div');
+        meta.className = 'job-meta';
+        const whenLine = document.createElement('div');
+        whenLine.textContent = fmtWhen(rec.timestamp);
+        meta.appendChild(whenLine);
+        const idLine = document.createElement('div');
+        idLine.appendChild(copiesLabel(rec));
+        idLine.appendChild(document.createTextNode(' · '));
+        idLine.appendChild(jobIdFragment(rec));
+        meta.appendChild(idLine);
+        const ditherLine = document.createElement('div');
+        const dither = document.createElement('span');
+        dither.className = 'pill pill-muted';
+        dither.textContent = rec.dither ? 'dither on' : 'dither off';
+        ditherLine.appendChild(dither);
+        meta.appendChild(ditherLine);
+        row.appendChild(meta);
+
+        row.appendChild(jobActions(rec, gated));
+        body.appendChild(row);
+      }
+    }
+
+    function renderEmpty(show) {
+      const area = document.getElementById('empty-area');
+      area.replaceChildren();
+      if (!show) return;
+      const div = document.createElement('div');
+      div.className = 'list-empty';
+      div.append('No history yet.');
+      const small = document.createElement('small');
+      small.textContent = 'If you expected entries: HISTORY_MODE=disabled keeps no history, and memory mode resets on restart.';
+      div.appendChild(small);
+      area.appendChild(div);
+    }
+
+    function updateHistoryCount() {
+      document.getElementById('history-count').textContent =
+        total === 0 ? 'no jobs yet' : `${total} job${total === 1 ? '' : 's'} · newest first`;
+    }
+
+    function updatePager() {
+      const prev = document.getElementById('prev-btn');
+      const next = document.getElementById('next-btn');
+      prev.disabled = offset <= 0;
+      next.disabled = offset + PAGE_SIZE >= total;
+      const from = total === 0 ? 0 : offset + 1;
+      const to = Math.min(offset + PAGE_SIZE, total);
+      document.getElementById('page-count').textContent =
+        total === 0 ? '' : `showing ${from}–${to} of ${total}`;
+    }
+
+    async function loadPage() {
+      try {
+        const res = await fetch(api(`/history/list?offset=${offset}&limit=${PAGE_SIZE}`), {
+          headers: authHeaders(),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          showStatus('Error loading history: ' + formatError(res.status, err.detail ?? err), 'err');
+          return;
+        }
+        const data = await res.json();
+        total = data.total;
+        offset = data.offset;
+        // A page that lands past the end (e.g. after deleting the last row of the last page)
+        // steps back one page so the user is never stranded on an empty page.
+        if (offset > 0 && offset >= total) {
+          offset = Math.max(0, offset - PAGE_SIZE);
+          return loadPage();
+        }
+        renderRows(data.entries);
+        renderEmpty(total === 0);
+        updateHistoryCount();
+        updateRollNote();
+        updatePager();
+        clearStatus();  // non-force: a sticky reprint/delete confirmation survives the list refresh
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    function prevPage() { offset = Math.max(0, offset - PAGE_SIZE); loadPage(); }
+    function nextPage() { if (offset + PAGE_SIZE < total) { offset += PAGE_SIZE; loadPage(); } }
+
+    async function doReprint(jobId) {
+      try {
+        const res = await fetch(api(`/reprint/${jobId}`), {method: 'POST', headers: authHeaders()});
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          showStatus('Reprint error: ' + formatError(res.status, err.detail ?? err), 'err');
+          return;
+        }
+        const json = await res.json();
+        showStatus(`Reprinted! New job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
+        loadPage();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    async function doDelete(jobId) {
+      if (!confirm('Delete this history entry? This cannot be undone.')) return;
+      try {
+        const res = await fetch(api(`/history/${jobId}`), {method: 'DELETE', headers: authHeaders()});
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          showStatus('Delete error: ' + formatError(res.status, err.detail ?? err), 'err');
+          return;
+        }
+        showStatus('Entry deleted.', 'ok', {sticky: true});
+        loadPage();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    // Init: render the history list FIRST — it is the page's core content and must never wait on the
+    // advisory printer-status read.
+    //
+    // Two independent gates (see the server's _status_query_supported / _snmp_guard_applies):
+    //  * STATUS_SUPPORTED — a loaded-media read is possible (SNMP over UDP, or USB over ESC i S). When
+    //    set, load the template map + read the roll ONCE and re-gate the rows in place via
+    //    regateRows() (the list renders ungated until then — an unknown roll gates nothing).
+    //  * LIVE_STATUS_POLL — background-poll to keep gating fresh on a roll swap. SNMP ONLY: there the
+    //    read is lock-free UDP, whereas over USB /printer/status serializes through the server's
+    //    _print_lock (single device handle), so a repeating poll would risk delaying a concurrent
+    //    /reprint. USB therefore gates once at load, with no repeating poll.
+    // On file:// (neither set) History never touches /printer/status and every row stays reprintable.
+    initTokenInput();
+    (async () => {
+      if (STATUS_SUPPORTED) {
+        Promise.allSettled([loadTemplates(), refreshLoadedRoll()]).then(regateRows);
+      }
+      await loadPage();
+      if (LIVE_STATUS_POLL) statusPoller.start();  // visible-tab poll, SNMP only
+    })();
+  </script>
+</body>
+</html>

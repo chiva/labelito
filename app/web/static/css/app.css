@@ -1,0 +1,1003 @@
+/* Shared component styles for the Labelito web UI (see tokens.css for the design tokens). */
+
+/* ── Layout ─────────────────────────────────────────────────────────────────── */
+
+.page {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: calc(22px * var(--gap)) clamp(14px, 3vw, 32px);
+}
+
+.page-narrow {
+  max-width: 960px;
+}
+
+/* Main column + fixed sidebar; stacks on small screens. */
+.layout-split {
+  display: flex;
+  gap: calc(20px * var(--gap));
+  align-items: flex-start;
+}
+
+.layout-main {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: calc(18px * var(--gap));
+}
+
+.layout-side {
+  flex: none;
+  width: 360px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: calc(18px * var(--gap));
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 18px;
+}
+
+@media (max-width: 820px) {
+  .layout-split {
+    flex-direction: column;
+  }
+
+  .layout-side {
+    width: 100%;
+  }
+
+  .grid2 {
+    grid-template-columns: 1fr;
+  }
+
+  .hide-sm {
+    display: none !important;
+  }
+}
+
+/* ── Top nav ────────────────────────────────────────────────────────────────── */
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: calc(18px * var(--gap));
+  padding: calc(12px * var(--gap)) clamp(14px, 3vw, 28px);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.nav-brand img {
+  width: 26px;
+  height: 26px;
+  display: block;
+}
+
+.nav-brand span {
+  font-weight: 800;
+  font-size: 17px;
+  letter-spacing: -0.03em;
+}
+
+.nav-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Kept visible at ALL widths (no .hide-sm): the nav already flex-wraps (.nav row above), so a
+   390px viewport gets its own row rather than clipping — and hiding it on touch devices would drop
+   the one clarification a hover-only title can't reach. */
+.nav-lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.nav-lang-label {
+  font-size: 12px;
+  color: var(--ink3);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 4px;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 15px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+  color: var(--ink2);
+  text-decoration: none;
+}
+
+.tab.active {
+  background: var(--blue);
+  color: #fff;
+}
+
+.tab:hover:not(.active) {
+  color: var(--ink);
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: calc(18px * var(--gap));
+}
+
+.card-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.page-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.page-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.page-head .subtitle {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink3);
+}
+
+/* ── Template picker ────────────────────────────────────────────────────────── */
+
+.tpl-group {
+  margin-bottom: 16px;
+}
+
+.tpl-group:last-child {
+  margin-bottom: 0;
+}
+
+.tpl-group-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 10px;
+}
+
+.tpl-group-head .group-label {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink2);
+}
+
+.tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 9px;
+}
+
+.tpl-card {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: calc(11px * var(--gap)) 13px;
+  border-radius: 11px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+}
+
+.tpl-card input[type="radio"] {
+  /* Visually hidden but focusable/checkable — the label styling carries the state. */
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tpl-card .tpl-name {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.tpl-card .tpl-desc {
+  font-size: 11px;
+  color: var(--ink3);
+  line-height: 1.35;
+}
+
+.tpl-card.selected {
+  border-color: var(--blue);
+  background: var(--blue);
+}
+
+.tpl-card.selected .tpl-name {
+  color: #fff;
+}
+
+.tpl-card.selected .tpl-desc {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.tpl-card:focus-within {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+/* ── Pills / badges / dots ──────────────────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.pill-green {
+  background: color-mix(in srgb, var(--green) 20%, transparent);
+  color: var(--green-light);
+}
+
+.pill-blue {
+  background: color-mix(in srgb, var(--blue) 18%, transparent);
+  color: var(--blue-light);
+}
+
+.pill-amber {
+  background: color-mix(in srgb, var(--amber) 20%, transparent);
+  color: var(--amber);
+}
+
+.pill-red {
+  background: color-mix(in srgb, var(--red) 18%, transparent);
+  color: var(--red);
+}
+
+.pill-muted {
+  background: color-mix(in srgb, var(--ink3) 16%, transparent);
+  color: var(--ink3);
+}
+
+[data-theme="light"] .pill-green {
+  color: var(--green);
+}
+
+[data-theme="light"] .pill-blue {
+  color: var(--blue-deep);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+
+.dot-pulse {
+  animation: lbl-pulse 2s infinite;
+}
+
+/* ── Forms ──────────────────────────────────────────────────────────────────── */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+.field-label .req {
+  color: var(--red);
+}
+
+.input,
+input[type="text"],
+input[type="password"],
+input[type="number"],
+select.input,
+textarea.input {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 11px 13px;
+  font-size: 14px;
+  color: var(--ink);
+  width: 100%;
+}
+
+select.input {
+  width: auto;
+  cursor: pointer;
+}
+
+.select-compact {
+  background: var(--panel2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--blue);
+}
+
+.check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--ink2);
+  cursor: pointer;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--ink3);
+  line-height: 1.5;
+}
+
+/* Copies stepper: − / value / + around a number input. */
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.stepper button {
+  background: var(--panel2);
+  border: none;
+  color: var(--ink);
+  width: 32px;
+  height: 34px;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.stepper input {
+  width: 44px;
+  border: none;
+  background: transparent;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--ink);
+  padding: 0;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.stepper input::-webkit-outer-spin-button,
+.stepper input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 9px 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--panel2);
+  color: var(--ink);
+  border-color: var(--line);
+  text-decoration: none;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--blue);
+  color: #fff;
+  border-color: transparent;
+  border-radius: 11px;
+  padding: 13px 30px;
+  font-weight: 700;
+  font-size: 15px;
+  box-shadow: 0 5px 16px rgba(4, 120, 237, 0.35);
+}
+
+.btn-success {
+  background: var(--green);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--ink2);
+}
+
+.btn-icon {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--ink3);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn .icon,
+.btn-icon .icon {
+  flex: none;
+}
+
+/* Any ↻ icon button spins while its request is in flight — the page JS flags that by setting
+   aria-busy, so the accessibility signal and the visual feedback are the same attribute. */
+.btn-icon[aria-busy="true"] .icon {
+  animation: lbl-spin 0.8s linear infinite;
+}
+
+/* ── Inline SVG icons ───────────────────────────────────────────────────────── */
+
+.icon {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+  vertical-align: -0.125em;
+  fill: currentColor;
+}
+
+/* ── Key/value rows (printer status card) ───────────────────────────────────── */
+
+.kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13.5px;
+}
+
+.kv .k {
+  color: var(--ink3);
+}
+
+.kv .v {
+  font-family: var(--font-mono);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+/* ── Preview frame ──────────────────────────────────────────────────────────── */
+
+.paper-frame {
+  display: flex;
+  justify-content: center;
+  padding: 22px;
+  background: var(--paper);
+  border-radius: 10px;
+}
+
+.paper-frame img {
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+/* ── Toasts (container keeps id="status-area"; entries keep .status ok|err) ──── */
+
+#status-area {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: min(90vw, 520px);
+  pointer-events: none;
+}
+
+.status.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--blue-light);
+  border-radius: 12px;
+  padding: 14px 20px;
+  box-shadow: var(--shadow-pop);
+  animation: lbl-toast 0.3s ease;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  color: var(--ink);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.status.toast.ok {
+  border-left-color: var(--green);
+}
+
+.status.toast.ok .icon {
+  color: var(--green);
+}
+
+.status.toast.err {
+  border-left-color: var(--red);
+}
+
+.status.toast.err .icon {
+  color: var(--red);
+}
+
+.status.toast.info {
+  border-left-color: var(--blue-light);
+}
+
+.status.toast.info .icon {
+  color: var(--blue-light);
+}
+
+.status.toast .toast-close {
+  background: none;
+  border: none;
+  color: var(--ink3);
+  cursor: pointer;
+  padding: 0 0 0 4px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+@media (max-width: 820px) {
+  /* Keep the stack clear of the primary action button on small screens. */
+  #status-area {
+    bottom: 86px;
+  }
+}
+
+/* ── History rows ───────────────────────────────────────────────────────────── */
+
+.list-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: calc(15px * var(--gap)) 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.job-row:last-child {
+  border-bottom: none;
+}
+
+.job-row .job-icon {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: var(--panel2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.job-row .job-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.job-row .job-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.job-row .job-template {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.job-row .job-summary {
+  font-size: 12.5px;
+  color: var(--ink3);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-row .job-meta {
+  flex: none;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink3);
+  line-height: 1.6;
+}
+
+.job-row.row-incompatible {
+  opacity: 0.62;
+}
+
+.list-empty {
+  padding: 48px;
+  text-align: center;
+  color: var(--ink3);
+  font-size: 14px;
+}
+
+.list-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink3);
+}
+
+/* ── Code panel (studio) ────────────────────────────────────────────────────── */
+
+.code-panel {
+  background: var(--panel-code);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-panel-head {
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--line-code);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-code-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* #yaml (the real, authoritative textarea) and #yaml-hl (its aria-hidden syntax-highlight overlay,
+   editor.html) MUST share identical box metrics — font, size, line-height, padding, whitespace
+   handling — or the highlighted tokens drift out of alignment with the caret as the draft is typed,
+   resized, or scrolled. One rule for both so they cannot diverge. */
+.code-panel textarea,
+.code-panel pre.yaml-hl {
+  margin: 0;
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.75;
+  padding: 16px 18px;
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* The overlay's positioning parent: textarea and pre stack in the same box so the pre can sit
+   exactly behind the (visually transparent) textarea text. */
+.code-panel .yaml-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 420px;
+  display: flex;
+}
+
+.code-panel textarea {
+  flex: 1;
+  background: transparent;
+  resize: vertical;
+  color: transparent;
+  caret-color: var(--ink-code);
+  width: 100%;
+  position: relative;
+}
+
+.code-panel textarea:focus-visible {
+  outline: none;
+}
+
+.code-panel pre.yaml-hl {
+  position: absolute;
+  inset: 0;
+  overflow: hidden; /* scrollTop/scrollLeft are mirrored from the textarea's scroll event (JS) */
+  color: var(--ink-code);
+  pointer-events: none; /* decorative only — every keystroke and click still lands on the textarea */
+}
+
+.code-panel pre.yaml-hl code {
+  font: inherit;
+}
+
+/* ── Studio horizontal-scroll proxy ───────────────────────────────────────────
+   Chromium paints an element's own text-cursor (I-beam) over its own scrollbars — there is no pure-
+   CSS override for that, and Firefox already shows a normal arrow there instead, so only
+   WebKit/Chromium needs a workaround. Hide the textarea's native horizontal bar (the `:horizontal`
+   pseudo-class is WebKit-only) and drive a slim proxy scroller (#yaml-hscroll, editor.html) below
+   the panel instead — its only content is a 1px-tall spacer JS sizes to the textarea's scrollWidth,
+   with scrollLeft mirrored both ways. Any `::-webkit-scrollbar` rule opts an element into fully
+   custom (non-native-shaped) scrollbars, so once we use it to hide the horizontal bar we also
+   restyle the now-custom vertical one to match the dark code surface (both themes: --panel-code is
+   dark regardless of the page theme) instead of leaving Chromium's default light-chrome bar. */
+.code-panel textarea::-webkit-scrollbar { width: 10px; height: 10px; }
+.code-panel textarea::-webkit-scrollbar-track { background: transparent; }
+.code-panel textarea::-webkit-scrollbar-thumb {
+  background: var(--line-code);
+  border-radius: 6px;
+  border: 2px solid var(--panel-code);
+}
+.code-panel textarea::-webkit-scrollbar-thumb:hover { background: var(--ink-code-muted); }
+.code-panel textarea::-webkit-scrollbar:horizontal { display: none; }
+
+#yaml-hscroll {
+  height: 11px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  cursor: default;
+}
+/* JS toggles this when the textarea's content doesn't overflow horizontally (short drafts) — no
+   dead strip under the panel when there is nothing to scroll. */
+#yaml-hscroll.hscroll-hidden {
+  visibility: hidden;
+  height: 0;
+}
+#yaml-hscroll-spacer { height: 1px; }
+#yaml-hscroll::-webkit-scrollbar { height: 10px; }
+#yaml-hscroll::-webkit-scrollbar-track { background: transparent; }
+#yaml-hscroll::-webkit-scrollbar-thumb {
+  background: var(--line-code);
+  border-radius: 6px;
+  border: 2px solid var(--panel-code);
+}
+#yaml-hscroll::-webkit-scrollbar-thumb:hover { background: var(--ink-code-muted); }
+/* Firefox has no ::-webkit-scrollbar to style, and its textarea already keeps its own native
+   horizontal bar — showing the proxy there too would draw two bars for one axis, so it gets
+   cosmetic-only tinting instead. The standard scrollbar-width/scrollbar-color properties MUST stay
+   inside this non-WebKit branch: since Chrome 121, setting either one makes Blink ignore every
+   ::-webkit-scrollbar rule on the element (verified in Chromium 148), which would resurrect the
+   native horizontal bar this whole section exists to hide. */
+@supports not selector(::-webkit-scrollbar) {
+  #yaml-hscroll { display: none; }
+  .code-panel textarea { scrollbar-width: thin; scrollbar-color: var(--line-code) transparent; }
+}
+
+/* Syntax-highlight token accents — subtle, code-surface-only (no light-theme override needed, see
+   the tokens.css note on --ink-code/--panel-code). */
+.yhl-comment { color: var(--ink-code-muted); }
+.yhl-key { color: var(--blue-light); }
+.yhl-string { color: color-mix(in srgb, var(--green-light) 65%, var(--ink-code)); }
+.yhl-number, .yhl-bool { color: color-mix(in srgb, var(--amber) 60%, var(--ink-code)); }
+/* labelito's {{placeholder}}/[[key]] tokens are the one thing worth calling out at full strength —
+   the clearest accent available on the code surface. */
+.yhl-placeholder { color: var(--red); }
+
+/* ── Tables (label reference) ───────────────────────────────────────────────── */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  text-align: left;
+  font-weight: 500;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink2);
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Details / dialog ───────────────────────────────────────────────────────── */
+
+details.section {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel2);
+  padding: 0;
+}
+
+details.section > summary {
+  cursor: pointer;
+  padding: 11px 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  list-style: none;
+}
+
+details.section > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.section > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 8px;
+  transition: transform 0.15s ease;
+}
+
+details.section[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details.section > .section-body {
+  padding: 4px 14px 14px;
+}
+
+dialog {
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: calc(20px * var(--gap));
+  max-width: min(92vw, 440px);
+  box-shadow: var(--shadow-pop);
+}
+
+dialog::backdrop {
+  background: rgba(4, 8, 16, 0.6);
+}
+
+/* ── Theme toggle (sun shown in dark mode, moon in light) ───────────────────── */
+
+#theme-toggle .theme-moon {
+  display: none;
+}
+
+[data-theme="light"] #theme-toggle .theme-sun {
+  display: none;
+}
+
+[data-theme="light"] #theme-toggle .theme-moon {
+  display: inline-block;
+}
+
+/* ── Misc ───────────────────────────────────────────────────────────────────── */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.muted {
+  color: var(--ink3);
+}
+
+.fade-in {
+  animation: lbl-in 0.25s ease;
+}

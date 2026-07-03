@@ -1,0 +1,14 @@
+name: asset-tag
+description: Hardware/asset tag with a Code128 barcode and location
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [asset_id, location]
+layout:
+  - {type: spacer, size: 6}
+  - {type: title, text: "{{title}}", max_lines: 1, align: center, bold: true}
+  - {type: text, text: "{{location}}", size: 26, align: center}
+  - {type: barcode, data: "{{asset_id}}", symbology: code128, height: 70, align: center}
+  - {type: text, text: "{{asset_id}}", size: 24, align: center}
+  - {type: spacer, size: 6}

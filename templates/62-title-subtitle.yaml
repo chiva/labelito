@@ -1,0 +1,12 @@
+name: title-subtitle
+description: Bold title with an optional subtitle
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle]
+layout:
+  - {type: spacer, size: 12}
+  - {type: title, text: "{{title}}", max_lines: 2, align: center}
+  - {type: subtitle, text: "{{subtitle}}", max_lines: 2, align: center}
+  - {type: spacer, size: 12}

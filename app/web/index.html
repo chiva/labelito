@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+{% from "partials/_icons.html" import icon %}
+<html lang="en">
+<head>
+  <title>Labelito</title>
+  {% include "partials/_head.html" %}
+  <style>
+    /* Print-page-specific styles; shared components live in app.css. */
+
+    /* Fields render as a responsive grid of .field blocks. */
+    #fields-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+    #fields-container:empty { display: none; }
+    .field-label .optional-tag { text-transform: none; letter-spacing: 0; color: var(--ink3); font-weight: 400; }
+
+    .options-row { display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; margin-top: 18px; }
+    details.section { margin-top: 16px; }
+    details.section .section-body { display: flex; flex-direction: column; gap: 10px; }
+    #threshold { max-width: 110px; }
+    /* Threshold renders as one compact row (label · input · hint) — the B/W group subtitle already
+       explains what the cutoff does, so the field only needs the blank-means-default reminder. */
+    .threshold-row { flex-direction: row; align-items: center; gap: 10px; }
+    .action-row { margin-top: 18px; }
+    .action-row .btn-print { width: 100%; }
+
+    /* "Show all sizes" control in the Template card head. */
+    .size-filter { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+    .size-filter-toggle { background: none; border: none; padding: 0; font: inherit; font-size: 12px; font-weight: 600; color: var(--blue-light); cursor: pointer; text-decoration: underline; }
+    [data-theme="light"] .size-filter-toggle { color: var(--blue-deep); }
+
+    /* Show-all mode: a card whose template needs a different roll carries a "needs …" note. */
+    .tpl-card .tpl-needs { font-family: var(--font-mono); font-size: 10px; color: var(--amber); }
+    .tpl-card.selected .tpl-needs { color: rgba(255, 255, 255, 0.85); }
+
+    /* Name + red-capable pill sit on one row above the description. */
+    .tpl-card-title { display: flex; align-items: center; gap: 6px; }
+
+    /* Print-option hints that only appear when a toggle is disabled for the current template/model. */
+    .hint-warn { color: var(--amber); }
+
+    /* Printer state badge (ids/classes e2e-pinned) + the pulse dot next to it. */
+    .state-badge { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 20px; background: color-mix(in srgb, var(--ink3) 16%, transparent); color: var(--ink3); }
+    .state-badge.state-idle { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green-light); }
+    .state-badge.state-printing { background: color-mix(in srgb, var(--blue) 18%, transparent); color: var(--blue-light); }
+    .state-badge.state-error { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+    [data-theme="light"] .state-badge.state-idle { color: var(--green); }
+    [data-theme="light"] .state-badge.state-printing { color: var(--blue-deep); }
+    .dot { background: var(--ink3); }
+    .dot.state-idle { background: var(--green); }
+    .dot.state-printing { background: var(--blue-light); }
+    .dot.state-error { background: var(--red); }
+
+    /* Media compatibility badge for the current selection (classes e2e-pinned). */
+    .media-badge { display: inline-flex; font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 20px; overflow-wrap: anywhere; }
+    .media-badge:empty { display: none; }
+    .media-ok { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green-light); }
+    .media-bad { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+    .media-unknown { background: color-mix(in srgb, var(--ink3) 16%, transparent); color: var(--ink3); }
+    [data-theme="light"] .media-ok { color: var(--green); }
+
+    .printer-detail { font-size: 12.5px; color: var(--ink3); line-height: 1.6; overflow-wrap: anywhere; }
+    .printer-detail:empty { display: none; }
+    .printer-detail .detail-err { color: var(--red); }
+    .printer-detail summary { cursor: pointer; font-weight: 600; }
+    .printer-detail details { margin-top: 4px; }
+    .printer-detail code { font-family: var(--font-mono); font-size: 11.5px; }
+
+    #preview-section .paper-frame { min-height: 90px; align-items: center; }
+    #preview-dims-size:empty, #preview-dims-media:empty { display: none; }
+
+    /* Deliberate placeholder for a preview that has never loaded successfully (no src to show yet),
+       swapped in by showPreviewError instead of leaving <img> to render the browser's broken-image
+       glyph. Hidden by default (see markup); toggled alongside #preview-img by
+       showPreviewError/clearPreviewError. */
+    #preview-placeholder { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--ink3); padding: 14px 0; }
+    #preview-placeholder .icon { width: 28px; height: 28px; opacity: 0.55; }
+    #preview-placeholder span { font-size: 12.5px; }
+
+    /* Inline preview-error state (Live preview card) — a failed /preview shows the reason here
+       instead of a toast, and dims the stale last-good image so it can't be mistaken for current.
+       Warning (amber) styling, not the fatal-looking red .detail-err treatment used for genuine
+       printer faults elsewhere: a failed preview is recoverable (fix the fields, retry), not fatal. */
+    #preview-error { margin-top: 10px; }
+    #preview-error:empty { display: none; }
+    #preview-error:not(:empty) {
+      color: var(--amber);
+      background: color-mix(in srgb, var(--amber) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--amber) 32%, transparent);
+      border-radius: 9px;
+      padding: 8px 12px;
+    }
+    #preview-img.preview-stale { opacity: 0.25; filter: grayscale(1); }
+
+    /* B/W conversion group (Print options): dither + threshold are two modes of the same
+       grey→printable-dot conversion, visually grouped as one unit. */
+    .option-group { display: flex; flex-direction: column; gap: 10px; margin-top: 2px; padding: 12px 13px; border: 1px solid var(--line); border-radius: 9px; background: color-mix(in srgb, var(--panel2) 60%, transparent); }
+    .option-group-head { font-size: 12.5px; font-weight: 600; color: var(--ink2); }
+    .option-group-sub { margin-top: -4px; }
+  </style>
+</head>
+<body>
+  {% include "partials/_nav.html" %}
+
+  <div class="page">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Template</span>
+        <div id="size-filter" class="size-filter" style="display:none">
+          <span id="size-filter-hint" class="muted"></span>
+          <button type="button" id="size-filter-toggle" class="size-filter-toggle"></button>
+        </div>
+      </div>
+      <div id="template-groups"></div>
+    </div>
+
+    <div class="layout-split" style="margin-top: calc(18px * var(--gap))">
+
+      <div class="layout-main">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Fields</span>
+          </div>
+          <div id="fields-container"></div>
+
+          <div class="options-row">
+            <div class="field">
+              <span class="field-label" id="copies-label">Copies</span>
+              <div class="stepper">
+                <button type="button" id="copies-minus" aria-label="Fewer copies">&minus;</button>
+                <input type="number" id="copies" value="1" min="1" max="10" aria-labelledby="copies-label">
+                <button type="button" id="copies-plus" aria-label="More copies">+</button>
+              </div>
+            </div>
+            <label class="check-label">
+              <input type="checkbox" id="dry-run">
+              Dry run (no print)
+            </label>
+          </div>
+
+          <details class="section" open>
+            <summary>Print options</summary>
+            <div class="section-body">
+              <label class="check-label">
+                <input type="checkbox" id="high-res"{% if default_high_res and high_res_supported %} checked{% endif %}{% if not high_res_supported %} disabled{% endif %}>
+                High-res (600 dpi)
+                {% if high_res_supported %}
+                <span class="hint">— improves small text &amp; dense QR; affects the print only</span>
+                {% else %}
+                <span class="hint hint-warn">— not supported by {{ model }}</span>
+                {% endif %}
+              </label>
+              {% if two_color %}
+              <label class="check-label">
+                <input type="checkbox" id="red"{% if default_red %} checked{% endif %}>
+                Two-color (red/black)
+                <span class="hint" id="red-hint-default">— renders <code>color: red</code> elements in red; affects the print only</span>
+                <span class="hint hint-warn" id="red-hint-disabled" style="display:none">— needs black/red media (e.g. 62red)</span>
+              </label>
+              <div class="hint" id="red-roll-note" style="display:none">
+                This template's media can be black/red — the loaded roll's colour can't be verified automatically; confirm red/black media is actually loaded before printing.
+              </div>
+              {% endif %}
+              <div class="option-group">
+                <div class="option-group-head">B/W conversion</div>
+                <div class="hint option-group-sub">Greys can't print directly — dither approximates them with a dot pattern, or threshold sets a hard black/white cutoff; affects the print and the live preview.</div>
+                <label class="check-label">
+                  <input type="checkbox" id="dither"{% if default_dither %} checked{% endif %}>
+                  Dither (approximate greys)
+                </label>
+                <div class="field threshold-row">
+                  <label class="field-label" for="threshold">Threshold&nbsp;%</label>
+                  <input type="number" id="threshold" class="input" min="0.1" max="100" step="0.1" placeholder="{{ default_threshold }}">
+                  <span class="hint" id="threshold-hint">— blank = default</span>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <div class="action-row">
+            <button type="button" class="btn btn-primary btn-print" onclick="doPrint()">{{ icon("print") }}<span id="print-label">Print label</span></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="layout-side">
+        <div class="card" id="preview-card">
+          <div class="card-head">
+            <span class="card-title">Live preview</span>
+            <span style="display:inline-flex;align-items:center;gap:10px">
+              <span id="preview-dims" class="mono muted" style="font-size:11px;display:flex;flex-direction:column;align-items:flex-end">
+                <span id="preview-dims-size"></span>
+                <span id="preview-dims-media"></span>
+              </span>
+              <button type="button" id="preview-refresh" class="btn-icon btn-preview" onclick="doPreview()" title="Refresh preview" aria-label="Refresh preview" aria-busy="false">{{ icon("arrows-rotate") }}</button>
+            </span>
+          </div>
+          <div id="preview-section" style="display:none">
+            <div class="paper-frame">
+              <img id="preview-img" alt="Label preview">
+              <div id="preview-placeholder" style="display:none">
+                {{ icon("image") }}
+                <span>Preview unavailable</span>
+              </div>
+            </div>
+            <div id="preview-error" class="printer-detail"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Printer status</span>
+            <button type="button" class="btn-icon" onclick="refreshPrinterStatus()" title="Refresh printer status" aria-label="Refresh printer status">{{ icon("arrows-rotate") }}</button>
+          </div>
+          <div class="kv-list">
+            <div class="kv">
+              <span class="k">Connection</span>
+              <span class="v" style="display:inline-flex;align-items:center;gap:8px">
+                <span id="state-dot" class="dot dot-pulse"></span>
+                <span id="printer-state" class="state-badge">…</span>
+              </span>
+            </div>
+            <div class="kv">
+              <span class="k">Media</span>
+              <span class="v"><span id="media-badge" class="media-badge"></span></span>
+            </div>
+            <div id="printer-detail" class="printer-detail"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">API token</span>
+          </div>
+          <div class="field">
+            <input type="password" id="api-token" class="input" placeholder="Bearer token" autocomplete="off">
+            <span class="hint">Saved in this browser only; leave blank if the server runs unauthenticated.</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div id="status-area"></div>
+
+  <script>
+    const TEMPLATES = {{ templates | tojson }};
+    const templateMap = Object.fromEntries(TEMPLATES.map(t => [t.name, t]));
+    // Latest /printer/status body, used to compare the loaded roll against each template's required
+    // media. Null until the first status arrives (or when the status query fails) → compat unknown.
+    let printerStatus = null;
+
+    // Persisted UI pref: whether the status card's "Details" disclosure is expanded. Mirrors the
+    // TOKEN_KEY pattern so the choice survives #printer-detail's per-refresh rebuild and page reloads.
+    const PRINTER_DETAILS_KEY = 'labelito_printer_details_open';
+    let printerDetailsOpen = localStorage.getItem(PRINTER_DETAILS_KEY) === '1';
+
+    // ── Live status polling. The SNMP status channel (UDP 161) is independent of the :9100 print
+    //    socket, so the server can answer /printer/status during a print — we poll while the tab is
+    //    visible so the card converges to real device state on its own (offline/fault/print-done)
+    //    without a manual ↻. The shared createStatusPoller (labelito.js) backs off when unreachable
+    //    and pauses when hidden to keep traffic light.
+    let statusInFlight = false;               // guards overlapping refreshes (poll vs ↻ vs post-print)
+    let statusRefreshPending = false;         // a refresh requested while one was in flight → run once more
+    // Only background-poll where the server serves /printer/status lock-free over SNMP. On the ESC i S
+    // fallback (USB/file, or SNMP disabled) the status read takes the print lock, so a background poll
+    // would sit on the lock and delay a later print; there we leave manual ↻ + post-print refresh only.
+    const LIVE_STATUS_POLL = {{ live_status_poll | tojson }};
+
+    // ── Template size grouping. The picker renders .tpl-group sections (one per media denomination:
+    //    continuous width, or die-cut W×L) of .tpl-card entries. When the loaded roll is known we FOCUS
+    //    the matching group and collapse the rest behind a "Show all sizes" toggle, so a printer with a
+    //    non-62mm roll lands on usable templates instead of a wall of red mismatches. Everything needed
+    //    is already on the client (each template's `media` + the loaded roll from /printer/status) — no
+    //    extra server call. The user's show-all preference persists like TOKEN_KEY (see below).
+    const SHOW_ALL_SIZES_KEY = 'labelito_show_all_sizes';
+    let showAllSizes = localStorage.getItem(SHOW_ALL_SIZES_KEY) === '1';
+    let lastLoadedMediaKey = undefined;  // detects a roll swap to drive a one-time refocus (vs every poll)
+    let lastShowAllSizes = undefined;    // with the above, lets a no-op poll skip the picker rebuild
+    // True once the user has made an explicit, not-yet-printed choice — typed a field OR manually
+    // picked a template. It suppresses the roll-driven auto-SELECT below so a late/slow
+    // /printer/status reply (or a roll-change poll) can't silently change the selected template and
+    // discard typed input or override an explicit pick. Scoped, not a permanent latch: a successful
+    // print "consumes" the choice and clears it, so a roll swap AFTER a print still re-focuses to a
+    // matching template. Deliberately NOT reset by renderFields — a programmatic refocus rebuilds the
+    // fields too, and resetting there would defeat the guard for a manual pick.
+    let userOverride = false;
+    // Monotonic token bumped on every field input / manual pick. doPrint captures it at send time and
+    // clears userOverride on completion ONLY if it is unchanged — so a print reply that lands AFTER the
+    // user has started the next label can't clear a guard that newer input has re-raised (stale-completion
+    // race).
+    let formRevision = 0;
+
+    // Remember the last EXPLICITLY picked template across tab switches (Print/Studio/History are
+    // separate page navigations — every JS module global, including this one, re-initializes on
+    // each load). sessionStorage (not the localStorage siblings above) so the scope matches the ask
+    // ("switching tabs") rather than becoming a forever preference; swapping to localStorage is a
+    // one-line change here if that's ever wanted instead.
+    const TEMPLATE_KEY = 'labelito_template';
+    const templateStore = sessionStorage;
+
+    // Same session scope + write policy as TEMPLATE_KEY above (written ONLY on an explicit user
+    // action, a stale/corrupt value is ignored but never cleared): FIELDS_KEY snapshots the typed
+    // field values for the CURRENTLY selected template (so switching templates doesn't pour one
+    // template's values into another's form) and OPTIONS_KEY snapshots the six print-option controls.
+    const FIELDS_KEY = 'labelito_fields';
+    const OPTIONS_KEY = 'labelito_print_options';
+
+    // Set by a successful print (the choice was consumed) and cleared by the next explicit pick or
+    // field edit (saveFields). The restores below consult it: a consumed snapshot still refills the
+    // form for convenience, but must NOT re-raise userOverride — otherwise navigating away and back
+    // after printing would resurrect the guard doPrint just cleared, and a roll swap would stop
+    // refocusing even though it refocuses fine for a user who stayed on the page.
+    const SUBMITTED_KEY = 'labelito_choice_submitted';
+
+    function choiceSubmitted() {
+      try {
+        return templateStore.getItem(SUBMITTED_KEY) === '1';
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // The current selection lives in a module-scoped name (the cards' hidden radios mirror it);
+    // currentTemplate() stays the global accessor the e2e suite drives.
+    let selectedTemplateName = TEMPLATES.length ? TEMPLATES[0].name : '';
+    // Restore a saved pick, if any, BEFORE the first render — templateMap and userOverride are both
+    // already declared above, so renderFields()/rebuildTemplatePicker()/doPreview() all see it with no
+    // changes needed to the init sequence below. Restoring counts as an explicit choice (userOverride
+    // = true), not a passive default: the stored name only ever came from a real click, so restoring it
+    // must re-raise the SAME guard that click set, or the first /printer/status reply after load would
+    // treat it as a roll-driven default and refocus away from it the instant a non-matching roll is
+    // detected (mirrors test_late_status_does_not_override_manual_template_choice, just replayed from a
+    // previous page view — see rebuildTemplatePicker's userOverride gate below). A stale name (template
+    // renamed/removed since it was saved) is left untouched, never cleared — it may come back — mirroring
+    // initLanguage's stale-key handling in labelito.js.
+    try {
+      const saved = templateStore.getItem(TEMPLATE_KEY);
+      if (saved && templateMap[saved]) {
+        selectedTemplateName = saved;
+        // A snapshot whose print already succeeded is restored WITHOUT the guard (see SUBMITTED_KEY).
+        if (!choiceSubmitted()) userOverride = true;
+      }
+    } catch (e) {
+      /* storage disabled — selection stays the plain default for this page view */
+    }
+
+    function currentTemplate() {
+      return templateMap[selectedTemplateName] || TEMPLATES[0];
+    }
+
+    // ── Printer status card. Mirrors the backend PrinterState enum (off/idle/printing/error).
+    //    Refreshed on load, on demand via the ↻ button, after each print, and by a visible-tab
+    //    background poll (see createStatusPoller). Polling lives in the browser by design — the server
+    //    intentionally stays stateless per request and avoids a keep-alive task.
+    const STATE_LABELS = {off: 'Off', idle: 'Idle', printing: 'Printing', error: 'Error'};
+    const STATE_CLASS = {off: 'state-off', idle: 'state-idle', printing: 'state-printing', error: 'state-error'};
+
+    function setStateBadge(state, label) {
+      const badge = document.getElementById('printer-state');
+      const cls = STATE_CLASS[state] || 'state-off';
+      badge.className = 'state-badge ' + cls;
+      badge.textContent = label || STATE_LABELS[state] || state || 'Unknown';
+      const dot = document.getElementById('state-dot');
+      if (dot) dot.className = 'dot dot-pulse ' + cls;
+    }
+
+    function renderPrinterStatus(data) {
+      printerStatus = data;
+      setStateBadge(data.state);
+      // Build the card with DOM nodes + textContent, never innerHTML: network status now comes
+      // from SNMP, so `model` (hrDeviceDescr) and `errors` (which can carry the printer's console
+      // text) are device/network-supplied and untrusted. A spoofed SNMP peer must not be able to
+      // inject markup into this token-bearing page. textContent escapes every value for us.
+      const detail = document.getElementById('printer-detail');
+      detail.replaceChildren();
+      const lineIn = (parent, cls) => {
+        const div = document.createElement('div');
+        if (cls) div.className = cls;
+        parent.appendChild(div);
+        return div;
+      };
+      const addLine = (cls) => lineIn(detail, cls);
+      // ── Primary: the live operational status, kept compact and always visible. Model moved to the
+      //    Details disclosure below (it rarely changes and crowded the always-visible line).
+      if (data.reachable) {
+        const bits = [];
+        if (data.media_type) {
+          const len = data.media_length_mm ? `×${data.media_length_mm}mm` : '';
+          const w = data.media_width_mm != null ? `${data.media_width_mm}mm${len}` : '';
+          bits.push(`Media: ${data.media_type}${w ? ' (' + w + ')' : ''}`);
+        }
+        if (bits.length) addLine().textContent = bits.join(' · ');
+        // Surfaces the (previously dead) model_mismatch field: the raster is built for the
+        // configured MODEL at startup, so an attached printer reporting a different model means
+        // the output may be wrong for it. Amber .hint-warn, not the fatal-looking .detail-err used
+        // for genuine printer faults below — this is a configuration heads-up, not a device error.
+        if (data.model_mismatch) {
+          const configuredModel = {{ model | tojson }};  // tojson: safe embed of the configured value into JS
+          addLine('hint-warn').textContent =
+            `Reported model ${data.model} differs from the configured ${configuredModel} — output may be wrong.`;
+        }
+        if (data.console_text) addLine().textContent = `Console: ${data.console_text}`;
+      }
+      if (Array.isArray(data.errors) && data.errors.length) {
+        addLine('detail-err').textContent = data.errors.join('; ');
+      }
+      // ── Secondary: URI + SNMP identity/inventory behind a disclosure, off by default so they never
+      //    crowd the live status. All device-supplied → textContent keeps them inert (see XSS note).
+      //    Open state persists across this rebuild and reloads via printerDetailsOpen.
+      const secondary = [];
+      if (data.uri) secondary.push(['URI', data.uri, true]);
+      if (data.hostname) secondary.push(['Hostname', data.hostname]);
+      if (data.reachable) {
+        if (data.model) secondary.push(['Model', data.model]);
+        if (data.status) secondary.push(['Status', data.status]);
+        if (data.phase) secondary.push(['Phase', data.phase]);
+        if (data.serial) secondary.push(['Serial', data.serial]);
+        if (data.firmware) secondary.push(['Firmware', data.firmware]);
+        if (data.label_lifecount != null) {
+          secondary.push(['Labels printed (lifetime)', String(data.label_lifecount)]);
+        }
+      }
+      if (secondary.length) {
+        const det = document.createElement('details');
+        det.open = printerDetailsOpen;
+        det.addEventListener('toggle', () => {
+          printerDetailsOpen = det.open;
+          localStorage.setItem(PRINTER_DETAILS_KEY, det.open ? '1' : '0');
+        });
+        const sum = document.createElement('summary');
+        sum.textContent = 'Details';
+        det.appendChild(sum);
+        for (const [label, value, asCode] of secondary) {
+          const line = lineIn(det);
+          if (asCode) {
+            line.append(`${label}: `);
+            const code = document.createElement('code');
+            code.textContent = value;
+            line.appendChild(code);
+          } else {
+            line.textContent = `${label}: ${value}`;
+          }
+        }
+        detail.appendChild(det);
+      }
+      rebuildTemplatePicker();
+    }
+
+    async function refreshPrinterStatus() {
+      // In-flight guard: the poll, the ↻ button, and the post-print refresh all funnel through here.
+      // A query opens a real socket to the printer, so overlapping calls are wasteful — let the first
+      // win. But don't silently DROP a later request (e.g. the post-print reconcile that must clear an
+      // optimistic "Printing…" badge): mark it pending and run exactly one follow-up when this finishes.
+      if (statusInFlight) { statusRefreshPending = true; return; }
+      statusInFlight = true;
+      try {
+        // abortableFetch (labelito.js) aborts a hung fetch so it can't pin statusInFlight=true forever
+        // and wedge the whole poll loop.
+        const res = await abortableFetch(api('/printer/status'), {headers: authHeaders()});
+        if (res.status === 401) {
+          handleAuthError(res);
+          setStateBadge('off', 'Auth required');
+          document.getElementById('printer-detail').replaceChildren();
+          printerStatus = null;
+          rebuildTemplatePicker();
+          return;
+        }
+        // Both 200 and 503 carry the same body shape (state/uri/reachable/errors).
+        const data = await res.json().catch(() => null);
+        if (!data) {
+          setStateBadge('off', 'Unknown');
+          document.getElementById('printer-detail').replaceChildren();
+          printerStatus = null;
+          rebuildTemplatePicker();
+          return;
+        }
+        renderPrinterStatus(data);
+      } catch (e) {
+        // Includes AbortError when the fetch times out — treat any failure as unreachable.
+        setStateBadge('off', 'Unreachable');
+        const detail = document.getElementById('printer-detail');
+        detail.replaceChildren();
+        const div = document.createElement('div');
+        div.className = 'detail-err';
+        div.textContent = `Network error: ${e.message}`;
+        detail.appendChild(div);
+        printerStatus = null;
+        rebuildTemplatePicker();
+      } finally {
+        statusInFlight = false;
+        // Run the one coalesced follow-up requested while this was in flight (e.g. post-print reconcile),
+        // so the latest request always lands and an optimistic badge can't be left stale.
+        if (statusRefreshPending) {
+          statusRefreshPending = false;
+          refreshPrinterStatus();
+        }
+      }
+    }
+
+    // Shared self-scheduling poll (labelito.js): varies cadence with reachability, pauses on hidden
+    // tabs, resumes on visibilitychange. Started at init only when LIVE_STATUS_POLL.
+    const statusPoller = createStatusPoller({
+      tick: refreshPrinterStatus,
+      isHealthy: () => !!(printerStatus && printerStatus.reachable),
+    });
+
+    // The loaded roll from the latest status (shared loadedMediaFrom in labelito.js): a
+    // {width_mm, media_type, length_mm} object, or null when it can't be compared.
+    function loadedMedia() {
+      return loadedMediaFrom(printerStatus);
+    }
+
+    function renderMediaBadge(required, compat, loaded) {
+      const badge = document.getElementById('media-badge');
+      if (!badge) return;
+      badge.className = 'media-badge';
+      if (!required) { badge.textContent = ''; return; }
+      if (compat === 'match') {
+        badge.classList.add('media-ok');
+        badge.textContent = `✓ ${mediaDesc(required)}`;
+        badge.title = 'The loaded roll matches this template.';
+      } else if (compat === 'mismatch') {
+        badge.classList.add('media-bad');
+        badge.textContent = `✗ needs ${mediaDesc(required)} — loaded ${mediaDesc(loaded)}`;
+        badge.title = 'The loaded roll does not match this template; the server will reject a real '
+          + 'print with a 409. Preview and dry run still work; refresh ↻ after changing the roll.';
+      } else {
+        badge.classList.add('media-unknown');
+        // No "media: " prefix — the card's own "Media" kv label already says that.
+        badge.textContent = mediaDesc(required);
+        badge.title = 'Loaded media unknown (SNMP unavailable or non-network printer) — not checked.';
+      }
+    }
+
+    // Badge the CURRENT selection ✓/✗/? for the loaded roll. Purely ADVISORY — it never disables
+    // anything. The Print button is deliberately not blocked from this cached status: /print does a
+    // fresh SNMP check on every call and 409s a real mismatch (and exempts dry runs), so it is the
+    // authoritative, never-stale guard. 'unknown' (SNMP down / non-network) shows a neutral badge.
+    // Split out of rebuildTemplatePicker so a plain template change (groups unchanged) refreshes just
+    // the badge.
+    function updateMediaBadge() {
+      const loaded = loadedMedia();
+      const t = currentTemplate();
+      renderMediaBadge(t ? t.media : null, t ? mediaCompat(t.media, loaded) : 'unknown', loaded);
+    }
+
+    // Reflect a selection into the rendered cards: exactly one .tpl-card carries .selected and its
+    // hidden radio is checked. Programmatic (refocus) and user-driven paths both land here.
+    function applyTemplateSelection(name) {
+      selectedTemplateName = name;
+      for (const card of document.querySelectorAll('#template-groups .tpl-card')) {
+        const isSelected = card.dataset.name === name;
+        card.classList.toggle('selected', isSelected);
+        const radio = card.querySelector('input[type=radio]');
+        if (radio) radio.checked = isSelected;
+      }
+    }
+
+    // A card click (→ hidden radio 'change') is an explicit user pick: exactly what the old
+    // <select> change handler did.
+    function onTemplatePicked(name) {
+      applyTemplateSelection(name);
+      userOverride = true;  // an explicit pick must not be overridden by a later roll-driven refocus
+      try {
+        templateStore.setItem(TEMPLATE_KEY, name);
+      } catch (e) {
+        /* storage disabled — the pick still applies for this page view */
+      }
+      formRevision++;
+      renderFields();
+      // AFTER renderFields(), not before: this snapshots the fresh EMPTY form under the NEW
+      // template's name, so "type into A → pick B → pick A → tab away and back" doesn't resurrect
+      // pre-excursion values into a form that was last seen empty on this template.
+      saveFields();
+      updateMediaBadge();
+      syncRedToggleForTemplate();
+      doPreview();
+    }
+
+    // Rebuild the grouped card picker for the current loaded roll + show-all preference. Called on
+    // init, on every status refresh (the loaded roll may change), and when the show-all toggle flips.
+    // DOM nodes + textContent only (never innerHTML): the loaded-media strings are device-supplied.
+    function rebuildTemplatePicker() {
+      const container = document.getElementById('template-groups');
+      const loaded = loadedMedia();
+      const loadedKey = loaded ? groupKeyOf(loaded) : null;
+      const rollChanged = loadedKey !== lastLoadedMediaKey;
+      // Skip the rebuild when neither the loaded roll nor the show-all preference changed: a
+      // background poll fires every few seconds, and replaceChildren() on the picker would drop the
+      // user's focus/hover state. The badge still refreshes (it's cheap and never moves focus).
+      if (!rollChanged && showAllSizes === lastShowAllSizes && container.childElementCount) {
+        updateMediaBadge();
+        return;
+      }
+      lastLoadedMediaKey = loadedKey;
+      lastShowAllSizes = showAllSizes;
+
+      // Bucket templates by media group, keeping a representative media + label per group.
+      const groups = new Map();  // key -> {media, label, items: [t]}
+      for (const t of TEMPLATES) {
+        const key = groupKeyOf(t.media);
+        let g = groups.get(key);
+        if (!g) { g = {media: t.media || null, label: t.label, items: []}; groups.set(key, g); }
+        g.items.push(t);
+      }
+      const ordered = [...groups.entries()].sort((a, b) => {
+        const ka = groupSortKey(a[1].media), kb = groupSortKey(b[1].media);
+        return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
+      });
+      for (const [, g] of ordered) g.items.sort((x, y) => x.name.localeCompare(y.name));
+
+      // The group whose media matches the loaded roll (tolerance-aware, via mediaCompat).
+      let matchKey = null;
+      if (loaded) {
+        for (const [key, g] of ordered) {
+          if (g.items.length && mediaCompat(g.items[0].media, loaded) === 'match') { matchKey = key; break; }
+        }
+      }
+      const matchGroup = matchKey ? groups.get(matchKey) : null;
+
+      // Decide the selection BEFORE choosing visible groups, so a roll-driven refocus lands in the
+      // matching group without also having to reveal the previously-selected group.
+      const prevVal = selectedTemplateName;
+      let desiredVal = prevVal;
+      if (!showAllSizes && matchGroup && matchGroup.items.length && rollChanged && !userOverride) {
+        const prevT = templateMap[prevVal];
+        // Only auto-move when the current pick isn't already usable on the loaded roll — never yank an
+        // already-compatible choice, and never override an explicit user choice (userOverride gates this:
+        // a late status reply can't change a typed-into or manually-picked template — but a post-print
+        // roll swap still refocuses, since a successful print clears the override).
+        if (!prevT || mediaCompat(prevT.media, loaded) !== 'match') {
+          desiredVal = matchGroup.items[0].name;
+        }
+      }
+
+      // Focus mode = a loaded roll with a matching group, and the user hasn't asked to see all sizes.
+      const focus = !showAllSizes && !!(matchGroup && matchGroup.items.length);
+      const desiredKey = templateMap[desiredVal] ? groupKeyOf(templateMap[desiredVal].media) : null;
+      const visibleKeys = focus
+        ? new Set([matchKey, desiredKey].filter(k => k !== null))
+        : new Set(ordered.map(([k]) => k));
+
+      container.replaceChildren();
+      let hiddenCount = 0;
+      const flatValues = [];
+      for (const [key, g] of ordered) {
+        if (!visibleKeys.has(key)) { hiddenCount += g.items.length; continue; }
+        const section = document.createElement('section');
+        section.className = 'tpl-group';
+        if (key === matchKey) section.dataset.match = '1';
+        const head = document.createElement('div');
+        head.className = 'tpl-group-head';
+        const groupLabel = document.createElement('span');
+        groupLabel.className = 'group-label';
+        groupLabel.textContent = groupTitleOf(g.media, g.label);
+        head.appendChild(groupLabel);
+        if (key === matchKey) {
+          const pill = document.createElement('span');
+          pill.className = 'pill pill-green roll-pill';
+          pill.textContent = 'loaded roll';
+          head.appendChild(pill);
+        }
+        section.appendChild(head);
+        const grid = document.createElement('div');
+        grid.className = 'tpl-grid';
+        for (const t of g.items) {
+          flatValues.push(t.name);
+          const card = document.createElement('label');
+          card.className = 'tpl-card';
+          card.dataset.name = t.name;
+          const radio = document.createElement('input');
+          radio.type = 'radio';
+          radio.name = 'template';
+          radio.value = t.name;
+          radio.addEventListener('change', () => { if (radio.checked) onTemplatePicked(t.name); });
+          card.appendChild(radio);
+          const titleRow = document.createElement('span');
+          titleRow.className = 'tpl-card-title';
+          const nameEl = document.createElement('span');
+          nameEl.className = 'tpl-name';
+          nameEl.textContent = t.name;
+          titleRow.appendChild(nameEl);
+          // Discoverability for two-color: a red-capable template gets a small pill so it's obvious
+          // without opening Print options first (the roll's actual colour can't be verified — see
+          // syncRedToggleForTemplate's roll note, shown once this template is selected).
+          if (t.red) {
+            const redPill = document.createElement('span');
+            redPill.className = 'pill pill-red';
+            redPill.textContent = 'red';
+            titleRow.appendChild(redPill);
+          }
+          card.appendChild(titleRow);
+          const descEl = document.createElement('span');
+          descEl.className = 'tpl-desc';
+          descEl.textContent = t.description || '';
+          card.appendChild(descEl);
+          // In show-all mode a mismatching card carries a "needs …" note; in focus mode only
+          // matching/selected groups show, so the note would be redundant there.
+          if (!focus && mediaCompat(t.media, loaded) === 'mismatch') {
+            const needs = document.createElement('span');
+            needs.className = 'tpl-needs';
+            needs.textContent = `needs ${mediaDesc(t.media)}`;
+            card.appendChild(needs);
+          }
+          grid.appendChild(card);
+        }
+        section.appendChild(grid);
+        container.appendChild(section);
+      }
+
+      // Apply the selection. The radio 'change' handler only fires on user clicks, so when the
+      // selection actually moved (roll-driven refocus, or the old pick is now hidden) re-render
+      // fields + preview here.
+      const finalVal = flatValues.includes(desiredVal) ? desiredVal
+        : (flatValues.includes(prevVal) ? prevVal : (flatValues[0] || ''));
+      applyTemplateSelection(finalVal);
+      const selectionChanged = finalVal !== prevVal;
+
+      renderSizeFilterControl(loaded, matchGroup, focus, hiddenCount);
+
+      if (selectionChanged) renderFields();
+      updateMediaBadge();
+      syncRedToggleForTemplate();
+      if (selectionChanged) doPreview();
+    }
+
+    // Disable the #red toggle when the CURRENT template's media can't take a red print (client-side
+    // convenience only — the authoritative gate is _validate_two_color_supported on /print, keyed off
+    // the model AND the template's bound media). Re-evaluated on every template pick since
+    // red-capability is per-template, not per-model. Also surfaces the honest SNMP limitation: 62 and
+    // 62red report identically, so a red-capable template's roll colour can never be confirmed here.
+    function syncRedToggleForTemplate() {
+      const red = document.getElementById('red');
+      if (!red) return;  // not rendered at all when the configured model has no two-color capability
+      const supported = !!currentTemplate().red;
+      red.disabled = !supported;
+      if (!supported) red.checked = false;
+      const defaultHint = document.getElementById('red-hint-default');
+      const disabledHint = document.getElementById('red-hint-disabled');
+      const rollNote = document.getElementById('red-roll-note');
+      if (defaultHint) defaultHint.style.display = supported ? '' : 'none';
+      if (disabledHint) disabledHint.style.display = supported ? 'none' : '';
+      if (rollNote) rollNote.style.display = supported ? '' : 'none';
+    }
+
+    // The "Show all sizes" / "Show only matching size" toggle + hidden-count hint in the Template
+    // card head. Hidden entirely when the loaded roll is unknown (nothing to filter against).
+    function renderSizeFilterControl(loaded, matchGroup, focus, hiddenCount) {
+      const wrap = document.getElementById('size-filter');
+      const hint = document.getElementById('size-filter-hint');
+      const toggle = document.getElementById('size-filter-toggle');
+      if (!wrap || !hint || !toggle) return;
+      if (!loaded) { wrap.style.display = 'none'; return; }
+      wrap.style.display = '';
+      if (focus) {
+        hint.textContent = hiddenCount
+          ? `${hiddenCount} template${hiddenCount === 1 ? '' : 's'} on other sizes hidden`
+          : '';
+        toggle.textContent = 'Show all sizes';
+      } else if (showAllSizes && matchGroup && matchGroup.items.length) {
+        hint.textContent = '';
+        toggle.textContent = 'Show only matching size';
+      } else {
+        // Known roll but no matching template — we fell back to showing every size.
+        hint.textContent = `No templates for the loaded ${mediaDesc(loaded)} roll — showing all sizes`;
+        toggle.textContent = '';
+      }
+      toggle.style.display = toggle.textContent ? '' : 'none';
+    }
+
+    function renderFields() {
+      const t = currentTemplate();
+      const container = document.getElementById('fields-container');
+      container.replaceChildren();
+      if (!t) return;
+      const allFields = [
+        ...t.required.map(f => ({name: f, optional: false})),
+        ...t.optional.map(f => ({name: f, optional: true})),
+      ];
+      for (const {name, optional} of allFields) {
+        const wrap = document.createElement('div');
+        wrap.className = 'field';
+        const lbl = document.createElement('label');
+        lbl.className = 'field-label';
+        lbl.htmlFor = `field-${name}`;
+        lbl.textContent = name;
+        if (optional) {
+          const tag = document.createElement('span');
+          tag.className = 'optional-tag';
+          tag.textContent = ' (optional)';
+          lbl.appendChild(tag);
+        } else {
+          const req = document.createElement('span');
+          req.className = 'req';
+          req.textContent = ' *';
+          lbl.appendChild(req);
+        }
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'input';
+        inp.id = `field-${name}`;
+        inp.name = name;
+        inp.placeholder = name;
+        inp.addEventListener('input', () => { userOverride = true; formRevision++; saveFields(); });
+        inp.addEventListener('input', debounce(doPreview, 600));
+        wrap.appendChild(lbl);
+        wrap.appendChild(inp);
+        container.appendChild(wrap);
+      }
+    }
+
+    function gatherFields() {
+      const t = currentTemplate();
+      const fields = {};
+      for (const name of [...t.required, ...t.optional]) {
+        const el = document.getElementById(`field-${name}`);
+        if (el && el.value.trim()) fields[name] = el.value.trim();
+      }
+      return fields;
+    }
+
+    // Snapshot the CURRENT template's typed field values. Reusing gatherFields() means clearing a
+    // field drops it from the snapshot on the same keystroke — restoring it later just leaves that
+    // field empty, which is the correct behaviour.
+    function saveFields() {
+      try {
+        templateStore.setItem(
+          FIELDS_KEY,
+          JSON.stringify({template: selectedTemplateName, values: gatherFields()})
+        );
+        // Both callers (an explicit pick, a field edit) mean a NEW choice is being composed —
+        // whatever a previous print consumed, this snapshot is live again.
+        templateStore.removeItem(SUBMITTED_KEY);
+      } catch (e) {
+        /* storage disabled — the typed values still apply for this page view */
+      }
+    }
+
+    // Restore a saved fields snapshot for the CURRENTLY selected template, if any. Corrupt JSON or a
+    // snapshot saved under a DIFFERENT template is skipped, never cleared — mirrors TEMPLATE_KEY's
+    // stale-value handling above, and guards against one template's values leaking into another's
+    // form. Deliberately does NOT bump formRevision: that counter only arbitrates a doPrint snapshot
+    // against its completion, and no print can be in flight during synchronous init.
+    function restoreSavedFields() {
+      let entry;
+      try {
+        entry = JSON.parse(templateStore.getItem(FIELDS_KEY));
+      } catch (e) {
+        return;
+      }
+      if (!entry || entry.template !== selectedTemplateName || !entry.values) return;
+      let restoredAny = false;
+      for (const [name, value] of Object.entries(entry.values)) {
+        const el = document.getElementById(`field-${name}`);
+        if (el && typeof value === 'string') {
+          el.value = value;
+          restoredAny = true;
+        }
+      }
+      // A passively-restored form must not be wiped by the first roll-driven refocus — same reasoning
+      // as the template restore above (see its comment) — and fields can exist without a saved
+      // template pick (typed on a never-picked default template), so this can't rely on that restore
+      // having already raised the guard. Already-printed values restore unguarded (see SUBMITTED_KEY).
+      if (restoredAny && !choiceSubmitted()) userOverride = true;
+    }
+
+    function buildPayload(extra = {}) {
+      return {
+        template: selectedTemplateName,
+        fields: gatherFields(),
+        copies: parseInt(document.getElementById('copies').value, 10) || 1,
+        dry_run: document.getElementById('dry-run').checked,
+        language: currentLanguage(),
+        options: {
+          dither: document.getElementById('dither').checked,
+          high_res: document.getElementById('high-res').checked,
+          // The two-color toggle only renders on two-color-capable models; default to false when absent.
+          red: document.getElementById('red') ? document.getElementById('red').checked : false,
+          threshold: document.getElementById('threshold').value
+            ? parseFloat(document.getElementById('threshold').value)
+            : null,
+        },
+        ...extra,
+      };
+    }
+
+    // Flatten a /preview failure into ONE human sentence — never the raw JSON body, never the HTTP
+    // status code (unlike the shared formatError, which prefixes it for toasts). Mirrors the actual
+    // detail shapes app.main sends for /preview: a plain string (404 unknown template; various 422/
+    // 400/413 validation errors), the missing-required-fields dict ({msg, missing_required: [...]}),
+    // a media-mismatch dict ({media_loaded, media_required, ...} — not currently reachable from
+    // /preview, but handled defensively since the shape is shared with other endpoints), or a
+    // pydantic validation-error list (the multipart /preview route's 422 on a malformed request).
+    // Anything else falls back to one generic sentence rather than leaking backend internals.
+    function previewErrorMessage(status, detail) {
+      if (status === 404) {
+        return 'Template not found — reload the page to refresh the list';
+      }
+      if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+        if (detail.media_loaded !== undefined && detail.media_required !== undefined) {
+          return `The loaded roll is ${detail.media_loaded} but this template needs ${detail.media_required}`;
+        }
+        const list = Array.isArray(detail.missing_required) ? detail.missing_required
+          : Array.isArray(detail.errors) ? detail.errors
+          : null;
+        if (list && list.length) {
+          return `${detail.msg || 'Invalid template fields'}: ${list.join(', ')}`;
+        }
+      } else if (Array.isArray(detail)) {
+        const msgs = detail.map((d) => d && d.msg).filter(Boolean);
+        if (msgs.length) return `Invalid request: ${msgs.join('; ')}`;
+      }
+      return 'Preview failed — check the template fields';
+    }
+
+    // A failed preview renders INSIDE the Live preview card (never a toast): the stale last-good
+    // image is dimmed so it can't be mistaken for the current one, and the reason is shown right next
+    // to it. The next successful preview (clearPreviewError, in doPreview below) restores both.
+    function showPreviewError(msg) {
+      const err = document.getElementById('preview-error');
+      if (!err) return;
+      document.getElementById('preview-section').style.display = '';  // reveal even before any prior success
+      err.textContent = msg;
+      const img = document.getElementById('preview-img');
+      const placeholder = document.getElementById('preview-placeholder');
+      if (img.naturalWidth) {
+        // A prior successful preview is showing — dim it rather than replace it, so the stale image
+        // stays visible (just clearly marked stale) instead of vanishing behind the placeholder.
+        img.classList.add('preview-stale');
+      } else if (placeholder) {
+        // Nothing has ever rendered into <img> — leaving it sourceless/broken would show the
+        // browser's broken-image glyph, so swap in a deliberate placeholder instead.
+        img.style.display = 'none';
+        placeholder.style.display = '';
+      }
+    }
+
+    function clearPreviewError() {
+      const err = document.getElementById('preview-error');
+      if (!err) return;
+      err.textContent = '';
+      const img = document.getElementById('preview-img');
+      const placeholder = document.getElementById('preview-placeholder');
+      img.classList.remove('preview-stale');
+      img.style.display = '';
+      if (placeholder) placeholder.style.display = 'none';
+    }
+
+    // Previews fire from several triggers (template pick, debounced field edits, language
+    // changes, manual refresh) with no serialization, so responses can land out of order.
+    // Each doPreview call claims a sequence number and only the newest may touch the UI —
+    // otherwise a slow stale response could replace the preview of what will actually print.
+    let previewSeq = 0;
+
+    // The ↻ button's icon spins (via aria-busy, see app.css) while a preview request is in flight —
+    // every generation funnels through doPreview, so debounced field/option edits and the post-print
+    // refresh give the same feedback as a manual click. A counter rather than a boolean: requests can
+    // overlap (a click during a debounced edit's fetch) and the spin must last until the LAST lands.
+    let previewsInFlight = 0;
+    function setPreviewBusy(delta) {
+      previewsInFlight = Math.max(0, previewsInFlight + delta);
+      if (previewsInFlight > 0) {
+        document.getElementById('preview-refresh').setAttribute('aria-busy', 'true');
+      }
+      // Dropping to 0 does NOT stop the spin here — the animationiteration listener below does.
+    }
+    // A local preview can land in well under one spin cycle, and a sub-100ms flick reads as a glitch
+    // rather than feedback — so the spin only stops at a rotation boundary: at least one full turn
+    // plays, and the icon always comes to rest upright instead of snapping mid-rotation. The event
+    // bubbles up from the animated .icon; while more requests are in flight it leaves the spin alone.
+    document.getElementById('preview-refresh').addEventListener('animationiteration', (e) => {
+      if (e.animationName === 'lbl-spin' && previewsInFlight === 0) {
+        e.currentTarget.setAttribute('aria-busy', 'false');
+      }
+    });
+
+    async function doPreview() {
+      const seq = ++previewSeq;
+      const payload = buildPayload();
+      setPreviewBusy(1);
+      try {
+        const res = await fetch(api('/preview'), {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(payload),
+        });
+        if (seq !== previewSeq) return; // superseded while in flight — the newer preview owns the UI
+        if (!res.ok) {
+          // 401 keeps the shared toast prompt (handleAuthError) — every other preview failure renders
+          // inline in the preview card instead, per the "no toast for preview errors" rule below.
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          if (seq !== previewSeq) return;
+          showPreviewError(previewErrorMessage(res.status, err.detail));
+          return;
+        }
+        const blob = await res.blob();
+        if (seq !== previewSeq) return;
+        const url = URL.createObjectURL(blob);
+        const img = document.getElementById('preview-img');
+        if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);  // release the previous preview's blob
+        img.src = url;
+        img.dataset.url = url;
+        document.getElementById('preview-section').style.display = '';
+        clearPreviewError();
+        clearStatus();
+      } catch (e) {
+        if (seq !== previewSeq) return;
+        showPreviewError('Network error: ' + e.message);
+      } finally {
+        setPreviewBusy(-1);
+      }
+    }
+
+    // Dimensions readout in the preview card head, from the decoded image + the template's media —
+    // two stacked rows (size, then media) rather than one line.
+    document.getElementById('preview-img').addEventListener('load', () => {
+      const img = document.getElementById('preview-img');
+      const sizeEl = document.getElementById('preview-dims-size');
+      const mediaEl = document.getElementById('preview-dims-media');
+      if (!sizeEl || !mediaEl || !img.naturalWidth) return;
+      const t = currentTemplate();
+      sizeEl.textContent = `${img.naturalWidth}×${img.naturalHeight}px`;
+      mediaEl.textContent = t && t.media ? mediaDesc(t.media) : '';
+    });
+
+    async function doPrint() {
+      const payload = buildPayload();
+      // Snapshot the form revision at send time. On completion we only clear userOverride if it is
+      // unchanged — so if the user starts editing the next label while this request is in flight, the
+      // stale reply won't clear a guard their newer input has re-raised (and won't let the post-print
+      // refresh refocus over it).
+      const printRevision = formRevision;
+      // Optimistic feedback: a print is sub-second and may finish between polls, so reflect "Printing…"
+      // the instant the job is sent. The post-print refresh and the background poll converge the badge
+      // back to the printer's real state; failure paths below reconcile it so it can never stick.
+      setStateBadge('printing', 'Printing…');
+      try {
+        const res = await fetch(api('/print'), {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) { refreshPrinterStatus(); return; }
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          showStatus(formatError(res.status, err.detail), 'err');
+          refreshPrinterStatus();  // e.g. a 409 fault — show the real state, not a stuck "Printing…"
+          return;
+        }
+        const json = await res.json();
+        // Choice submitted (incl. dry run) → a later roll swap may refocus again — but only if the user
+        // hasn't started a NEW choice since this print was sent (else we'd clear a guard newer input
+        // re-raised and let the post-print refresh wipe it). The persisted snapshot is marked consumed
+        // too, so restoring it after a tab switch/reload doesn't resurrect the guard (SUBMITTED_KEY).
+        if (formRevision === printRevision) {
+          userOverride = false;
+          try {
+            templateStore.setItem(SUBMITTED_KEY, '1');
+          } catch (e) {
+            /* storage disabled — nothing persisted, so nothing to mark consumed */
+          }
+        }
+        showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
+        await doPreview();
+        refreshPrinterStatus();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+        refreshPrinterStatus();
+      }
+    }
+
+    // ── Print-tab persistence: print options for the session (see OPTIONS_KEY above). Snapshots all
+    //    six controls; copies and threshold are saved as RAW strings — an intentionally-blank
+    //    threshold means "server default" (buildPayload sends null for it) and must round-trip as
+    //    such rather than becoming 0 or the placeholder value.
+    function saveOptions() {
+      try {
+        const red = document.getElementById('red');
+        templateStore.setItem(OPTIONS_KEY, JSON.stringify({
+          copies: document.getElementById('copies').value,
+          dry_run: document.getElementById('dry-run').checked,
+          high_res: document.getElementById('high-res').checked,
+          red: red ? red.checked : false,
+          dither: document.getElementById('dither').checked,
+          threshold: document.getElementById('threshold').value,
+        }));
+      } catch (e) {
+        /* storage disabled — the option changes still apply for this page view */
+      }
+    }
+
+    // Restore a saved print-options snapshot, if any. Corrupt JSON or a wrong-typed field is skipped
+    // per-field, never cleared — mirrors the other restores above. #high-res is skipped while the
+    // server has disabled it: the Jinja capability gate (:143) is authoritative, and a checked-but-
+    // disabled box would silently ride into every payload. #red is skipped entirely when the toggle
+    // isn't rendered (non-two-color model); otherwise it is restored here and re-gated by
+    // syncRedToggleForTemplate() when init's rebuildTemplatePicker() runs right after — restore-then-
+    // let-sync-fix, so this MUST run before that call. Fires no change/input events, so it never
+    // schedules a preview itself — the restored state rides the first DOMContentLoaded preview.
+    function restorePrintOptions() {
+      let saved;
+      try {
+        saved = JSON.parse(templateStore.getItem(OPTIONS_KEY));
+      } catch (e) {
+        return;
+      }
+      if (!saved) return;
+      if (typeof saved.copies === 'string') document.getElementById('copies').value = saved.copies;
+      if (typeof saved.dry_run === 'boolean') document.getElementById('dry-run').checked = saved.dry_run;
+      const highRes = document.getElementById('high-res');
+      if (typeof saved.high_res === 'boolean' && !highRes.disabled) highRes.checked = saved.high_res;
+      const red = document.getElementById('red');
+      if (red && typeof saved.red === 'boolean') red.checked = saved.red;
+      if (typeof saved.dither === 'boolean') document.getElementById('dither').checked = saved.dither;
+      if (typeof saved.threshold === 'string') document.getElementById('threshold').value = saved.threshold;
+      clampCopies();
+      updatePrintLabel();
+      syncThresholdToggledByDither();
+    }
+
+    // ── Copies stepper + dynamic Print button label. ──────────────────────────────
+    function clampCopies() {
+      const el = document.getElementById('copies');
+      const v = parseInt(el.value, 10);
+      if (Number.isFinite(v)) el.value = Math.min(10, Math.max(1, v));
+    }
+
+    function updatePrintLabel() {
+      const label = document.getElementById('print-label');
+      if (document.getElementById('dry-run').checked) {
+        label.textContent = 'Dry run';
+        return;
+      }
+      const n = parseInt(document.getElementById('copies').value, 10) || 1;
+      label.textContent = n > 1 ? `Print ${n} labels` : 'Print label';
+    }
+
+    function stepCopies(delta) {
+      const el = document.getElementById('copies');
+      el.value = (parseInt(el.value, 10) || 1) + delta;
+      clampCopies();
+      updatePrintLabel();
+      saveOptions();  // the +/- buttons mutate .value directly, which fires no 'input' event of its own
+    }
+
+    document.getElementById('copies-minus').addEventListener('click', () => stepCopies(-1));
+    document.getElementById('copies-plus').addEventListener('click', () => stepCopies(1));
+    document.getElementById('copies').addEventListener('input', () => { clampCopies(); updatePrintLabel(); saveOptions(); });
+    document.getElementById('dry-run').addEventListener('change', () => { updatePrintLabel(); saveOptions(); });
+
+    document.getElementById('size-filter-toggle').addEventListener('click', () => {
+      showAllSizes = !showAllSizes;
+      localStorage.setItem(SHOW_ALL_SIZES_KEY, showAllSizes ? '1' : '0');
+      rebuildTemplatePicker();  // not a roll change → rollChanged false → no refocus, just regroup
+    });
+
+    // Disable threshold input when dither is on: threshold is a no-op under Floyd-Steinberg
+    // dithering in brother_ql, so greying it out signals it has no effect and prevents
+    // misleading idempotency fingerprint divergence from a value the driver ignores.
+    function syncThresholdToggledByDither() {
+      const ditherOn = document.getElementById('dither').checked;
+      const tInput = document.getElementById('threshold');
+      const tHint = document.getElementById('threshold-hint');
+      tInput.disabled = ditherOn;
+      tInput.style.opacity = ditherOn ? '0.4' : '';
+      tHint.textContent = ditherOn
+        ? '— ignored when dithering is on'
+        : '— blank = default';
+    }
+    // Shared debounced preview trigger for the B/W + quality option listeners below (same 600ms as
+    // the field input listener above) — one shared instance so rapid option flips (e.g. dragging the
+    // threshold spinner) coalesce into a single request instead of one per change. Copies and dry-run
+    // are deliberately NOT wired here: neither affects buildPayload's preview-relevant fields.
+    const schedulePreview = debounce(doPreview, 600);
+    document.getElementById('dither').addEventListener('change', () => {
+      syncThresholdToggledByDither();
+      saveOptions();
+      schedulePreview();
+    });
+    syncThresholdToggledByDither();
+    document.getElementById('threshold').addEventListener('input', () => { saveOptions(); schedulePreview(); });
+    document.getElementById('high-res').addEventListener('change', () => { saveOptions(); schedulePreview(); });
+    const redToggle = document.getElementById('red');
+    if (redToggle) redToggle.addEventListener('change', () => { saveOptions(); schedulePreview(); });  // absent on non-two-color models
+
+    // Re-render the preview when the nav's label language changes.
+    onLanguageChange(() => doPreview());
+
+    // Init
+    initTokenInput();
+    updatePrintLabel();
+    renderFields();
+    restoreSavedFields();   // after renderFields() so the field inputs it fills already exist
+    restorePrintOptions();  // before rebuildTemplatePicker() so its syncRedToggleForTemplate() re-gates a restored #red
+    rebuildTemplatePicker();  // group the picker + badge from required media; refreshed once status loads
+    refreshPrinterStatus();
+    if (LIVE_STATUS_POLL) statusPoller.start();  // visible-tab poll, SNMP only
+    // The FIRST preview must carry the restored saved language, but labelito.js's initLanguage()
+    // (which sets #language-select's value from localStorage) only runs on DOMContentLoaded — and
+    // this inline script executes synchronously during parsing, well before that event fires. Firing
+    // the first doPreview() from a DOMContentLoaded listener registered here — AFTER labelito.js's own
+    // listener (its <script> tag loads and runs earlier, in the shared head) — relies on the DOM
+    // spec's same-event listener-order guarantee so initLanguage() has already run by the time this
+    // fires. Without this, the first preview silently used the server's default_language regardless
+    // of what the user had previously picked.
+    document.addEventListener('DOMContentLoaded', () => {
+      if (TEMPLATES.length > 0) doPreview();
+    });
+  </script>
+</body>
+</html>

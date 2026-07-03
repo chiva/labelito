@@ -1,0 +1,8 @@
+# French — author-supplied seed; native review welcome (see CONTRIBUTING).
+frozen: "Congelé"
+stored: "Conservé"
+expires: "Expire"
+_date_format: "%d/%m/%Y"
+_datetime_format: "%d/%m/%Y %H:%M"
+_weekdays_abbr: [lun, mar, mer, jeu, ven, sam, dim]
+_weekdays_full: [lundi, mardi, mercredi, jeudi, vendredi, samedi, dimanche]

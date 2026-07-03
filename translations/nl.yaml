@@ -1,0 +1,8 @@
+# Dutch — author-supplied seed; native review welcome (see CONTRIBUTING).
+frozen: "Ingevroren"
+stored: "Bewaard"
+expires: "Houdbaar tot"
+_date_format: "%d-%m-%Y"
+_datetime_format: "%d-%m-%Y %H:%M"
+_weekdays_abbr: [ma, di, wo, do, vr, za, zo]
+_weekdays_full: [maandag, dinsdag, woensdag, donderdag, vrijdag, zaterdag, zondag]

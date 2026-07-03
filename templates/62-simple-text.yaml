@@ -1,0 +1,11 @@
+name: simple-text
+description: Single text block, no frills
+label: "62"
+rotate: 0
+fields:
+  required: [text]
+  optional: []
+layout:
+  - {type: spacer, size: 16}
+  - {type: text, text: "{{text}}", size: 48, align: center}
+  - {type: spacer, size: 16}

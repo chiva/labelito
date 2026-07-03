@@ -1,0 +1,8 @@
+# English — authoritative catalog (also the fallback for missing keys).
+frozen: "Frozen"
+stored: "Stored"
+expires: "Expires"
+_date_format: "%m/%d/%Y"
+_datetime_format: "%m/%d/%Y %H:%M"
+_weekdays_abbr: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]
+_weekdays_full: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]

@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+{% from "partials/_icons.html" import icon %}
+<html lang="en">
+<head>
+  <title>Labelito — Template Studio</title>
+  {% include "partials/_head.html" %}
+  <style>
+    /* Studio-specific styles; shared components live in app.css. */
+
+    .studio-toolbar { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    .studio-toolbar #load-select { max-width: 260px; }
+
+    /* Sample-value inputs render as a responsive grid of .field blocks (like the print page). */
+    #fields-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-bottom: 16px; }
+    #fields-container:empty { display: none; margin-bottom: 0; }
+    .field-label .optional-tag { text-transform: none; letter-spacing: 0; color: var(--ink3); font-weight: 400; }
+    #fields-empty { display: block; margin: 0 0 14px; }
+
+    #draft-preview .paper-frame { min-height: 90px; margin-top: 4px; }
+    #preview-img:not([src]) { display: none; }
+
+    /* "Your Printer" callout + match highlighting in the label reference (ids/classes e2e-pinned). */
+    .your-printer { background: color-mix(in srgb, var(--blue) 10%, transparent); border: 1px solid color-mix(in srgb, var(--blue) 35%, transparent); border-radius: 11px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; line-height: 1.6; }
+    #your-printer:empty { display: none; }
+    .your-printer code { font-family: var(--font-mono); font-size: 12px; background: color-mix(in srgb, var(--blue) 18%, transparent); padding: 1px 5px; border-radius: 4px; }
+    .your-printer .yp-matches { margin-top: 3px; color: var(--ink2); }
+    .your-printer .yp-red { margin-top: 3px; color: var(--amber); }
+    .label-ref .table code { font-family: var(--font-mono); font-size: 12px; }
+    .label-ref .table tr.match td { background: color-mix(in srgb, var(--green) 10%, transparent); }
+    .label-ref .table tr.match-geo td { background: color-mix(in srgb, var(--amber) 10%, transparent); }
+    .label-ref .match-tick { color: var(--green-light); font-weight: 700; margin-left: 8px; font-family: var(--font-mono); font-size: 11px; }
+    [data-theme="light"] .label-ref .match-tick { color: var(--green); }
+    .label-ref .match-tick.geo { color: var(--amber); }
+    .label-ref .table .btn { padding: 4px 12px; font-size: 12px; }
+    details.label-table .section-body { overflow-x: auto; }
+
+    /* Template-format cheatsheet: restyled wrapper around the unchanged reference content. */
+    .help-ref { font-size: 13px; line-height: 1.6; color: var(--ink2); }
+    .help-ref summary { cursor: pointer; font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink3); }
+    .help-ref h3 { font-size: 13px; color: var(--ink); margin: 16px 0 4px; }
+    .help-ref code { font-family: var(--font-mono); font-size: 12px; background: var(--panel2); border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; }
+    .help-ref table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    .help-ref th { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink3); text-align: left; font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+    .help-ref td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+
+    #confirm-dialog p { margin: 0; font-size: 14px; line-height: 1.55; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+    .dialog-actions .btn-primary { padding: 9px 16px; font-size: 13.5px; box-shadow: none; }
+  </style>
+</head>
+<body>
+  {% include "partials/_nav.html" %}
+
+  <div class="page">
+    <div class="page-head">
+      <div>
+        <h1>Template studio</h1>
+        <div class="subtitle">yaml editor · templates {% if templates_writable %}writable{% else %}read-only{% endif %} · library {% if templates_loadable %}loadable{% else %}not loadable{% endif %}</div>
+      </div>
+      <div class="studio-toolbar">
+        {% if templates_loadable %}
+        <select id="load-select" class="select-compact" aria-label="Load an existing template">
+          <option value="">Load an existing template…</option>
+        </select>
+        <button class="btn" type="button" onclick="loadSelected()">Load</button>
+        {% endif %}
+        <button class="btn" type="button" onclick="copyYaml()">{{ icon("copy") }}Copy</button>
+        <button class="btn" type="button" onclick="downloadYaml()">{{ icon("download") }}Download YAML</button>
+        {% if templates_writable %}
+        <button class="btn btn-success" type="button" onclick="saveToServer()">{{ icon("floppy-disk") }}Save to server</button>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if not templates_writable %}
+    <p class="hint" style="margin:-8px 0 16px">Server-save is disabled (templates are read-only). Use Copy or Download YAML, then commit the file to your templates directory.</p>
+    {% endif %}
+
+    <div class="grid2">
+      <!-- ── Left: YAML editor ───────────────────────────────────────────── -->
+      <div class="code-panel">
+        <div class="code-panel-head">
+          <span>draft.yaml</span>
+          <span>the source of truth — version-controllable</span>
+        </div>
+        <div class="yaml-wrap">
+          <pre id="yaml-hl" class="yaml-hl" aria-hidden="true"><code id="yaml-hl-code"></code></pre>
+          <textarea id="yaml" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Template YAML"></textarea>
+        </div>
+        <!-- Proxy horizontal scrollbar for #yaml (app.css hides the textarea's native one on
+             WebKit/Chromium, which paints its own text cursor over its own scrollbars). The spacer's
+             width is kept equal to #yaml's scrollWidth by JS; scrollLeft is mirrored both ways. -->
+        <div id="yaml-hscroll" aria-hidden="true" tabindex="-1"><div id="yaml-hscroll-spacer"></div></div>
+      </div>
+
+      <!-- ── Right: sample fields + live draft preview ───────────────────── -->
+      <div class="card" id="draft-preview">
+        <div class="card-head">
+          <span class="card-title">Draft preview</span>
+          <span id="draft-status" class="pill pill-muted">…</span>
+        </div>
+        <p class="hint" id="fields-empty">Auto-detected <code>{{ '{{placeholder}}' }}</code> fields appear here. Computed tokens (date/now/seq) and translations are excluded.</p>
+        <div id="fields-container"></div>
+        <div class="paper-frame"><img id="preview-img" alt="Label preview"></div>
+      </div>
+    </div>
+
+    <!-- ── Label reference: every label the configured model supports + what the printer has loaded ── -->
+    <div class="card label-ref" style="margin-top:18px">
+      <div class="card-head">
+        <span class="card-title">Label reference</span>
+      </div>
+      <p class="hint" style="margin:0 0 14px">Every label your configured printer model supports — use one of these <code>id</code>s as the <code>label:</code> value in the YAML above. <strong>Use</strong> sets it for you. When the printer answers SNMP, the loaded roll and the matching label id(s) are highlighted below.</p>
+      <div id="your-printer"></div>
+      <details class="section label-table">
+        <summary>All supported labels</summary>
+        <div class="section-body">
+          <table class="table">
+            <thead><tr><th>id</th><th>media</th><th></th></tr></thead>
+            <tbody id="label-ref-body"></tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+
+    <!-- ── Template format cheatsheet — a quick reference; docs/template-format.md is authoritative ──
+         The block below is wrapped in a Jinja raw guard so the literal token examples (name/date/now/
+         seq placeholders and the [[key]] form) are emitted verbatim, not interpreted as empty Jinja
+         variables on render. This comment carries no template tags so it cannot reopen the guard. -->
+    {% raw %}
+    <div class="card help-ref" style="margin-top:18px">
+      <details>
+        <summary>Template format reference</summary>
+        <p class="hint">A quick cheatsheet. The full reference (every parameter, defaults, and bounds) lives in <code>docs/template-format.md</code> in the repo.</p>
+
+        <h3>Top-level keys</h3>
+        <p><code>name</code> (unique id), <code>description</code>, <code>label</code> (a label id from the reference above), and <code>layout</code> are required. <code>rotate</code> (0/90/180/270) and <code>fields</code> are optional.</p>
+
+        <h3>Fields &amp; tokens</h3>
+        <p>Declare <code>fields.required</code>/<code>fields.optional</code> (names: letters, digits, <code>_</code>). Reference each with <code>{{name}}</code> in an element's <code>text</code>, <code>data</code>, or <code>name</code>. Computed tokens are always available: <code>{{date}}</code>, <code>{{now}}</code> (with <code>±Nd/w/m/y</code> offset and <code>:strftime</code> format), and <code>{{seq}}</code> (sequence batches). Translation words use <code>[[key]]</code>.</p>
+
+        <h3>Element types</h3>
+        <table>
+          <thead><tr><th>type</th><th>key attributes</th></tr></thead>
+          <tbody>
+            <tr><td><code>title</code> / <code>subtitle</code></td><td><code>text</code>, <code>align</code>, <code>max_lines</code>, <code>bold</code></td></tr>
+            <tr><td><code>text</code></td><td><code>text</code>, <code>size</code>, <code>align</code>, <code>bold</code>, <code>max_lines</code></td></tr>
+            <tr><td><code>qr</code></td><td><code>data</code>, <code>size</code>, <code>align</code></td></tr>
+            <tr><td><code>barcode</code></td><td><code>data</code>, <code>symbology</code>, <code>height</code>, <code>align</code>, <code>show_value</code></td></tr>
+            <tr><td><code>image</code></td><td><code>field</code>, <code>max_height</code>, <code>align</code></td></tr>
+            <tr><td><code>icon</code></td><td><code>name</code>, <code>size</code>, <code>align</code>, <code>collection</code>, <code>style</code></td></tr>
+            <tr><td><code>line</code></td><td><code>thickness</code>, <code>margin</code></td></tr>
+            <tr><td><code>box</code></td><td><code>height</code>, <code>border</code></td></tr>
+            <tr><td><code>spacer</code></td><td><code>size</code></td></tr>
+            <tr><td><code>row</code></td><td><code>children</code>, <code>align_items</code>, <code>spacing</code> (children take <code>width</code>/<code>weight</code>/<code>valign</code>)</td></tr>
+          </tbody>
+        </table>
+        <p>Every element also takes <code>padding_top</code>/<code>padding_bottom</code> and <code>color</code> (<code>red</code> on two-color models).</p>
+      </details>
+    </div>
+    {% endraw %}
+
+    <div class="card" style="margin-top:18px">
+      <div class="card-head">
+        <span class="card-title">API token</span>
+      </div>
+      <div class="field">
+        <input type="password" id="api-token" class="input" placeholder="Bearer token" autocomplete="off">
+        <span class="hint">Saved in this browser only; leave blank if the server runs unauthenticated. Entering it re-checks the printer status for the label reference.</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="status-area"></div>
+
+  <!-- In-page confirm modal. A native confirm() opened by activating "Load" with the Enter key is
+       instantly auto-dismissed by that same keystroke's keyup (a Chromium quirk that defaults to OK),
+       which would silently bypass this guard and discard edits. A <dialog> submits on keydown only,
+       so the residual keyup can't dismiss it; Cancel is focused so a stray key can't confirm. -->
+  <dialog id="confirm-dialog" aria-labelledby="confirm-message">
+    <form method="dialog">
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button class="btn" id="confirm-cancel" type="submit" value="cancel">Cancel</button>
+        <button class="btn btn-primary" type="submit" value="confirm">Replace YAML</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    // Most-recent detected field contract, so the preview gathers exactly the auto-detected fields
+    // (mirrors index.html's gatherFields, driven by the parsed contract instead of the picker data).
+    let contract = {required: [], optional: []};
+
+    // The YAML last seeded or loaded, so "Load existing" can confirm before discarding edits.
+    let lastLoadedYaml = '';
+
+    // Every label the configured model supports, each with the media it requires (mm) — embedded by
+    // the editor route from the same source as the print-page badge and the /print media guard.
+    const LABELS = {{ labels | tojson }};
+
+    // The draft-status pill in the preview card head: green once the last parse+preview round-trip
+    // succeeded, amber when the server rejected the draft (the error itself lands in the toast), and
+    // muted for the indeterminate states (empty draft, auth required, network down).
+    function setDraftStatus(state) {
+      const pill = document.getElementById('draft-status');
+      if (!pill) return;
+      if (state === 'valid') { pill.className = 'pill pill-green'; pill.textContent = 'valid'; }
+      else if (state === 'invalid') { pill.className = 'pill pill-amber'; pill.textContent = 'invalid'; }
+      else if (state === 'empty') { pill.className = 'pill pill-muted'; pill.textContent = 'empty'; }
+      else { pill.className = 'pill pill-muted'; pill.textContent = 'unknown'; }
+    }
+
+    // ── Field-input rendering — reused verbatim from the print page (index.html#renderFields):
+    //    one labelled text input per declared field, optional tagged, debounced re-preview on input.
+    function renderFields() {
+      const container = document.getElementById('fields-container');
+      const prev = gatherFields();  // preserve already-typed sample values across re-detection
+      container.innerHTML = '';
+      const allFields = [
+        ...contract.required.map(f => ({name: f, optional: false})),
+        ...contract.optional.map(f => ({name: f, optional: true})),
+      ];
+      document.getElementById('fields-empty').style.display = allFields.length ? 'none' : '';
+      for (const {name, optional} of allFields) {
+        const wrap = document.createElement('div');
+        wrap.className = 'field';
+        const lbl = document.createElement('label');
+        lbl.className = 'field-label';
+        lbl.htmlFor = `field-${name}`;
+        // The field NAME is server-supplied (parsed from user draft YAML), so never interpolate it
+        // into innerHTML — that would execute a name like `<img src=x onerror=...>` in this page,
+        // which holds the API token in localStorage. Use a text node for the name and a separate
+        // element node for the optional marker so neither path can inject markup.
+        lbl.appendChild(document.createTextNode(name));
+        if (optional) {
+          const tag = document.createElement('span');
+          tag.className = 'optional-tag';
+          tag.textContent = '(optional)';
+          lbl.appendChild(document.createTextNode(' '));
+          lbl.appendChild(tag);
+        }
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'input';
+        inp.id = `field-${name}`;
+        inp.name = name;
+        inp.placeholder = name;
+        if (prev[name] !== undefined) inp.value = prev[name];
+        inp.addEventListener('input', debounce(doPreview, 600));
+        wrap.appendChild(lbl);
+        wrap.appendChild(inp);
+        container.appendChild(wrap);
+      }
+    }
+
+    function gatherFields() {
+      const fields = {};
+      for (const name of [...contract.required, ...contract.optional]) {
+        const el = document.getElementById(`field-${name}`);
+        if (el && el.value.trim()) fields[name] = el.value.trim();
+      }
+      return fields;
+    }
+
+    function currentYaml() {
+      return document.getElementById('yaml').value;
+    }
+
+    // ── Parse → update the auto-detected field form. A 422 is surfaced inline; the preview call
+    //    that follows will also fail-and-report, so parse stays quiet on the happy path.
+    // Takes the caller's preview sequence number: a stale parse response must not overwrite
+    // `contract` or re-render the field form either — the inputs would silently belong to an
+    // older draft and later preview/save payloads would mis-shape their values.
+    async function refreshFields(seq) {
+      const yaml = currentYaml();
+      if (!yaml.trim()) { contract = {required: [], optional: []}; renderFields(); return false; }
+      try {
+        const res = await fetch(api('/templates/parse'), {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify({yaml}),
+        });
+        if (seq !== previewSeq) return false; // superseded — leave the field form to the newer call
+        if (!res.ok) {
+          if (handleAuthError(res)) return false;
+          return false;  // the preview call reports the validation error inline
+        }
+        const json = await res.json();
+        if (seq !== previewSeq) return false;
+        contract = json.fields || {required: [], optional: []};
+        renderFields();
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // ── Draft preview → swap the <img>. Validation errors (422) are shown inline. ──
+    // Draft previews fire from typing (debounced), field edits, loads and language changes with
+    // no serialization, so responses can land out of order. Each call claims a sequence number
+    // and only the newest may touch the preview/status — a stale response must not overwrite them.
+    let previewSeq = 0;
+
+    async function doPreview() {
+      const seq = ++previewSeq;
+      await refreshFields(seq);
+      if (seq !== previewSeq) return; // superseded while in flight — the newer preview owns the UI
+      const yaml = currentYaml();
+      if (!yaml.trim()) {
+        // Drop the now-orphaned preview so a stale image isn't mistaken for the empty draft's output.
+        const img = document.getElementById('preview-img');
+        if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+        img.removeAttribute('src');
+        delete img.dataset.url;
+        clearStatus();
+        setDraftStatus('empty');
+        return;
+      }
+      const payload = {yaml, fields: gatherFields(), language: currentLanguage()};
+      try {
+        const res = await fetch(api('/preview/draft'), {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify(payload),
+        });
+        if (seq !== previewSeq) return;
+        if (!res.ok) {
+          if (handleAuthError(res)) { setDraftStatus('unknown'); return; }
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          if (seq !== previewSeq) return;
+          const d = err.detail || err;
+          const msg = (d && d.error) ? d.error : formatError(res.status, d);
+          showStatus('Preview error: ' + msg, 'err');
+          setDraftStatus('invalid');
+          return;
+        }
+        const blob = await res.blob();
+        if (seq !== previewSeq) return;
+        const url = URL.createObjectURL(blob);
+        const img = document.getElementById('preview-img');
+        if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+        img.src = url;
+        img.dataset.url = url;
+        clearStatus();
+        setDraftStatus('valid');
+      } catch (e) {
+        if (seq !== previewSeq) return;
+        showStatus('Network error: ' + e.message, 'err');
+        setDraftStatus('unknown');
+      }
+    }
+
+    // ── Copy / Download — work everywhere, independent of the read-only mount. ──
+    function copyYaml() {
+      const yaml = currentYaml();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(yaml).then(
+          () => showStatus('YAML copied to clipboard.', 'ok'),
+          () => showStatus('Could not copy — select the text and copy manually.', 'err'),
+        );
+      } else {
+        showStatus('Clipboard unavailable — select the text and copy manually.', 'err');
+      }
+    }
+
+    function downloadYaml() {
+      const yaml = currentYaml();
+      const name = (extractName(yaml) || 'template') + '.yaml';
+      const blob = new Blob([yaml], {type: 'application/x-yaml'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    // Best-effort scan for the top-level `name:` so a download/save defaults to a sensible filename.
+    function extractName(yaml) {
+      const m = yaml.match(/^name:\s*['"]?([^'"\n]+)['"]?\s*$/m);
+      return m ? m[1].trim() : '';
+    }
+
+    async function saveToServer() {
+      const yaml = currentYaml();
+      const name = extractName(yaml);
+      if (!name) { showStatus('Add a top-level `name:` before saving.', 'err'); return; }
+      try {
+        const res = await fetch(api('/templates'), {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify({name, yaml}),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          const d = err.detail || err;
+          const msg = (d && d.error) ? d.error : formatError(res.status, d);
+          showStatus('Save error: ' + msg, 'err');
+          return;
+        }
+        const json = await res.json();
+        showStatus(`Saved template "${json.saved}" and reloaded.`, 'ok');
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    // ── Load existing template (gated by TEMPLATES_LOADABLE) ──
+    // Populate the picker from the public /templates list, grouped into <optgroup>s by media size —
+    // the same groupKeyOf/groupTitleOf/groupSortKey helpers (labelito.js) the print page's template
+    // picker uses, so a studio with many sizes doesn't dump everything into one flat list. Build
+    // options/optgroups with textContent (never innerHTML) so a server-supplied name/description can
+    // never inject markup into this token-bearing page — same XSS discipline as renderFields/showStatus.
+    async function populateLoadSelect() {
+      const sel = document.getElementById('load-select');
+      if (!sel) return;  // control absent when TEMPLATES_LOADABLE=false
+      try {
+        const res = await fetch(api('/templates'));
+        if (!res.ok) return;
+        const templates = await res.json();
+
+        // Bucket by media group (null media → the shared 'other' key), keeping a representative
+        // media + label per group for the <optgroup> title.
+        const groups = new Map();  // key -> {media, label, items: [t]}
+        for (const t of templates) {
+          const key = groupKeyOf(t.media);
+          let g = groups.get(key);
+          if (!g) { g = {media: t.media || null, label: t.label, items: []}; groups.set(key, g); }
+          g.items.push(t);
+        }
+        const ordered = [...groups.entries()].sort((a, b) => {
+          const ka = groupSortKey(a[1].media), kb = groupSortKey(b[1].media);
+          return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
+        });
+
+        for (const [, g] of ordered) {
+          const optgroup = document.createElement('optgroup');
+          optgroup.label = groupTitleOf(g.media, g.label);
+          for (const t of g.items) {
+            const opt = document.createElement('option');
+            opt.value = t.name;
+            opt.textContent = t.description ? `${t.name} — ${t.description}` : t.name;
+            optgroup.appendChild(opt);
+          }
+          sel.appendChild(optgroup);
+        }
+      } catch (e) { /* offline / no templates — leave the placeholder option */ }
+    }
+
+    // Promise-based replacement for native confirm() — resolves true only when the user explicitly
+    // chooses "Replace YAML". The message is set via textContent (never innerHTML) so a server-supplied
+    // template name can't inject markup into this token-bearing page — same XSS discipline as showStatus.
+    function confirmDiscard(message) {
+      const dlg = document.getElementById('confirm-dialog');
+      document.getElementById('confirm-message').textContent = message;
+      return new Promise((resolve) => {
+        function onClose() {
+          dlg.removeEventListener('close', onClose);
+          resolve(dlg.returnValue === 'confirm');
+        }
+        dlg.returnValue = 'cancel';  // default when dismissed via Esc or backdrop
+        dlg.addEventListener('close', onClose);
+        dlg.showModal();
+        document.getElementById('confirm-cancel').focus();  // safe default — a stray key can't confirm
+      });
+    }
+
+    async function loadSelected() {
+      const sel = document.getElementById('load-select');
+      if (!sel || !sel.value) return;
+      const name = sel.value;
+      // Guard against silently discarding unsaved edits.
+      if (currentYaml().trim() && currentYaml() !== lastLoadedYaml &&
+          !(await confirmDiscard(`Replace the current YAML with template "${name}"? Unsaved edits will be lost.`))) {
+        return;
+      }
+      try {
+        const res = await fetch(api(`/templates/${encodeURIComponent(name)}/source`), {
+          headers: authHeaders(),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          const d = err.detail || err;
+          const msg = (d && d.error) ? d.error : formatError(res.status, d);
+          showStatus('Load error: ' + msg, 'err');
+          return;
+        }
+        const json = await res.json();
+        document.getElementById('yaml').value = json.yaml;
+        syncYamlHighlight();
+        lastLoadedYaml = json.yaml;
+        clearStatus();
+        doPreview();
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      }
+    }
+
+    // ── Label reference + "Your Printer" ─────────────────────────────────────────────────────────
+    // The media rule mirrors the server (app.media.media_matches) and the print page exactly — the
+    // shared mediaDesc/mediaCompat/loadedMediaFrom helpers live in labelito.js — so an author
+    // choosing a label here sees the same match the /print guard will enforce.
+
+    // Classify a label against the loaded roll: 'match' (geometry agrees, plain media), 'geo'
+    // (geometry agrees but the label is red/black two-colour media whose colour SNMP can't verify —
+    // so it is NOT a definite match against a possibly-plain roll), 'mismatch', or 'unknown'.
+    function classifyLabel(l, loaded) {
+      if (!loaded) return 'unknown';
+      if (mediaCompat(l.media, loaded) !== 'match') return 'mismatch';
+      return l.red ? 'geo' : 'match';
+    }
+
+    // The document's root-mapping indentation = the leading whitespace of its first non-blank,
+    // non-comment line. PyYAML accepts (and the loader validates) a uniformly-indented root mapping,
+    // so the label edit must operate at that indent rather than assuming column 0 — otherwise a
+    // column-0 insert mixes indentation levels and turns valid YAML into a parse error.
+    // A YAML directive (`%...`) or document marker (`---`/`...`) is not part of the root mapping, so
+    // it must not be treated as the first key line when deriving the indent.
+    const isDirectiveOrMarker = (line) => {
+      const t = line.trim();
+      return t === '---' || t.startsWith('--- ') || t === '...' || t.startsWith('%');
+    };
+    function rootIndent(yaml) {
+      for (const ln of yaml.split('\n')) {
+        const t = ln.trim();
+        if (t === '' || t.startsWith('#') || isDirectiveOrMarker(ln)) continue;
+        return ln.match(/^(\s*)/)[1];
+      }
+      return '';
+    }
+
+    // A root-level key matcher at exactly `indent`: an optional quote around the key name and any
+    // whitespace before the colon (`label:`, `label :`, `"label":` are all valid YAML). Requiring the
+    // key immediately after the root indent means a more-indented nested key (e.g. inside a layout
+    // element) is never mistaken for a root key.
+    const rootKey = (indent, name) => new RegExp(`^${indent}(["']?)${name}\\1\\s*:`);
+
+    // Set the root-level `label:` in the YAML to `id` (replacing the existing key in place, else
+    // inserting after description:/name:, else prepending) at the document's root indentation. The id
+    // is a brother_ql label identifier (not user input) and only lands in the textarea value (text,
+    // never markup), so it can't inject.
+    function useLabel(id) {
+      const ta = document.getElementById('yaml');
+      const yaml = ta.value;
+      const indent = rootIndent(yaml);
+      const line = `${indent}label: "${id}"`;
+      const isKey = (ln, name) => rootKey(indent, name).test(ln);
+      const lines = yaml.split('\n');
+
+      if (lines.some((ln) => isKey(ln, 'label'))) {
+        // Collapse to exactly ONE root label key: keep the first occurrence (rewritten to the
+        // selected id at the root indent) and DROP any later duplicate root label lines. PyYAML keeps
+        // the LAST of duplicate keys, so leaving any duplicate — even with an equal value — keeps the
+        // template ambiguous; a later edit to only the first line would silently revert preview/save
+        // to the stale later key, the exact wrong-media failure this guards against.
+        const out = [];
+        let done = false;
+        for (const ln of lines) {
+          if (isKey(ln, 'label')) {
+            if (!done) { out.push(line); done = true; }
+          } else {
+            out.push(ln);
+          }
+        }
+        ta.value = out.join('\n');
+      } else {
+        // No label key yet: insert one right after the first description:/name: anchor (preserving
+        // its indentation via `line`). With no anchor either, insert after a leading document marker
+        // (`---`) when present — prepending a column-0 line BEFORE the marker would split the file
+        // into an invalid/multi-document stream — else prepend at the top.
+        let idx = lines.findIndex((ln) => isKey(ln, 'description'));
+        if (idx === -1) idx = lines.findIndex((ln) => isKey(ln, 'name'));
+        if (idx === -1) idx = lines.findIndex((ln) => isDirectiveOrMarker(ln));
+        if (idx === -1) {
+          ta.value = `${line}\n${yaml}`;
+        } else {
+          lines.splice(idx + 1, 0, line);
+          ta.value = lines.join('\n');
+        }
+      }
+      syncYamlHighlight();
+      doPreview();
+    }
+
+    // Render the static reference table. `loaded` (when known) highlights every label that matches
+    // the roll. Built with DOM nodes + textContent — same XSS discipline as the rest of the page.
+    function renderLabelReference(loaded) {
+      const body = document.getElementById('label-ref-body');
+      body.replaceChildren();
+      for (const l of LABELS) {
+        const tr = document.createElement('tr');
+        const cls = classifyLabel(l, loaded);
+        if (cls === 'match') tr.className = 'match';
+        else if (cls === 'geo') tr.className = 'match-geo';
+
+        const idTd = document.createElement('td');
+        const code = document.createElement('code');
+        code.textContent = l.id;
+        idTd.appendChild(code);
+        if (cls === 'match') {
+          const tick = document.createElement('span');
+          tick.className = 'match-tick';
+          tick.textContent = '✓';
+          tick.title = 'Matches the loaded roll';
+          idTd.appendChild(tick);
+        } else if (cls === 'geo') {
+          const tick = document.createElement('span');
+          tick.className = 'match-tick geo';
+          tick.textContent = '✓ red?';
+          tick.title = 'Geometry matches the loaded roll, but this is red/black media. SNMP does not '
+            + 'report roll colour — verify a red roll is loaded, or a red template prints black-only.';
+          idTd.appendChild(tick);
+        }
+
+        const mediaTd = document.createElement('td');
+        mediaTd.textContent = l.media ? mediaDesc(l.media) : 'unknown';
+
+        const useTd = document.createElement('td');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn use-label';
+        btn.textContent = 'Use';
+        btn.addEventListener('click', () => useLabel(l.id));
+        useTd.appendChild(btn);
+
+        tr.append(idTd, mediaTd, useTd);
+        body.appendChild(tr);
+      }
+    }
+
+    // The highlighted "Your Printer" entry — only when the printer answers a media-readable status
+    // query. Returns the loaded media (so the table can mark matches) or null when unavailable.
+    function renderYourPrinter(status) {
+      const box = document.getElementById('your-printer');
+      box.replaceChildren();
+      const loaded = loadedMediaFrom(status);
+      if (!loaded) return null;
+      box.className = 'your-printer';
+      const head = document.createElement('strong');
+      head.textContent = 'Your Printer: ';
+      box.appendChild(head);
+      box.append(`loaded ${mediaDesc(loaded)}`);
+      const idList = (parent, prefix, ids) => {
+        const line = document.createElement('div');
+        line.append(prefix);
+        ids.forEach((id, i) => {
+          if (i) line.append(', ');
+          const c = document.createElement('code');
+          c.textContent = id;
+          line.appendChild(c);
+        });
+        parent.appendChild(line);
+        return line;
+      };
+      const matches = LABELS.filter(l => classifyLabel(l, loaded) === 'match').map(l => l.id);
+      // Red labels match the geometry but not necessarily the colour — listed separately, never as a
+      // definite match, so an author isn't steered onto red media for a possibly-plain roll.
+      const redMatches = LABELS.filter(l => classifyLabel(l, loaded) === 'geo').map(l => l.id);
+      if (matches.length) {
+        idList(box, 'Matching label id(s): ', matches).className = 'yp-matches';
+      } else {
+        const none = document.createElement('div');
+        none.className = 'yp-matches';
+        none.textContent = 'No supported label matches the loaded roll.';
+        box.appendChild(none);
+      }
+      if (redMatches.length) {
+        idList(box, 'Red/black labels that fit this geometry (roll colour not verified): ', redMatches)
+          .className = 'yp-red';
+      }
+      return loaded;
+    }
+
+    // Fetch the printer status once and render the reference. A 401/offline/non-network printer just
+    // leaves the table un-highlighted — the reference is informational, never auth-gated.
+    async function loadLabelReference() {
+      // Render the static table immediately from the embedded LABELS — it must never be gated on the
+      // live status fetch, which can stall on an SNMP/TCP timeout. The loaded-roll highlight is an
+      // optional enhancement layered on once /printer/status resolves (or skipped if it never does).
+      renderLabelReference(null);
+      let status = null;
+      try {
+        const res = await fetch(api('/printer/status'), {headers: authHeaders()});
+        if (res.ok) status = await res.json().catch(() => null);
+      } catch (e) { /* offline — the static table above already rendered without the highlight */ }
+      const loaded = renderYourPrinter(status);
+      renderLabelReference(loaded);
+    }
+
+    // ── Studio YAML syntax highlighting — a subtle, hand-rolled overlay (NOT a vendored editor lib:
+    //    that would be ~200 KB and replace the textarea, breaking the e2e .value contracts). #yaml
+    //    stays the real, authoritative textarea — color: transparent, caret only — with #yaml-hl (an
+    //    aria-hidden <pre><code>) painted behind it from the SAME text via a small line-based
+    //    tokenizer for the YAML subset labelito templates use. Purely decorative: if a line ever
+    //    mis-tokenizes, the textarea's value is unaffected and editing is unaffected — worst case the
+    //    colors are wrong. See app.css's "#yaml / #yaml-hl share identical box metrics" rule, which is
+    //    what keeps the overlay aligned with the caret.
+    // The key's first char excludes `-` as well as `{`/`[`: without it, a flow-mapping list item
+    // (`- {type: ...}`) backtracks the optional `- ` lead to zero and paints `- {type` as one key.
+    const YAML_HL_KEY_RE = /^(\s*(?:-\s*)?)((?:"[^"]*"|'[^']*'|[^:#'"\s{[-][^:#]*?)):(?=\s|$)/;
+    const YAML_HL_VALUE_RE = /"([^"]*)"|'([^']*)'|\b-?\d+(?:\.\d+)?\b|\b(?:true|false|null)\b/gi;
+    // Keys inside a flow mapping (`{type: title, text: ...}`): anchored on the `{`/`,` that precedes
+    // them, applied only to the plain segments between quoted/number/bool values so string content
+    // can never match.
+    const YAML_HL_FLOW_KEY_RE = /([{,]\s*)([^\s:#,{}[\]]+):(?=\s|$)/g;
+    const YAML_HL_PLACEHOLDER_RE = /\{\{[^}]*\}\}|\[\[[^\]]*\]\]/g;
+
+    // Splits `text` on labelito's field ("{" x2) / translation ("[" x2) placeholders (spelled out to
+    // stay Jinja-inert — this script renders through Jinja2 outside a raw guard), appending plain
+    // text nodes and accented spans to `parent` — used inside quoted strings so a placeholder stands
+    // out even as part of a value. DOM/textContent only, never innerHTML (the source is the user's
+    // own draft, but this page holds the API token — same discipline as renderFields elsewhere).
+    function appendYamlTextWithPlaceholders(parent, text) {
+      YAML_HL_PLACEHOLDER_RE.lastIndex = 0;
+      let last = 0;
+      let m;
+      while ((m = YAML_HL_PLACEHOLDER_RE.exec(text))) {
+        if (m.index > last) parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+        const span = document.createElement('span');
+        span.className = 'yhl-placeholder';
+        span.textContent = m[0];
+        parent.appendChild(span);
+        last = m.index + m[0].length;
+      }
+      if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+    }
+
+    // Appends `text` (a plain segment that sits OUTSIDE quoted strings) to `parent`, accenting
+    // flow-mapping keys (`{type:`, `, text:`) along the way. Same DOM/textContent-only discipline
+    // as appendYamlTextWithPlaceholders.
+    function appendYamlPlainWithFlowKeys(parent, text) {
+      YAML_HL_FLOW_KEY_RE.lastIndex = 0;
+      let last = 0;
+      let m;
+      while ((m = YAML_HL_FLOW_KEY_RE.exec(text))) {
+        parent.appendChild(document.createTextNode(text.slice(last, m.index) + m[1]));
+        const span = document.createElement('span');
+        span.className = 'yhl-key';
+        span.textContent = m[2];
+        parent.appendChild(span);
+        parent.appendChild(document.createTextNode(':'));
+        last = m.index + m[0].length;
+      }
+      if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+    }
+
+    // Tokenizes one line of YAML into `parent`: an optional unquoted trailing comment, an optional
+    // leading mapping key (including a list-item's `- key:`), then quoted strings / bare numbers /
+    // booleans / flow-mapping keys inside the remainder. Multi-line scalars are intentionally out
+    // of scope — this is a subtle accent, not a YAML parser.
+    function tokenizeYamlLine(parent, line) {
+      // An unquoted '#' preceded by start-of-line or whitespace starts a comment; one already inside
+      // a quote is just string content.
+      let inQuote = null;
+      let commentAt = -1;
+      for (let j = 0; j < line.length; j++) {
+        const c = line[j];
+        if (inQuote) { if (c === inQuote) inQuote = null; continue; }
+        if (c === '"' || c === "'") { inQuote = c; continue; }
+        if (c === '#' && (j === 0 || /\s/.test(line[j - 1]))) { commentAt = j; break; }
+      }
+      const code = commentAt === -1 ? line : line.slice(0, commentAt);
+      const comment = commentAt === -1 ? '' : line.slice(commentAt);
+
+      let rest = code;
+      const keyMatch = code.match(YAML_HL_KEY_RE);
+      if (keyMatch) {
+        const [full, lead, key] = keyMatch;
+        if (lead) parent.appendChild(document.createTextNode(lead));
+        const keySpan = document.createElement('span');
+        keySpan.className = 'yhl-key';
+        keySpan.textContent = key;
+        parent.appendChild(keySpan);
+        parent.appendChild(document.createTextNode(':'));
+        rest = code.slice(full.length);
+      }
+
+      YAML_HL_VALUE_RE.lastIndex = 0;
+      let last = 0;
+      let vm;
+      while ((vm = YAML_HL_VALUE_RE.exec(rest))) {
+        if (vm.index > last) appendYamlPlainWithFlowKeys(parent, rest.slice(last, vm.index));
+        if (vm[1] !== undefined || vm[2] !== undefined) {
+          const quote = vm[1] !== undefined ? '"' : "'";
+          const inner = vm[1] !== undefined ? vm[1] : vm[2];
+          const span = document.createElement('span');
+          span.className = 'yhl-string';
+          span.appendChild(document.createTextNode(quote));
+          appendYamlTextWithPlaceholders(span, inner);
+          span.appendChild(document.createTextNode(quote));
+          parent.appendChild(span);
+        } else {
+          const span = document.createElement('span');
+          span.className = /^-?\d/.test(vm[0]) ? 'yhl-number' : 'yhl-bool';
+          span.textContent = vm[0];
+          parent.appendChild(span);
+        }
+        last = vm.index + vm[0].length;
+      }
+      if (last < rest.length) appendYamlPlainWithFlowKeys(parent, rest.slice(last));
+
+      if (comment) {
+        const span = document.createElement('span');
+        span.className = 'yhl-comment';
+        span.textContent = comment;
+        parent.appendChild(span);
+      }
+    }
+
+    // Repaint #yaml-hl from the textarea's current value. Called on every `input` (immediate, NOT
+    // debounced like doPreview — the highlight must never visibly lag a keystroke) and after every
+    // programmatic `.value` write (loadSelected, useLabel, the starter seed).
+    function syncYamlHighlight() {
+      const code = document.getElementById('yaml-hl-code');
+      if (!code) return;
+      code.replaceChildren();
+      const lines = document.getElementById('yaml').value.split('\n');
+      for (const line of lines) {
+        tokenizeYamlLine(code, line);
+        // A trailing sentinel newline after EVERY line (including the last) so #yaml-hl's rendered
+        // line count/scrollHeight tracks the textarea's — a bare textContent reconstruction would
+        // fall one newline short of what <textarea> renders for the same value.
+        code.appendChild(document.createTextNode('\n'));
+      }
+      refreshYamlHscroll();  // content just changed, so the proxy's range/visibility may have too
+    }
+
+    const yamlTextarea = document.getElementById('yaml');
+    const yamlHl = document.getElementById('yaml-hl');
+    // ── Proxy horizontal scrollbar (app.css hides #yaml's native one on WebKit/Chromium; see the
+    //    rule there for why). #yaml-hscroll's only content is a 1px-tall spacer whose width tracks
+    //    #yaml.scrollWidth, so its own native scrollbar has the same range as the textarea's.
+    const yamlHscroll = document.getElementById('yaml-hscroll');
+    const yamlHscrollSpacer = document.getElementById('yaml-hscroll-spacer');
+    yamlTextarea.addEventListener('input', syncYamlHighlight);
+    yamlTextarea.addEventListener('scroll', () => {
+      yamlHl.scrollTop = yamlTextarea.scrollTop;
+      yamlHl.scrollLeft = yamlTextarea.scrollLeft;
+      yamlHscroll.scrollLeft = yamlTextarea.scrollLeft;
+    });
+    yamlHscroll.addEventListener('scroll', () => {
+      // Setting scrollLeft to its current value doesn't re-fire that element's own 'scroll' event,
+      // so this can't loop with the textarea listener above even without an extra guard flag.
+      yamlTextarea.scrollLeft = yamlHscroll.scrollLeft;
+    });
+
+    // Resizes the spacer to the textarea's current content width and hides the proxy entirely when
+    // there is nothing to scroll (short drafts) — called after every content change (folded into
+    // syncYamlHighlight, since every place that repaints the highlight also just changed #yaml's
+    // value) and once more from the ResizeObserver below for the vertical drag-resize handle, which
+    // changes clientWidth (a wider handle track) without firing `input`.
+    function refreshYamlHscroll() {
+      yamlHscrollSpacer.style.width = yamlTextarea.scrollWidth + 'px';
+      const hasOverflow = yamlTextarea.scrollWidth > yamlTextarea.clientWidth;
+      yamlHscroll.classList.toggle('hscroll-hidden', !hasOverflow);
+    }
+    new ResizeObserver(refreshYamlHscroll).observe(yamlTextarea);
+
+    document.getElementById('yaml').addEventListener('input', debounce(doPreview, 600));
+
+    // ── Auth: token wiring shared with the other pages (labelito.js#initTokenInput). ──
+    // Re-pull the printer status (and so the "Your Printer" highlight) when the token changes: on a
+    // secured deployment the first-run visitor lands tokenless, and /printer/status 401s on the
+    // initial load — without this refetch the loaded-roll highlight would stay blank until a manual
+    // page reload. Debounced so it fires once the operator stops typing, not per keystroke.
+    const tokenInput = initTokenInput();
+    if (tokenInput) tokenInput.addEventListener('input', debounce(loadLabelReference, 600));
+
+    // Re-render the draft preview when the nav's label language changes ([[key]] translations).
+    onLanguageChange(() => doPreview());
+
+    // Seed with a minimal, valid starter template so the studio renders something immediately.
+    {% raw %}
+    // The title/subtitle placeholders below must survive Jinja: editor.html renders through Jinja2,
+    // which would otherwise resolve them as undefined variables and emit empty strings — silently
+    // stripping the starter template's field tokens. (The labels JSON far above sits outside this
+    // block because it genuinely needs interpolation.) Keep this comment inside the block so it
+    // carries no stray template tags that would prematurely open or close the guard.
+    document.getElementById('yaml').value =
+`name: my-label
+description: A new label
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle]
+layout:
+  - {type: title, text: "{{title}}"}
+  - {type: subtitle, text: "{{subtitle}}"}
+`;
+    {% endraw %}
+    lastLoadedYaml = document.getElementById('yaml').value;  // seed counts as "not dirty"
+    syncYamlHighlight();  // paint the overlay for the seed (a programmatic write fires no `input`)
+    populateLoadSelect();
+    loadLabelReference();
+    doPreview();
+  </script>
+</body>
+</html>

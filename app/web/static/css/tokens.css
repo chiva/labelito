@@ -1,0 +1,147 @@
+/* Design tokens + base styles shared by every Labelito page.
+ * Dark is the default theme; [data-theme="light"] overrides the surfaces/inks.
+ * Fonts are self-hosted (SIL OFL 1.1 — see ../fonts/OFL-*.txt); url() is relative
+ * to this file so the assets stay prefix-safe behind a reverse proxy.
+ */
+
+@font-face {
+  font-family: "Inter";
+  src: url("../fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../fonts/JetBrainsMono-Variable.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --bg: #0b1220;
+  --panel: #111a2b;
+  --panel2: #0e1626;
+  /* Code surfaces stay dark in BOTH themes (the studio YAML panel reads as a terminal). */
+  --panel-code: #0a0f1a;
+  --line: #223047;
+  --line-code: #1b2740;
+  --ink: #f4f7fb;
+  --ink2: #b4becd;
+  --ink3: #8a94a6;
+  --ink-code: #cfe0f5;
+  --ink-code-muted: #5c6a85;
+  --blue: #0478ed;
+  --blue-light: #4fa3f5;
+  --blue-deep: #0159b0;
+  --green: #12a050;
+  --green-light: #54bd82;
+  --amber: #f5a524;
+  --red: #f0506e;
+  /* Density multiplier applied to paddings/margins; a future compact mode flips it to .66. */
+  --gap: 1;
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* The paper surface previews sit on — explicit so white label PNGs read in dark mode. */
+  --paper: #c9d2df;
+  --shadow-pop: 0 16px 46px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="light"] {
+  --bg: #eaeef4;
+  --panel: #ffffff;
+  --panel2: #f4f7fb;
+  --line: #dce3ed;
+  --ink: #0b1220;
+  --ink2: #3a4763;
+  --ink3: #6b7688;
+  --shadow-pop: 0 16px 46px rgba(11, 18, 32, 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+}
+
+body {
+  min-height: 100vh;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--blue);
+  color: #fff;
+}
+
+input,
+button,
+select,
+textarea {
+  font-family: inherit;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 10px;
+}
+
+@keyframes lbl-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes lbl-toast {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes lbl-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes lbl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

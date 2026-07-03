@@ -1,0 +1,8 @@
+# Italian — author-supplied seed; native review welcome (see CONTRIBUTING).
+frozen: "Congelato"
+stored: "Conservato"
+expires: "Scade"
+_date_format: "%d/%m/%Y"
+_datetime_format: "%d/%m/%Y %H:%M"
+_weekdays_abbr: [lun, mar, mer, gio, ven, sab, dom]
+_weekdays_full: [lunedì, martedì, mercoledì, giovedì, venerdì, sabato, domenica]

@@ -1,0 +1,56 @@
+{#
+  Shared top nav rendered as tabs. The pages stay separate server-gated routes —
+  a disabled feature's tab is simply absent (its route 404s anyway).
+  Expects from the route context (see _web_ctx in app/main.py):
+    page ("print" | "history" | "studio"), history_ui, editor_enabled,
+    languages, default_language.
+#}
+{% from "partials/_icons.html" import icon, icon_defs %}
+<nav class="nav">
+  <a class="nav-brand" href="{{ base_path | default('') }}/">
+    <img src="{{ base_path | default('') }}/favicon.svg" alt="" />
+    <span>labelito</span>
+  </a>
+  <div class="tabs">
+    <a class="tab{% if page == 'print' %} active{% endif %}" href="{{ base_path | default('') }}/"
+      >{{ icon("print") }}Print</a
+    >
+    {% if history_ui %}
+    <a
+      class="tab{% if page == 'history' %} active{% endif %}"
+      href="{{ base_path | default('') }}/history"
+      >{{ icon("clock-rotate-left") }}History</a
+    >
+    {% endif %} {% if editor_enabled %}
+    <a
+      class="tab{% if page == 'studio' %} active{% endif %}"
+      href="{{ base_path | default('') }}/editor"
+      >{{ icon("code") }}Studio</a
+    >
+    {% endif %}
+  </div>
+  <div class="nav-right">
+    <span class="nav-lang">
+      <label class="nav-lang-label" for="language-select"
+        title="Language used for the printed label text — the app itself stays in English"
+        >Label language</label>
+      <select id="language-select" class="select-compact" title="Label language">
+        {% for lang in languages %}
+        <option value="{{ lang }}"{% if lang == default_language %} selected{% endif %}>
+          {{ lang | upper }}
+        </option>
+        {% endfor %}
+      </select>
+    </span>
+    <button id="theme-toggle" class="btn-icon" type="button" title="Toggle light/dark theme">
+      {{ icon("sun", "theme-sun") }}{{ icon("moon", "theme-moon") }}
+    </button>
+  </div>
+</nav>
+{# Resolve the label language the moment the select exists — pages fire their initial preview
+   from end-of-body scripts, and a persisted choice applied any later (e.g. at DOMContentLoaded)
+   would preview in the default language yet print in the saved one. #}
+<script>
+  initLanguage();
+</script>
+{{ icon_defs() }}

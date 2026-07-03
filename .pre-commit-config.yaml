@@ -1,0 +1,45 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.13
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.16.0
+    hooks:
+      - id: mypy
+        # Mirror [tool.mypy] exclude in pyproject.toml: tests are not type-checked.
+        # pre-commit passes staged filenames explicitly, which bypasses mypy's own
+        # exclude, so it must be restated here.
+        exclude: ^tests/
+        # mypy resolves types from this isolated env, not the project venv, so it must carry the
+        # runtime packages whose types app/ relies on: fastapi (route decorators — without it the
+        # @app.get/post decorators degrade to untyped and every handler trips
+        # "untyped decorator makes function untyped"; fastapi pulls in starlette + pydantic) and
+        # types-Pillow (PIL stubs for the font/image types in app/render). Versions mirror
+        # pyproject's [project.dependencies] and the [typing] extra. brother_ql / prometheus_client /
+        # jinja2 ship no stubs and stay covered by --ignore-missing-imports.
+        additional_dependencies:
+          - types-PyYAML
+          - types-Pillow>=10.2.0
+          - fastapi>=0.115.0
+          - pydantic>=2.8.0
+          - pydantic-settings>=2.4.0
+        args: [--ignore-missing-imports]
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.11.21
+    hooks:
+      - id: uv-lock
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [-d, relaxed]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml

@@ -1,0 +1,15 @@
+name: pantry
+description: Pantry/cupboard label with product name and optional quantity
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle, quantity]
+layout:
+  - {type: spacer, size: 10}
+  - {type: title, text: "{{title}}", max_lines: 2, align: center, bold: true}
+  - {type: subtitle, text: "{{subtitle}}", max_lines: 1, align: center}
+  - {type: line}
+  - {type: text, text: "{{quantity}}", size: 28, align: center}
+  - {type: text, text: "[[stored]]: {{date}}", size: 22, align: center}
+  - {type: spacer, size: 10}

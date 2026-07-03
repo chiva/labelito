@@ -1,0 +1,221 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Translation catalogs for label chrome words and locale date formats.
+
+Templates may embed ``[[key]]`` tokens in their text; the active language's catalog
+maps each key to a word. A distinct delimiter is used so these never collide with the
+``{{field}}`` substitution grammar (where ``:`` already means a strftime format).
+
+Catalogs are flat ``translations/<lang>.yaml`` files of ``key: value`` strings, plus the
+reserved keys ``_date_format`` / ``_datetime_format`` that localize ``{{date}}``/``{{now}}``, and
+``_weekdays_abbr`` / ``_weekdays_full`` (7-item Monday-first lists) that localize the ``%a``/``%A``
+strftime directives inside those formats. This format is intentionally trivial so a translation
+platform (Weblate/Crowdin) can sync to it later without code changes.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from pathlib import Path
+
+import yaml
+
+log = logging.getLogger(__name__)
+
+# Translation token, e.g. [[frozen]] — word characters only, mirroring the field regex.
+_TOKEN_RE = re.compile(r"\[\[(\w+)\]\]")
+
+# Reserved keys carry locale metadata, not translatable vocabulary.
+_DATE_FORMAT_KEY = "_date_format"
+_DATETIME_FORMAT_KEY = "_datetime_format"
+_WEEKDAYS_ABBR_KEY = "_weekdays_abbr"
+_WEEKDAYS_FULL_KEY = "_weekdays_full"
+
+# The two reserved keys whose value is a 7-item list (Monday-first) rather than a plain string —
+# everything else in a catalog (including _date_format/_datetime_format) must be a string.
+_RESERVED_LIST_KEYS = frozenset({_WEEKDAYS_ABBR_KEY, _WEEKDAYS_FULL_KEY})
+
+# Fallback date formats when a catalog omits the reserved keys (European day-first).
+DEFAULT_DATE_FORMAT = "%d/%m/%Y"
+DEFAULT_DATETIME_FORMAT = "%d/%m/%Y %H:%M"
+
+# Fallback weekday names (Monday-first) when a catalog omits the reserved keys — plain C-locale
+# English, matching the strftime %a/%A output a catalog-less render already produced before
+# localized weekday substitution existed.
+DEFAULT_WEEKDAYS_ABBR = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+DEFAULT_WEEKDAYS_FULL = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
+
+
+class TranslationLoadError(ValueError):
+    pass
+
+
+def load_catalog(path: Path) -> dict[str, str | list[str]]:
+    """Load and validate a single ``<lang>.yaml`` catalog into a flat mapping.
+
+    Every key is a plain string value except :data:`_RESERVED_LIST_KEYS`
+    (``_weekdays_abbr``/``_weekdays_full``), which must be a 7-item Monday-first list of strings.
+    """
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise TranslationLoadError(f"{path.name}: YAML parse error: {exc}") from exc
+
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise TranslationLoadError(f"{path.name}: top-level must be a mapping")
+
+    catalog: dict[str, str | list[str]] = {}
+    for key, value in raw.items():
+        if key in _RESERVED_LIST_KEYS:
+            if (
+                not isinstance(value, list)
+                or len(value) != 7
+                or not all(isinstance(v, str) for v in value)
+            ):
+                raise TranslationLoadError(
+                    f"{path.name}: value for {key!r} must be a 7-item list of strings (Monday-first)"
+                )
+            catalog[str(key)] = list(value)
+            continue
+        if not isinstance(value, str):
+            raise TranslationLoadError(
+                f"{path.name}: value for {key!r} must be a string, got {type(value).__name__}"
+            )
+        # Catalog values are pure vocabulary; forbidding {{…}} keeps the translation pass
+        # fully decoupled from field resolution (a translator cannot inject substitutions).
+        if "{{" in value or "}}" in value:
+            raise TranslationLoadError(
+                f"{path.name}: value for {key!r} must not contain '{{{{' or '}}}}'"
+            )
+        catalog[str(key)] = value
+    return catalog
+
+
+class Translator:
+    """Hot-reloadable registry of translation catalogs keyed by lowercased language code."""
+
+    def __init__(self, translations_dir: Path, default_language: str) -> None:
+        self.translations_dir = translations_dir
+        self.default_language = default_language.lower()
+        self._catalogs: dict[str, dict[str, str | list[str]]] = {}
+        self._errors: list[str] = []
+
+    def load_all(self) -> list[str]:
+        """(Re)load all ``*.yaml`` catalogs; return the list of loaded language codes.
+
+        Catalogs that fail to parse/validate are skipped and their errors retained in
+        :attr:`errors`, so a reload can report the failure instead of silently dropping a language.
+        """
+        loaded: dict[str, dict[str, str | list[str]]] = {}
+        errors: list[str] = []
+
+        for path in sorted(self.translations_dir.glob("*.yaml")):
+            lang = path.stem.lower()
+            try:
+                loaded[lang] = load_catalog(path)
+                log.debug("Loaded translation catalog %r from %s", lang, path.name)
+            except TranslationLoadError as exc:
+                log.error("Failed to load translation catalog %s: %s", path.name, exc)
+                errors.append(str(exc))
+
+        if errors:
+            log.warning("%d translation catalog(s) failed to load", len(errors))
+
+        self._catalogs = loaded
+        self._errors = errors
+        return list(loaded.keys())
+
+    @property
+    def errors(self) -> list[str]:
+        """Per-file errors from the most recent :meth:`load_all` (empty if all loaded)."""
+        return self._errors
+
+    def has(self, language: str) -> bool:
+        return language.lower() in self._catalogs
+
+    def available(self) -> list[str]:
+        return sorted(self._catalogs.keys())
+
+    def translate(self, text: str, language: str) -> str:
+        """Replace every ``[[key]]`` token using the requested language's catalog.
+
+        Per-token fallback chain: requested language → default language → the raw key
+        (logged). Never raises, so a missing catalog or key degrades gracefully.
+        """
+        lang = language.lower()
+
+        def replace(match: re.Match[str]) -> str:
+            key = match.group(1)
+            for candidate in (lang, self.default_language):
+                catalog = self._catalogs.get(candidate)
+                if catalog is not None and key in catalog:
+                    value = catalog[key]
+                    if isinstance(value, str):
+                        return value
+                    # A reserved list-valued key (_weekdays_abbr/_weekdays_full) is locale
+                    # metadata, not translatable vocabulary — fall through to the missing-key
+                    # warning below rather than substituting a list into the rendered text.
+                    break
+            log.warning(
+                "Translation key %r missing for language %r (and default %r); using raw key",
+                key,
+                lang,
+                self.default_language,
+            )
+            return key
+
+        return _TOKEN_RE.sub(replace, text)
+
+    def date_formats(self, language: str) -> tuple[str, str]:
+        """Return ``(date_format, datetime_format)`` for a language.
+
+        Falls back to the default language's catalog, then to the module defaults.
+        """
+        lang = language.lower()
+        date_fmt = DEFAULT_DATE_FORMAT
+        datetime_fmt = DEFAULT_DATETIME_FORMAT
+        for candidate in (self.default_language, lang):  # requested wins (applied last)
+            catalog = self._catalogs.get(candidate)
+            if catalog is None:
+                continue
+            raw_date_fmt = catalog.get(_DATE_FORMAT_KEY, date_fmt)
+            if isinstance(raw_date_fmt, str):
+                date_fmt = raw_date_fmt
+            raw_datetime_fmt = catalog.get(_DATETIME_FORMAT_KEY, datetime_fmt)
+            if isinstance(raw_datetime_fmt, str):
+                datetime_fmt = raw_datetime_fmt
+        return date_fmt, datetime_fmt
+
+    def weekday_names(self, language: str) -> tuple[list[str], list[str]]:
+        """Return ``(weekdays_abbr, weekdays_full)`` for a language, both Monday-first 7-item lists.
+
+        Same fallback chain as :meth:`date_formats`: requested language → default language →
+        module defaults (plain C-locale English, matching un-localized ``%a``/``%A`` output).
+        """
+        lang = language.lower()
+        abbr: list[str] = list(DEFAULT_WEEKDAYS_ABBR)
+        full: list[str] = list(DEFAULT_WEEKDAYS_FULL)
+        for candidate in (self.default_language, lang):  # requested wins (applied last)
+            catalog = self._catalogs.get(candidate)
+            if catalog is None:
+                continue
+            raw_abbr = catalog.get(_WEEKDAYS_ABBR_KEY)
+            if isinstance(raw_abbr, list):
+                abbr = list(raw_abbr)  # copy, don't alias the shared catalog's internal list
+            raw_full = catalog.get(_WEEKDAYS_FULL_KEY)
+            if isinstance(raw_full, list):
+                full = list(raw_full)  # same: the singleton translator is shared across requests
+        return abbr, full
+
+    def __len__(self) -> int:
+        return len(self._catalogs)

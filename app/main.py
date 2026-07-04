@@ -146,7 +146,7 @@ PRINTER_LABEL_LIFECOUNT = Gauge(
     "printer_label_lifecount", "Lifetime label count from prtMarkerLifeCount (NaN when unobserved)"
 )
 PRINTER_LABEL_LIFECOUNT.set(_METRIC_UNKNOWN)
-# Only the model is exported (already public via /health). serial/firmware/hostname are stable device
+# Only the model is exported (already public via /health). serial/hostname are stable device
 # identifiers and are deliberately NOT put on the unauthenticated metrics surface — they stay on the
 # token-protected /printer/status. (/metrics carries no token; leaking identifiers there would be a
 # weaker gate than the status route that returns the same fields.)
@@ -464,11 +464,17 @@ _ASSET_VERSION = _compute_asset_version()
 # instead of interleaving raster sends.
 _print_lock = asyncio.Lock()
 
-registry = TemplateRegistry(_templates_dir, settings.example_templates_dir.resolve())
+# LOAD_EXAMPLES=false disables the bundled examples by passing None as the example dir — the
+# already-supported "single dir" sentinel in both TemplateRegistry and Translator.
+_example_templates_dir = settings.example_templates_dir.resolve() if settings.load_examples else None
+_example_translations_dir = (
+    settings.example_translations_dir.resolve() if settings.load_examples else None
+)
+registry = TemplateRegistry(_templates_dir, _example_templates_dir)
 translator = Translator(
     settings.translations_dir.resolve(),
     settings.default_language,
-    settings.example_translations_dir.resolve(),
+    _example_translations_dir,
 )
 engine = RenderEngine(
     fonts_dir=settings.fonts_dir.resolve(),
@@ -762,9 +768,14 @@ async def startup() -> None:
     log.info("Loaded %d templates: %s", len(loaded), loaded)
     langs = translator.load_all()
     if not translator.has(settings.default_language):
-        raise RuntimeError(
-            f"DEFAULT_LANGUAGE {settings.default_language!r} has no catalog in "
-            f"{settings.translations_dir}. Available languages: {langs}"
+        # Not fatal: translate() degrades a missing catalog to the raw key, so the service still
+        # serves. This is the expected state with LOAD_EXAMPLES=false and an empty translations_dir.
+        log.warning(
+            "DEFAULT_LANGUAGE %r has no catalog in %s (available: %s); [[token]] chrome words will "
+            "render as their raw key until a catalog is provided.",
+            settings.default_language,
+            settings.translations_dir,
+            langs,
         )
     log.info("Loaded %d translation catalogs: %s", len(langs), langs)
     _require_auth_or_optout()
@@ -1521,7 +1532,6 @@ def _status_response(status: PrinterStatus, state: PrinterState) -> PrinterStatu
         phase=status.phase_type,
         errors=status.errors,
         serial=status.serial,
-        firmware=status.firmware,
         hostname=status.hostname,
         console_text=status.console_text,
         label_lifecount=status.label_lifecount,
@@ -1658,6 +1668,7 @@ def list_templates() -> list[TemplateInfo]:
                 optional=t.optional_fields,
             ),
             media=_template_media(t.label),
+            is_example=t.is_example,
         )
         for t in registry.all()
     ]
@@ -2120,17 +2131,21 @@ def reload_templates() -> dict[str, Any]:
 
     Malformed files are skipped so the valid ones still load, but their errors are reported with a
     422 instead of a misleading 200 — otherwise a single YAML typo could silently drop a template
-    or the default-language catalog while the API claims success, and the next print would quietly
-    misbehave. The default-language catalog disappearing is itself treated as a reload failure.
+    while the API claims success, and the next print would quietly misbehave. A wholly absent
+    default-language catalog is NOT an error (it is the expected LOAD_EXAMPLES=false + empty
+    translations_dir state); it is warned about and `[[token]]` words render as their raw key. A
+    malformed USER catalog still surfaces as a 422 via translator.errors.
     """
     loaded = registry.load_all()
     langs = translator.load_all()
 
     errors = registry.errors + translator.errors
     if not translator.has(settings.default_language):
-        errors.append(
-            f"default language {settings.default_language!r} has no catalog after reload "
-            f"(available: {langs})"
+        log.warning(
+            "default language %r has no catalog after reload (available: %s); [[token]] words will "
+            "render as their raw key",
+            settings.default_language,
+            langs,
         )
     if errors:
         raise HTTPException(
@@ -2815,6 +2830,9 @@ async def web_ui(request: Request) -> HTMLResponse:
             # both this AND a two-color-capable model (_two_color_unsupported_reason), but the roll's
             # actual colour is unknowable from SNMP, so this is a template-authoring signal, not proof.
             "red": t.label in red_labels,
+            # True when this is a bundled example (not from the user's templates_dir). Drives the
+            # muted "example" card styling + the Customize deep-link in the picker.
+            "is_example": t.is_example,
         }
         for t in registry.all()
     ]

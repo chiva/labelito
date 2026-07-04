@@ -742,6 +742,36 @@ def test_registry_malformed_example_does_not_pollute_errors(
     assert reg.errors == []  # the bundled failure is not user-actionable
 
 
+def test_registry_marks_example_provenance(tmp_path: Path, templates_dir: Path) -> None:
+    """Templates loaded from the example dir carry is_example=True; the user's own carry False —
+    the flag the web UI uses to mute example cards."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _example_template(examples, "shipped.yaml", "shipped", "a")
+    _example_template(templates_dir, "mine.yaml", "mine", "b")
+
+    reg = TemplateRegistry(templates_dir, examples)
+    reg.load_all()
+    assert reg.get("mine").is_example is False
+    assert reg.get("shipped").is_example is True
+
+
+def test_registry_example_dir_none_loads_only_user(
+    tmp_path: Path, templates_dir: Path, sample_template_yaml: Path
+) -> None:
+    """LOAD_EXAMPLES=false is wired as example_dir=None: the shipped examples exist on disk but are
+    never scanned, so only the user's templates_dir loads."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _example_template(examples, "pantry.yaml", "pantry", "shipped")
+
+    reg = TemplateRegistry(templates_dir, None)
+    names = reg.load_all()
+    assert names == ["test-simple"]  # user only; the bundled 'pantry' is absent
+    assert "pantry" not in names
+    assert reg.errors == []
+
+
 # ── Row container validation ─────────────────────────────────────────────────────
 def test_valid_row_template_loads(tmp_path: Path) -> None:
     path = write_yaml(

@@ -24,7 +24,6 @@ from app.transports.snmp import (
     OID_PRT_INPUT_MEDIA_NAME,
     OID_PRT_MARKER_LIFE_COUNT,
     OID_SERIAL,
-    OID_SYS_DESCR,
     OID_SYS_NAME,
     PrinterSNMPStatus,
     SNMPError,
@@ -160,7 +159,6 @@ def test_build_status_loaded_62_continuous() -> None:
         OID_PRT_INPUT_MEDIA_DIM_FEED_DIR: -1,
         OID_HR_DEVICE_DESCR: "Brother QL-810W",
         OID_SERIAL: "B2Z160525",
-        OID_SYS_DESCR: "Brother NC-36002w, Firmware Ver.1.00",
         OID_SYS_NAME: "BRWF889D22FBB15",
         OID_PRT_COVER_STATUS: 3,
         OID_PRT_MARKER_LIFE_COUNT: 9,
@@ -169,7 +167,6 @@ def test_build_status_loaded_62_continuous() -> None:
 
     assert status.reachable is True
     assert status.model == "Brother QL-810W"
-    assert status.firmware == "Brother NC-36002w, Firmware Ver.1.00"
     assert status.hostname == "BRWF889D22FBB15"
     assert status.media_width_mm == 62.0
     assert status.media_type == "continuous"

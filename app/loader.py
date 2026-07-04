@@ -138,6 +138,7 @@ class Template:
 
     __slots__ = (
         "description",
+        "is_example",
         "label",
         "layout",
         "name",
@@ -157,6 +158,7 @@ class Template:
         optional_fields: list[str],
         layout: list[dict[str, Any]],
         source_path: Path,
+        is_example: bool = False,
     ) -> None:
         self.name = name
         self.description = description
@@ -166,6 +168,9 @@ class Template:
         self.optional_fields = optional_fields
         self.layout = layout
         self.source_path = source_path
+        # True when this template came from the bundled example dir (not the user's templates_dir).
+        # Set by TemplateRegistry._load_dir after construction; used to visually mark example cards.
+        self.is_example = is_example
 
     @property
     def all_fields(self) -> list[str]:
@@ -832,6 +837,7 @@ class TemplateRegistry:
                 log.error("%s", msg)
                 errors.append(msg)
                 continue
+            t.is_example = is_example
             loaded[t.name] = t
             log.debug("Loaded template %r from %s", t.name, path.name)
 

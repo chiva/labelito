@@ -325,6 +325,9 @@ class TemplateInfo(BaseModel):
     # The media this template's label requires. None when the label is not a known brother_ql label
     # (the template still lists and prints; it just carries no compatibility badge).
     media: TemplateMedia | None = None
+    # True when this template is a bundled example (shipped in the image), not one from the user's
+    # templates_dir. Lets clients visually distinguish shipped examples from the user's own.
+    is_example: bool = False
 
 
 class TemplateSourceResponse(BaseModel):
@@ -560,12 +563,6 @@ class PrinterStatusResponse(BaseModel):
     # file/USB transports and on the ESC i S fallback, which do not report them.
     serial: str | None = Field(
         default=None, description="Printer serial number (SNMP), e.g. 'B2Z160525'."
-    )
-    firmware: str | None = Field(
-        default=None,
-        description="Wi-Fi module / NIC firmware description (SNMP sysDescr), e.g. 'Brother NC-36002w, "
-        "Firmware Ver.1.00'. This is the network card's firmware, NOT the print engine's — the engine "
-        "firmware is not exposed over SNMP. Surfaced in the UI as 'Wi-Fi module firmware'.",
     )
     hostname: str | None = Field(
         default=None,

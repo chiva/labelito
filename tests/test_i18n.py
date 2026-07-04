@@ -130,6 +130,32 @@ def test_translator_example_dir_equal_to_user_loads_once(catalogs: Path) -> None
     assert sorted(t.load_all()) == ["en", "es"]
 
 
+def test_translator_example_dir_none_loads_only_user(tmp_path: Path) -> None:
+    """LOAD_EXAMPLES=false is wired as example_dir=None: bundled catalogs on disk are never scanned."""
+    user = tmp_path / "translations"
+    user.mkdir()
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write(examples, "de", 'frozen: "Gefroren"\n')
+    _write(user, "en", 'frozen: "Frozen"\n')
+
+    t = Translator(user, "en", None)
+    assert t.load_all() == ["en"]  # user only; the bundled 'de' is skipped
+    assert not t.has("de")
+
+
+def test_translator_no_default_catalog_degrades_to_raw_key(tmp_path: Path) -> None:
+    """With examples off and an empty translations dir there is no default catalog: load_all must not
+    raise, has(default) is False, and translate() renders the raw key (the softened-boot contract)."""
+    user = tmp_path / "translations"
+    user.mkdir()
+
+    t = Translator(user, "en", None)
+    assert t.load_all() == []
+    assert not t.has("en")
+    assert t.translate("[[frozen]]: today", "en") == "frozen: today"
+
+
 def test_translator_malformed_example_not_in_errors(tmp_path: Path) -> None:
     """A malformed bundled catalog is logged but not recorded in errors (shipped content must not fail
     /reload); a malformed USER catalog still is."""

@@ -111,6 +111,7 @@
           <button type="button" id="size-filter-toggle" class="size-filter-toggle"></button>
         </div>
       </div>
+      <p id="tpl-legend" class="tpl-legend" style="display:none"></p>
       <div id="template-groups"></div>
     </div>
 
@@ -251,6 +252,9 @@
   <script>
     const TEMPLATES = {{ templates | tojson }};
     const templateMap = Object.fromEntries(TEMPLATES.map(t => [t.name, t]));
+    // Whether the template studio is reachable — gates the per-card "Customize" deep-link on example
+    // cards (with the editor off, /editor 404s, so there is nothing to link to).
+    const EDITOR_ENABLED = {{ editor_enabled | tojson }};
     // Latest /printer/status body, used to compare the loaded roll against each template's required
     // media. Null until the first status arrives (or when the status query fails) → compat unknown.
     let printerStatus = null;
@@ -451,9 +455,6 @@
         if (data.status) secondary.push(['Status', data.status]);
         if (data.phase) secondary.push(['Phase', data.phase]);
         if (data.serial) secondary.push(['Serial', data.serial]);
-        // sysDescr is the network card's firmware ("Brother NC-…, Firmware Ver…"), NOT the print
-        // engine's — the engine firmware isn't exposed over SNMP. Label it honestly.
-        if (data.firmware) secondary.push(['Wi-Fi module firmware', data.firmware]);
         if (data.label_lifecount != null) {
           secondary.push(['Labels printed (lifetime)', String(data.label_lifecount)]);
         }
@@ -720,6 +721,7 @@
 
       container.replaceChildren();
       let hiddenCount = 0;
+      let anyExample = false;
       const flatValues = [];
       for (const [key, g] of ordered) {
         if (!visibleKeys.has(key)) { hiddenCount += g.items.length; continue; }
@@ -752,6 +754,8 @@
           flatValues.push(t.name);
           const card = document.createElement('label');
           card.className = 'tpl-card';
+          // Bundled examples are visually muted so the user's own templates stand out.
+          if (t.is_example) { card.classList.add('tpl-card-example'); anyExample = true; }
           card.dataset.name = t.name;
           const radio = document.createElement('input');
           radio.type = 'radio';
@@ -779,6 +783,19 @@
           descEl.className = 'tpl-desc';
           descEl.textContent = t.description || '';
           card.appendChild(descEl);
+          // Customize: deep-link a bundled example into the studio, preloaded, so the user can edit it
+          // and Copy/Download it into their own templates dir. Only when the editor is reachable.
+          // A plain <a> inside the <label> card: clicking it must NOT toggle the card's radio, so stop
+          // the event from bubbling to the label.
+          if (t.is_example && EDITOR_ENABLED) {
+            const base = (window.LABELITO_BASE || '');
+            const edit = document.createElement('a');
+            edit.className = 'tpl-customize';
+            edit.href = `${base}/editor?load=${encodeURIComponent(t.name)}`;
+            edit.textContent = 'Customize';
+            edit.addEventListener('click', (e) => { e.stopPropagation(); });
+            card.appendChild(edit);
+          }
           // The per-card "needs …" note moved to the group header (see the group-head block above):
           // every card in a size group shares the same media, so the mismatch is stated once per group.
           grid.appendChild(card);
@@ -796,6 +813,7 @@
       const selectionChanged = finalVal !== prevVal;
 
       renderSizeFilterControl(loaded, matchGroup, focus, hiddenCount);
+      renderExampleLegend(anyExample);
 
       if (selectionChanged) renderFields();
       updateMediaBadge();
@@ -820,6 +838,18 @@
       if (defaultHint) defaultHint.style.display = supported ? '' : 'none';
       if (disabledHint) disabledHint.style.display = supported ? 'none' : '';
       if (rollNote) rollNote.style.display = supported ? '' : 'none';
+    }
+
+    // Legend explaining the dimmed cards, shown only when at least one bundled example is visible.
+    // DOM/textContent only (no innerHTML) to keep the XSS discipline of the rest of this file.
+    function renderExampleLegend(anyExample) {
+      const el = document.getElementById('tpl-legend');
+      if (!el) return;
+      el.replaceChildren();
+      if (!anyExample) { el.style.display = 'none'; return; }
+      el.style.display = '';
+      el.append('Dimmed = bundled example');
+      if (EDITOR_ENABLED) el.append(' — Customize to make it your own.');
     }
 
     // The "Show all sizes" / "Show only matching size" toggle + hidden-count hint in the Template

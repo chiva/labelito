@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # exists even against an empty translations mount, so the service no longer hard-fails on boot
     # when the volume is empty. Docker sets EXAMPLE_TRANSLATIONS_DIR=/app/examples/translations.
     example_translations_dir: Path = Path("translations")
+    # Load the bundled example templates AND translation catalogs (default true). Set
+    # LOAD_EXAMPLES=false to load ONLY the user's own templates_dir/translations_dir — the shipped
+    # examples are skipped entirely (the example dirs are passed as None to the registry/translator).
+    # With examples off and an empty user translations_dir, there is no default-language catalog: this
+    # is allowed (boot warns instead of failing) and `[[token]]` chrome words render as their raw key.
+    load_examples: bool = True
     # Template studio server-save gate. Default false because docker-compose mounts
     # templates/ read-only: with the mount read-only a write would fail anyway, and a default-on
     # write endpoint would be an unexpected authoring-surface change. Set TEMPLATES_WRITABLE=true

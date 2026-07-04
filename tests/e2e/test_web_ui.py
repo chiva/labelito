@@ -1813,27 +1813,6 @@ def test_printer_status_details_show_web_ui_link_for_network(authed_page_snmp: P
     expect(link).to_have_count(1)
 
 
-def test_printer_status_firmware_labeled_as_wifi_module(authed_page_snmp: Page) -> None:
-    """The SNMP sysDescr firmware is the NIC's, not the print engine's — the Details row says so."""
-    authed_page_snmp.route(
-        "**/printer/status",
-        lambda route: route.fulfill(  # type: ignore[attr-defined]
-            status=200,
-            content_type="application/json",
-            body=_status_body(
-                media_width_mm=62,
-                media_type="continuous",
-                media_length_mm=None,
-                firmware="Brother NC-36002w, Firmware Ver.1.00",
-            ),
-        ),
-    )
-    authed_page_snmp.goto("/")
-    details = authed_page_snmp.locator("#printer-detail details")
-    details.locator("summary").click()
-    expect(details).to_contain_text("Wi-Fi module firmware: Brother NC-36002w, Firmware Ver.1.00")
-
-
 # ── Media badge de-duplication (Step 2) ─────────────────────────────────────────────────────────────
 
 
@@ -2588,3 +2567,42 @@ def test_language_selector_has_visible_label_caption(authed_page: Page) -> None:
         label = authed_page.locator('label[for="language-select"]')
         expect(label).to_be_visible()
         expect(label).to_have_text("Label language")
+
+
+# ── Example vs user templates: muted cards + Customize deep-link (round 6) ──────────────────────────
+
+
+def test_example_card_is_muted_with_customize_link(authed_page_examples: Page) -> None:
+    """A bundled example card is visually flagged (`.tpl-card-example`) and carries a Customize
+    deep-link to the studio preloaded with that template; the user's own card has neither. The
+    legend explaining the dimming is shown."""
+    authed_page_examples.goto("/")
+
+    example_card = authed_page_examples.locator('.tpl-card[data-name="shipped-example"]')
+    user_card = authed_page_examples.locator('.tpl-card[data-name="my-own"]')
+    expect(example_card).to_have_count(1)
+    expect(user_card).to_have_count(1)
+
+    # The example is muted; the user's own is not.
+    expect(example_card).to_have_class(re.compile(r"\btpl-card-example\b"))
+    expect(user_card).not_to_have_class(re.compile(r"\btpl-card-example\b"))
+
+    # The example carries a Customize link to /editor?load=<name>; the user's own does not.
+    customize = example_card.locator("a.tpl-customize")
+    expect(customize).to_have_count(1)
+    href = customize.get_attribute("href")
+    assert href is not None and href.endswith("/editor?load=shipped-example"), href
+    expect(user_card.locator("a.tpl-customize")).to_have_count(0)
+
+    # The legend is shown and explains the dimming.
+    legend = authed_page_examples.locator("#tpl-legend")
+    expect(legend).to_be_visible()
+    expect(legend).to_contain_text("Dimmed = bundled example")
+
+
+def test_customize_deep_link_preloads_editor(authed_page_examples: Page) -> None:
+    """Opening /editor?load=<name> preloads that template's YAML into the studio textarea — the
+    landing target of the Print page's Customize action."""
+    authed_page_examples.goto("/editor?load=shipped-example")
+    yaml_box = authed_page_examples.locator("#yaml")
+    expect(yaml_box).to_have_value(re.compile(r"name:\s*shipped-example"))

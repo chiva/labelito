@@ -160,7 +160,9 @@ generic (`simple-text`, `title-subtitle-qr`, …), and homelab/logistics (`cable
 `templates/` volume), so bind-mounting your own `templates/` directory — even an empty one — never
 hides them, and image upgrades ship new examples automatically. Your own files are loaded alongside
 and win over a bundled example of the same name. The eight shipped translation catalogs work the same
-way. Icons come from your own `assets/icons/` or the bundled Font Awesome / Material / Octicons
+way. Prefer only your own templates? Set `LOAD_EXAMPLES=false` to skip the bundled examples entirely
+(with no catalogs, `[[key]]` chrome words simply render as their raw key). Icons come from your own
+`assets/icons/` or the bundled Font Awesome / Material / Octicons
 collections. Labels can be multilingual (`[[token]]` chrome words, 8 languages shipped).
 
 **→ The full template spec — every element type, tokens, rows/columns, icons, languages — is in

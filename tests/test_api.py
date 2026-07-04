@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import math
 import re
 from pathlib import Path
@@ -359,15 +360,20 @@ def test_reload_reports_malformed_template_file(client: TestClient) -> None:
     assert "simple" in detail["loaded"]
 
 
-def test_reload_reports_missing_default_language(client: TestClient) -> None:
-    """If reload would drop the default-language catalog, that is a reported failure."""
+def test_reload_missing_default_language_warns_but_succeeds(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reload that drops the default-language catalog is NOT a failure — it warns and renders
+    `[[token]]` words as raw keys (the softened LOAD_EXAMPLES contract). Remaining catalogs still
+    load, so the reload reports 200."""
     import app.main as main_mod
 
     (main_mod.translator.translations_dir / "en.yaml").unlink()
-    resp = client.post("/reload")
-    assert resp.status_code == 422
-    detail = resp.json()["detail"]
-    assert any("default language" in err for err in detail["errors"])
+    with caplog.at_level(logging.WARNING):
+        resp = client.post("/reload")
+    assert resp.status_code == 200
+    assert not main_mod.translator.has("en")
+    assert any("default language" in r.message for r in caplog.records)
 
 
 def test_metrics_endpoint(client: TestClient) -> None:
@@ -420,20 +426,28 @@ def test_print_persists_language_and_reprint_reuses_it(client: TestClient) -> No
 
 
 @pytest.mark.asyncio
-async def test_startup_rejects_missing_default_catalog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_startup_warns_but_serves_when_default_catalog_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A DEFAULT_LANGUAGE with no catalog must fail fast at startup."""
+    """A DEFAULT_LANGUAGE with no catalog (LOAD_EXAMPLES=false + empty translations dir) no longer
+    fails startup — it warns and the service serves with `[[token]]` rendered as its raw key."""
     import app.main as main_mod
 
     empty_translations = tmp_path / "translations"
     empty_translations.mkdir()
     monkeypatch.setattr(main_mod.settings, "data_dir", tmp_path)
     monkeypatch.setattr(main_mod.settings, "default_language", "en")
+    # file:// sink + unauth so startup proceeds past the (softened) translation check to completion.
+    monkeypatch.setattr(main_mod.settings, "printer_uri", f"file://{tmp_path / 'out.bin'}")
+    monkeypatch.setattr(main_mod.settings, "api_token", None)
+    monkeypatch.setattr(main_mod.settings, "allow_unauthenticated", True)
     monkeypatch.setattr(main_mod.translator, "translations_dir", empty_translations)
+    monkeypatch.setattr(main_mod.translator, "example_dir", None)  # LOAD_EXAMPLES=false
     monkeypatch.setattr(main_mod.translator, "default_language", "en")
-    with pytest.raises(RuntimeError, match="no catalog"):
+    with caplog.at_level(logging.WARNING):
         await main_mod.startup()
+    assert not main_mod.translator.has("en")
+    assert any("no catalog" in r.message for r in caplog.records)
 
 
 def test_web_ui_renders(client: TestClient) -> None:
@@ -1534,7 +1548,7 @@ def test_printer_status_usb_printing_phase_reports_printing(
 def test_printer_status_surfaces_snmp_identity_fields(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The status response carries the SNMP identity/telemetry fields (serial, firmware, hostname,
+    """The status response carries the SNMP identity/telemetry fields (serial, hostname,
     console, lifecount) so the web status card can render them (Step 7)."""
     import app.main as main_mod
     from app.transports.base import PrinterStatus
@@ -1556,7 +1570,6 @@ def test_printer_status_surfaces_snmp_identity_fields(
                 media_type="continuous",
                 reachable=True,
                 serial="B2Z160525",
-                firmware="Brother NC-36002w, Firmware Ver.1.00",
                 hostname="labelprinter",
                 console_text="READY",
                 label_lifecount=9,
@@ -1569,7 +1582,6 @@ def test_printer_status_surfaces_snmp_identity_fields(
 
     data = client.get("/printer/status").json()
     assert data["serial"] == "B2Z160525"
-    assert data["firmware"] == "Brother NC-36002w, Firmware Ver.1.00"
     assert data["hostname"] == "labelprinter"
     assert data["console_text"] == "READY"
     assert data["label_lifecount"] == 9
@@ -4480,7 +4492,7 @@ def test_print_records_snmp_telemetry_metrics(
     assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="noToner") == 0
     assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="jammed") == 0
     assert _metric_sample(main_mod.PRINTER_LABEL_LIFECOUNT) == 42
-    # printer_info exposes only the model (already public via /health); serial/firmware/hostname are
+    # printer_info exposes only the model (already public via /health); serial/hostname are
     # deliberately NOT on the unauthenticated metrics surface.
     assert _metric_sample(main_mod.PRINTER_INFO, model="Brother QL-810W") == 1
     info_label_keys = {

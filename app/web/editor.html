@@ -483,8 +483,15 @@
     async function loadSelected() {
       const sel = document.getElementById('load-select');
       if (!sel || !sel.value) return;
-      const name = sel.value;
-      // Guard against silently discarding unsaved edits.
+      await loadByName(sel.value);
+    }
+
+    // Fetch a template's source and load it into the editor. Shared by the "Load" picker button and
+    // the ?load=<name> deep-link (the Print page's "Customize" action on a bundled example). The
+    // unsaved-edits guard only fires when there is content to lose, so a deep-link into a fresh
+    // editor loads straight away.
+    async function loadByName(name) {
+      if (!name) return;
       if (currentYaml().trim() && currentYaml() !== lastLoadedYaml &&
           !(await confirmDiscard(`Replace the current YAML with template "${name}"? Unsaved edits will be lost.`))) {
         return;
@@ -505,6 +512,9 @@
         document.getElementById('yaml').value = json.yaml;
         syncYamlHighlight();
         lastLoadedYaml = json.yaml;
+        // Reflect the loaded template in the picker when it lists that name.
+        const sel = document.getElementById('load-select');
+        if (sel) sel.value = name;
         clearStatus();
         doPreview();
       } catch (e) {
@@ -907,9 +917,19 @@ layout:
     {% endraw %}
     lastLoadedYaml = document.getElementById('yaml').value;  // seed counts as "not dirty"
     syncYamlHighlight();  // paint the overlay for the seed (a programmatic write fires no `input`)
-    populateLoadSelect();
     loadLabelReference();
-    doPreview();
+    // ?load=<name> deep-link (the Print page's "Customize" action). Populate the picker first so the
+    // loaded template reflects in the dropdown, then load it. The seed is "not dirty", so loadByName
+    // loads without a discard prompt. Without the param, just preview the starter seed.
+    (async () => {
+      await populateLoadSelect();
+      const preload = new URLSearchParams(window.location.search).get('load');
+      if (preload) {
+        await loadByName(preload);
+      } else {
+        doPreview();
+      }
+    })();
   </script>
 </body>
 </html>

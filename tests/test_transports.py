@@ -1101,7 +1101,6 @@ _SNMP_REACHABLE = PrinterSNMPStatus(
     reachable=True,
     model="Brother QL-810W",
     serial="B2Z160525",
-    firmware="Brother NC-36002w, Firmware Ver.1.00",
     hostname="BRWF889D22FBB15",
     console_text="READY",
     error_state_bits=0,
@@ -1141,7 +1140,6 @@ def test_network_query_status_uses_snmp_and_maps_fields(monkeypatch: pytest.Monk
     assert status.media_width_mm == 62.0, "SNMP media width flows through as a float (not rounded)"
     assert status.media_type == "continuous"
     assert status.serial == "B2Z160525"
-    assert status.firmware == "Brother NC-36002w, Firmware Ver.1.00"
     assert status.hostname == "BRWF889D22FBB15"
     assert status.console_text == "READY"
     assert status.cover_status == 3

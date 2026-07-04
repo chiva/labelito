@@ -279,6 +279,49 @@
   outline-offset: 1px;
 }
 
+/* Bundled examples are visually de-emphasized so the user's own templates stand out. Restored to
+   full strength on hover / focus / selection so interacting with one is never muddy. */
+.tpl-card-example {
+  opacity: 0.68;
+  background: var(--panel);
+}
+
+.tpl-card-example:hover,
+.tpl-card-example:focus-within,
+.tpl-card-example.selected {
+  opacity: 1;
+}
+
+/* One-line key shown above the picker only when a bundled example is visible. */
+.tpl-legend {
+  font-size: 11px;
+  color: var(--ink3);
+  margin: 0 0 8px;
+}
+
+.tpl-legend a {
+  color: var(--blue);
+}
+
+/* "Customize" deep-link on an example card. Self-aligned so it doesn't stretch, and full-strength
+   even while the card is muted so the call-to-action stays legible. */
+.tpl-card-example .tpl-customize {
+  align-self: flex-start;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.tpl-card-example .tpl-customize:hover {
+  text-decoration: underline;
+}
+
+.tpl-card.selected .tpl-customize {
+  color: #fff;
+}
+
 /* ── Pills / badges / dots ──────────────────────────────────────────────────── */
 
 .pill {

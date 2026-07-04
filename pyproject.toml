@@ -11,12 +11,11 @@ version = "0.2.0"
 description = "labelito — self-hosted Brother QL label print service with Home Assistant integration"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 keywords = ["brother", "label", "printer", "home-assistant", "ql-810w"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
-    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]

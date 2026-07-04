@@ -2,7 +2,7 @@
 {% from "partials/_icons.html" import icon %}
 <html lang="en">
 <head>
-  <title>Labelito</title>
+  <title>labelito</title>
   {% include "partials/_head.html" %}
   <style>
     /* Print-page-specific styles; shared components live in app.css. */
@@ -26,10 +26,6 @@
     .size-filter { display: flex; align-items: center; gap: 8px; font-size: 12px; }
     .size-filter-toggle { background: none; border: none; padding: 0; font: inherit; font-size: 12px; font-weight: 600; color: var(--blue-light); cursor: pointer; text-decoration: underline; }
     [data-theme="light"] .size-filter-toggle { color: var(--blue-deep); }
-
-    /* Show-all mode: a card whose template needs a different roll carries a "needs …" note. */
-    .tpl-card .tpl-needs { font-family: var(--font-mono); font-size: 10px; color: var(--amber); }
-    .tpl-card.selected .tpl-needs { color: rgba(255, 255, 255, 0.85); }
 
     /* Name + red-capable pill sit on one row above the description. */
     .tpl-card-title { display: flex; align-items: center; gap: 6px; }
@@ -62,6 +58,12 @@
     .printer-detail .detail-err { color: var(--red); }
     .printer-detail summary { cursor: pointer; font-weight: 600; }
     .printer-detail details { margin-top: 4px; }
+    /* Indent the disclosure body so it reads as nested under "Details"; bold the label half of each
+       row to separate title from value. */
+    .printer-detail details > div { padding-left: 12px; }
+    .printer-detail .detail-k { font-weight: 600; color: var(--ink2); }
+    .printer-detail details a { color: var(--blue-light); }
+    [data-theme="light"] .printer-detail details a { color: var(--blue-deep); }
     .printer-detail code { font-family: var(--font-mono); font-size: 11.5px; }
 
     #preview-section .paper-frame { min-height: 90px; align-items: center; }
@@ -109,6 +111,7 @@
           <button type="button" id="size-filter-toggle" class="size-filter-toggle"></button>
         </div>
       </div>
+      <p id="tpl-legend" class="tpl-legend" style="display:none"></p>
       <div id="template-groups"></div>
     </div>
 
@@ -161,7 +164,7 @@
               {% endif %}
               <div class="option-group">
                 <div class="option-group-head">B/W conversion</div>
-                <div class="hint option-group-sub">Greys can't print directly — dither approximates them with a dot pattern, or threshold sets a hard black/white cutoff; affects the print and the live preview.</div>
+                <div class="hint option-group-sub">Greys can't print directly — dither approximates them with a dot pattern, or threshold sets a hard black/white cutoff.</div>
                 <label class="check-label">
                   <input type="checkbox" id="dither"{% if default_dither %} checked{% endif %}>
                   Dither (approximate greys)
@@ -208,7 +211,7 @@
         <div class="card">
           <div class="card-head">
             <span class="card-title">Printer status</span>
-            <button type="button" class="btn-icon" onclick="refreshPrinterStatus()" title="Refresh printer status" aria-label="Refresh printer status">{{ icon("arrows-rotate") }}</button>
+            <button type="button" id="status-refresh" class="btn-icon" onclick="manualRefreshPrinterStatus()" title="Refresh printer status" aria-label="Refresh printer status" aria-busy="false">{{ icon("arrows-rotate") }}</button>
           </div>
           <div class="kv-list">
             <div class="kv">
@@ -221,6 +224,10 @@
             <div class="kv">
               <span class="k">Media</span>
               <span class="v"><span id="media-badge" class="media-badge"></span></span>
+            </div>
+            <div class="kv" id="console-row" style="display:none">
+              <span class="k">Console</span>
+              <span class="v" id="console-value"></span>
             </div>
             <div id="printer-detail" class="printer-detail"></div>
           </div>
@@ -245,9 +252,20 @@
   <script>
     const TEMPLATES = {{ templates | tojson }};
     const templateMap = Object.fromEntries(TEMPLATES.map(t => [t.name, t]));
+    // Whether the template studio is reachable — gates the per-card "Customize" deep-link on example
+    // cards (with the editor off, /editor 404s, so there is nothing to link to).
+    const EDITOR_ENABLED = {{ editor_enabled | tojson }};
     // Latest /printer/status body, used to compare the loaded roll against each template's required
     // media. Null until the first status arrives (or when the status query fails) → compat unknown.
     let printerStatus = null;
+
+    // Fast-poll bridge: a print is sent, but the printer takes ~1-2s to start reporting a working
+    // hrPrinterStatus, so keying "busy" purely off printerStatus.state would miss that gap and poll
+    // slowly right when the state is changing. doPrint sets this a few seconds ahead so the poller
+    // runs at the fast cadence from the instant a job is sent until either the printer reports idle
+    // again or the bridge lapses. Absolute epoch-ms deadline; 0 = no print pending.
+    const STATUS_PRINT_BRIDGE_MS = 3000;
+    let printBridgeUntil = 0;
 
     // Persisted UI pref: whether the status card's "Details" disclosure is expanded. Mirrors the
     // TOKEN_KEY pattern so the choice survives #printer-detail's per-refresh rebuild and page reloads.
@@ -364,10 +382,37 @@
       if (dot) dot.className = 'dot dot-pulse ' + cls;
     }
 
+    // Hide the Console kv row + clear its text. Used by the unreachable/auth/unknown paths that reset
+    // the card without a fresh status body, so a stale console line can't linger.
+    function hideConsoleRow() {
+      const row = document.getElementById('console-row');
+      const val = document.getElementById('console-value');
+      if (row) row.style.display = 'none';
+      if (val) val.textContent = '';
+    }
+
+    // Parse the web-UI host from a printer URI. Only tcp:// (network) printers have an HTTP management
+    // page; usb://, file://, and unparseable URIs return null so no link is rendered.
+    function webUiHost(uri) {
+      if (typeof uri !== 'string' || !uri.startsWith('tcp://')) return null;
+      try { return new URL(uri).hostname || null; } catch (e) { return null; }
+    }
+
     function renderPrinterStatus(data) {
       printerStatus = data;
       setStateBadge(data.state);
-      // Build the card with DOM nodes + textContent, never innerHTML: network status now comes
+      // Console (SNMP prtConsoleDisplayBufferText) as its own kv row so it aligns with Connection/Media
+      // instead of a loose detail line. Hidden when there's nothing to show (unreachable / non-network).
+      const consoleRow = document.getElementById('console-row');
+      const consoleVal = document.getElementById('console-value');
+      if (data.reachable && data.console_text) {
+        consoleVal.textContent = data.console_text;
+        consoleRow.style.display = '';
+      } else {
+        consoleVal.textContent = '';
+        consoleRow.style.display = 'none';
+      }
+      // Build the detail area with DOM nodes + textContent, never innerHTML: network status now comes
       // from SNMP, so `model` (hrDeviceDescr) and `errors` (which can carry the printer's console
       // text) are device/network-supplied and untrusted. A spoofed SNMP peer must not be able to
       // inject markup into this token-bearing page. textContent escapes every value for us.
@@ -380,42 +425,46 @@
         return div;
       };
       const addLine = (cls) => lineIn(detail, cls);
-      // ── Primary: the live operational status, kept compact and always visible. Model moved to the
-      //    Details disclosure below (it rarely changes and crowded the always-visible line).
-      if (data.reachable) {
-        const bits = [];
-        if (data.media_type) {
-          const len = data.media_length_mm ? `×${data.media_length_mm}mm` : '';
-          const w = data.media_width_mm != null ? `${data.media_width_mm}mm${len}` : '';
-          bits.push(`Media: ${data.media_type}${w ? ' (' + w + ')' : ''}`);
-        }
-        if (bits.length) addLine().textContent = bits.join(' · ');
-        // Surfaces the (previously dead) model_mismatch field: the raster is built for the
-        // configured MODEL at startup, so an attached printer reporting a different model means
-        // the output may be wrong for it. Amber .hint-warn, not the fatal-looking .detail-err used
-        // for genuine printer faults below — this is a configuration heads-up, not a device error.
-        if (data.model_mismatch) {
-          const configuredModel = {{ model | tojson }};  // tojson: safe embed of the configured value into JS
-          addLine('hint-warn').textContent =
-            `Reported model ${data.model} differs from the configured ${configuredModel} — output may be wrong.`;
-        }
-        if (data.console_text) addLine().textContent = `Console: ${data.console_text}`;
+      // ── Primary: the loaded roll now lives in the Media pill and the console line in its own kv row,
+      //    so the only always-visible detail here is the model-mismatch heads-up. It surfaces the
+      //    model_mismatch field: the raster is built for the configured MODEL at startup, so an attached
+      //    printer reporting a different model means the output may be wrong for it. Amber .hint-warn,
+      //    not the fatal-looking .detail-err used for genuine faults below — a config heads-up, not a
+      //    device error.
+      if (data.reachable && data.model_mismatch) {
+        const configuredModel = {{ model | tojson }};  // tojson: safe embed of the configured value into JS
+        addLine('hint-warn').textContent =
+          `Reported model ${data.model} differs from the configured ${configuredModel} — output may be wrong.`;
       }
-      if (Array.isArray(data.errors) && data.errors.length) {
-        addLine('detail-err').textContent = data.errors.join('; ');
+      // Genuine faults only. The SNMP layer echoes a non-READY console line into `errors` as
+      // `console: <text>` (snmp.build_snmp_status); that same text is already shown verbatim in the
+      // Console row above, so filtering the echo stops a transient state (e.g. PRINTING) from
+      // double-rendering as a red error line while leaving real bit-derived faults intact.
+      const consoleEcho = data.console_text ? `console: ${data.console_text}` : null;
+      const faultErrors = (Array.isArray(data.errors) ? data.errors : []).filter(e => e !== consoleEcho);
+      if (faultErrors.length) {
+        addLine('detail-err').textContent = faultErrors.join('; ');
       }
       // ── Secondary: URI + SNMP identity/inventory behind a disclosure, off by default so they never
-      //    crowd the live status. All device-supplied → textContent keeps them inert (see XSS note).
-      //    Open state persists across this rebuild and reloads via printerDetailsOpen.
+      //    crowd the live status. URI is server config (settings.printer_uri); the rest are
+      //    device-supplied. Every value is rendered via textContent, which keeps all of them inert
+      //    regardless of source (see XSS note). Open state persists across this rebuild and reloads
+      //    via printerDetailsOpen.
+      //    Tuple: [label, value, asCode?, asLink?].
       const secondary = [];
       if (data.uri) secondary.push(['URI', data.uri, true]);
+      // Web UI link: the print URI is tcp://host:9100; a Brother NIC serves its management page over
+      // plain HTTP (port 80) on the same host. `data.uri` is server config (settings.printer_uri), not
+      // device-supplied, so building the href from it is safe. Shown unconditionally for tcp:// — no
+      // port-80 probe (the link may 404 if the printer's web UI is disabled).
+      const webHost = webUiHost(data.uri);
+      if (webHost) secondary.push(['Web UI', `http://${webHost}`, false, true]);
       if (data.hostname) secondary.push(['Hostname', data.hostname]);
       if (data.reachable) {
         if (data.model) secondary.push(['Model', data.model]);
         if (data.status) secondary.push(['Status', data.status]);
         if (data.phase) secondary.push(['Phase', data.phase]);
         if (data.serial) secondary.push(['Serial', data.serial]);
-        if (data.firmware) secondary.push(['Firmware', data.firmware]);
         if (data.label_lifecount != null) {
           secondary.push(['Labels printed (lifetime)', String(data.label_lifecount)]);
         }
@@ -430,15 +479,25 @@
         const sum = document.createElement('summary');
         sum.textContent = 'Details';
         det.appendChild(sum);
-        for (const [label, value, asCode] of secondary) {
+        for (const [label, value, asCode, asLink] of secondary) {
           const line = lineIn(det);
-          if (asCode) {
-            line.append(`${label}: `);
+          const k = document.createElement('strong');
+          k.className = 'detail-k';
+          k.textContent = `${label}: `;
+          line.appendChild(k);
+          if (asLink) {
+            const a = document.createElement('a');
+            a.href = value;
+            a.textContent = value;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            line.appendChild(a);
+          } else if (asCode) {
             const code = document.createElement('code');
             code.textContent = value;
             line.appendChild(code);
           } else {
-            line.textContent = `${label}: ${value}`;
+            line.append(value);
           }
         }
         detail.appendChild(det);
@@ -461,6 +520,7 @@
           handleAuthError(res);
           setStateBadge('off', 'Auth required');
           document.getElementById('printer-detail').replaceChildren();
+          hideConsoleRow();
           printerStatus = null;
           rebuildTemplatePicker();
           return;
@@ -470,6 +530,7 @@
         if (!data) {
           setStateBadge('off', 'Unknown');
           document.getElementById('printer-detail').replaceChildren();
+          hideConsoleRow();
           printerStatus = null;
           rebuildTemplatePicker();
           return;
@@ -480,6 +541,7 @@
         setStateBadge('off', 'Unreachable');
         const detail = document.getElementById('printer-detail');
         detail.replaceChildren();
+        hideConsoleRow();
         const div = document.createElement('div');
         div.className = 'detail-err';
         div.textContent = `Network error: ${e.message}`;
@@ -497,11 +559,38 @@
       }
     }
 
+    // Status ↻ spin feedback: mirror the live-preview button so a manual refresh is visibly
+    // acknowledged even when the response is near-instant. Only manual clicks drive the spin — the
+    // background poll calls refreshPrinterStatus() directly, so the icon doesn't twitch every cycle.
+    // A counter (not a bool) keeps overlapping clicks spinning until the last lands; the spin stops
+    // only at a rotation boundary (animationiteration) so it always plays ≥1 full turn and rests
+    // upright, never a sub-100ms flick.
+    let statusRefreshesInFlight = 0;
+    function setStatusBusy(delta) {
+      statusRefreshesInFlight = Math.max(0, statusRefreshesInFlight + delta);
+      if (statusRefreshesInFlight > 0) {
+        document.getElementById('status-refresh').setAttribute('aria-busy', 'true');
+      }
+    }
+    document.getElementById('status-refresh').addEventListener('animationiteration', (e) => {
+      if (e.animationName === 'lbl-spin' && statusRefreshesInFlight === 0) {
+        e.currentTarget.setAttribute('aria-busy', 'false');
+      }
+    });
+    async function manualRefreshPrinterStatus() {
+      setStatusBusy(1);
+      try { await refreshPrinterStatus(); } finally { setStatusBusy(-1); }
+    }
+
     // Shared self-scheduling poll (labelito.js): varies cadence with reachability, pauses on hidden
     // tabs, resumes on visibilitychange. Started at init only when LIVE_STATUS_POLL.
     const statusPoller = createStatusPoller({
       tick: refreshPrinterStatus,
       isHealthy: () => !!(printerStatus && printerStatus.reachable),
+      // Poll fast while a job is in flight: during the post-send bridge, or while the printer still
+      // reports a working state. Converges the badge back to Idle within ~1s of the print finishing
+      // instead of on the next 4s boundary; relaxes to the base cadence once idle.
+      isBusy: () => Date.now() < printBridgeUntil || !!(printerStatus && printerStatus.state === 'printing'),
     });
 
     // The loaded roll from the latest status (shared loadedMediaFrom in labelito.js): a
@@ -515,19 +604,22 @@
       if (!badge) return;
       badge.className = 'media-badge';
       if (!required) { badge.textContent = ''; return; }
+      // The pill is the single Media surface: ✓/✗ + the ACTUAL loaded roll is enough to flag
+      // (in)compatibility at a glance; the "needs …" detail rides in the tooltip so the pill stays
+      // compact and the loaded roll is never shown twice.
       if (compat === 'match') {
         badge.classList.add('media-ok');
-        badge.textContent = `✓ ${mediaDesc(required)}`;
+        badge.textContent = `✓ ${mediaDesc(loaded || required)}`;
         badge.title = 'The loaded roll matches this template.';
       } else if (compat === 'mismatch') {
         badge.classList.add('media-bad');
-        badge.textContent = `✗ needs ${mediaDesc(required)} — loaded ${mediaDesc(loaded)}`;
-        badge.title = 'The loaded roll does not match this template; the server will reject a real '
-          + 'print with a 409. Preview and dry run still work; refresh ↻ after changing the roll.';
+        badge.textContent = `✗ ${mediaDesc(loaded)}`;
+        badge.title = `Loaded roll ${mediaDesc(loaded)} does not match this template (needs `
+          + `${mediaDesc(required)}); the server will reject a real print with a 409. Preview and dry `
+          + `run still work; refresh ↻ after changing the roll.`;
       } else {
         badge.classList.add('media-unknown');
-        // No "media: " prefix — the card's own "Media" kv label already says that.
-        badge.textContent = mediaDesc(required);
+        badge.textContent = `? ${mediaDesc(required)}`;
         badge.title = 'Loaded media unknown (SNMP unavailable or non-network printer) — not checked.';
       }
     }
@@ -574,6 +666,7 @@
       saveFields();
       updateMediaBadge();
       syncRedToggleForTemplate();
+      clearPreviewForSwitch();  // drop the previous template's label before the new one renders
       doPreview();
     }
 
@@ -642,6 +735,7 @@
 
       container.replaceChildren();
       let hiddenCount = 0;
+      let anyExample = false;
       const flatValues = [];
       for (const [key, g] of ordered) {
         if (!visibleKeys.has(key)) { hiddenCount += g.items.length; continue; }
@@ -659,6 +753,13 @@
           pill.className = 'pill pill-green roll-pill';
           pill.textContent = 'loaded roll';
           head.appendChild(pill);
+        } else if (!focus && mediaCompat(g.media, loaded) === 'mismatch') {
+          // The loaded roll is known and this whole size group isn't it — flag the mismatch ONCE on
+          // the group header. (Previously each card in the group repeated an identical "needs …" note.)
+          const pill = document.createElement('span');
+          pill.className = 'pill pill-amber roll-pill';
+          pill.textContent = '≠ loaded roll';
+          head.appendChild(pill);
         }
         section.appendChild(head);
         const grid = document.createElement('div');
@@ -667,6 +768,8 @@
           flatValues.push(t.name);
           const card = document.createElement('label');
           card.className = 'tpl-card';
+          // Bundled examples are visually muted so the user's own templates stand out.
+          if (t.is_example) { card.classList.add('tpl-card-example'); anyExample = true; }
           card.dataset.name = t.name;
           const radio = document.createElement('input');
           radio.type = 'radio';
@@ -694,14 +797,21 @@
           descEl.className = 'tpl-desc';
           descEl.textContent = t.description || '';
           card.appendChild(descEl);
-          // In show-all mode a mismatching card carries a "needs …" note; in focus mode only
-          // matching/selected groups show, so the note would be redundant there.
-          if (!focus && mediaCompat(t.media, loaded) === 'mismatch') {
-            const needs = document.createElement('span');
-            needs.className = 'tpl-needs';
-            needs.textContent = `needs ${mediaDesc(t.media)}`;
-            card.appendChild(needs);
+          // Customize: deep-link a bundled example into the studio, preloaded, so the user can edit it
+          // and Copy/Download it into their own templates dir. Only when the editor is reachable.
+          // A plain <a> inside the <label> card: clicking it must NOT toggle the card's radio, so stop
+          // the event from bubbling to the label.
+          if (t.is_example && EDITOR_ENABLED) {
+            const base = (window.LABELITO_BASE || '');
+            const edit = document.createElement('a');
+            edit.className = 'tpl-customize';
+            edit.href = `${base}/editor?load=${encodeURIComponent(t.name)}`;
+            edit.textContent = 'Customize';
+            edit.addEventListener('click', (e) => { e.stopPropagation(); });
+            card.appendChild(edit);
           }
+          // The per-card "needs …" note moved to the group header (see the group-head block above):
+          // every card in a size group shares the same media, so the mismatch is stated once per group.
           grid.appendChild(card);
         }
         section.appendChild(grid);
@@ -717,11 +827,12 @@
       const selectionChanged = finalVal !== prevVal;
 
       renderSizeFilterControl(loaded, matchGroup, focus, hiddenCount);
+      renderExampleLegend(anyExample);
 
       if (selectionChanged) renderFields();
       updateMediaBadge();
       syncRedToggleForTemplate();
-      if (selectionChanged) doPreview();
+      if (selectionChanged) { clearPreviewForSwitch(); doPreview(); }
     }
 
     // Disable the #red toggle when the CURRENT template's media can't take a red print (client-side
@@ -741,6 +852,18 @@
       if (defaultHint) defaultHint.style.display = supported ? '' : 'none';
       if (disabledHint) disabledHint.style.display = supported ? 'none' : '';
       if (rollNote) rollNote.style.display = supported ? '' : 'none';
+    }
+
+    // Legend explaining the dimmed cards, shown only when at least one bundled example is visible.
+    // DOM/textContent only (no innerHTML) to keep the XSS discipline of the rest of this file.
+    function renderExampleLegend(anyExample) {
+      const el = document.getElementById('tpl-legend');
+      if (!el) return;
+      el.replaceChildren();
+      if (!anyExample) { el.style.display = 'none'; return; }
+      el.style.display = '';
+      el.append('Dimmed = bundled example');
+      if (EDITOR_ENABLED) el.append(' — Customize to make it your own.');
     }
 
     // The "Show all sizes" / "Show only matching size" toggle + hidden-count hint in the Template
@@ -946,6 +1069,21 @@
       if (placeholder) placeholder.style.display = 'none';
     }
 
+    // Blank the live preview when the SELECTED TEMPLATE changes (as opposed to a field edit of the same
+    // template): the previous image is a *different* label, so hide it and drop its src rather than dim
+    // it in place — a dimmed wrong-template label reads as misleading. The next successful doPreview
+    // re-reveals #preview-img (clearPreviewError restores display), and the ↻ spin marks "generating".
+    function clearPreviewForSwitch() {
+      const img = document.getElementById('preview-img');
+      const placeholder = document.getElementById('preview-placeholder');
+      img.classList.remove('preview-stale');
+      if (img.dataset.url) { URL.revokeObjectURL(img.dataset.url); delete img.dataset.url; }
+      img.removeAttribute('src');
+      img.style.display = 'none';
+      if (placeholder) placeholder.style.display = 'none';
+      document.getElementById('preview-error').textContent = '';
+    }
+
     // Previews fire from several triggers (template pick, debounced field edits, language
     // changes, manual refresh) with no serialization, so responses can land out of order.
     // Each doPreview call claims a sequence number and only the newest may touch the UI —
@@ -978,6 +1116,11 @@
       const seq = ++previewSeq;
       const payload = buildPayload();
       setPreviewBusy(1);
+      // Darken the label currently on screen while the new one renders (debounce + fetch), so a stale
+      // preview can't be mistaken for the current one. Only meaningful once something has rendered; a
+      // successful preview clears it via clearPreviewError (1002), an error re-applies it in place.
+      const staleImg = document.getElementById('preview-img');
+      if (staleImg.naturalWidth) staleImg.classList.add('preview-stale');
       try {
         const res = await fetch(api('/preview'), {
           method: 'POST',
@@ -1063,7 +1206,12 @@
         }
         showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
         await doPreview();
-        refreshPrinterStatus();
+        // Open the fast-poll bridge so the card tracks the print→idle transition at ~1s instead of the
+        // 4s base cadence. On SNMP, re-tick the poller now (schedule(0)) and let isBusy hold the fast
+        // cadence until idle; on USB there is no background poller, so fall back to a one-shot reconcile.
+        printBridgeUntil = Date.now() + STATUS_PRINT_BRIDGE_MS;
+        if (LIVE_STATUS_POLL) statusPoller.schedule(0);
+        else refreshPrinterStatus();
       } catch (e) {
         showStatus('Network error: ' + e.message, 'err');
         refreshPrinterStatus();

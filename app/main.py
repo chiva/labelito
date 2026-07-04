@@ -51,6 +51,7 @@ from app.loader import (
     Template,
     TemplateLoadError,
     TemplateRegistry,
+    load_template,
     validate_template_from_string,
 )
 from app.media import LoadedMedia, MediaMatch, RequiredMedia, media_matches, required_media_for
@@ -146,7 +147,7 @@ PRINTER_LABEL_LIFECOUNT = Gauge(
     "printer_label_lifecount", "Lifetime label count from prtMarkerLifeCount (NaN when unobserved)"
 )
 PRINTER_LABEL_LIFECOUNT.set(_METRIC_UNKNOWN)
-# Only the model is exported (already public via /health). serial/firmware/hostname are stable device
+# Only the model is exported (already public via /health). serial/hostname are stable device
 # identifiers and are deliberately NOT put on the unauthenticated metrics surface — they stay on the
 # token-protected /printer/status. (/metrics carries no token; leaking identifiers there would be a
 # weaker gate than the status route that returns the same fields.)
@@ -355,10 +356,12 @@ except importlib.metadata.PackageNotFoundError:
 # Compatibility contract for API consumers (the Home Assistant integration gates on this via
 # /health). Bump ONLY on breaking changes to existing endpoints/fields — additive changes keep
 # the number. Independent of the package version, which release-please bumps every release.
-API_VERSION = 1
+# v2: dropped the `firmware` field from PrinterStatusResponse (/printer/status) — a breaking
+# field removal, so the contract number moves per the rule above.
+API_VERSION = 2
 
 app = FastAPI(
-    title="Labelito",
+    title="labelito",
     version=APP_VERSION,
     description="Self-hosted label printing for Brother QL printers.",
     license_info={"name": "GPL-3.0-or-later"},
@@ -464,8 +467,20 @@ _ASSET_VERSION = _compute_asset_version()
 # instead of interleaving raster sends.
 _print_lock = asyncio.Lock()
 
-registry = TemplateRegistry(_templates_dir)
-translator = Translator(settings.translations_dir.resolve(), settings.default_language)
+# LOAD_EXAMPLES=false disables the bundled examples by passing None as the example dir — the
+# already-supported "single dir" sentinel in both TemplateRegistry and Translator.
+_example_templates_dir = (
+    settings.example_templates_dir.resolve() if settings.load_examples else None
+)
+_example_translations_dir = (
+    settings.example_translations_dir.resolve() if settings.load_examples else None
+)
+registry = TemplateRegistry(_templates_dir, _example_templates_dir)
+translator = Translator(
+    settings.translations_dir.resolve(),
+    settings.default_language,
+    _example_translations_dir,
+)
 engine = RenderEngine(
     fonts_dir=settings.fonts_dir.resolve(),
     icons_dir=settings.icons_dir.resolve(),
@@ -758,9 +773,14 @@ async def startup() -> None:
     log.info("Loaded %d templates: %s", len(loaded), loaded)
     langs = translator.load_all()
     if not translator.has(settings.default_language):
-        raise RuntimeError(
-            f"DEFAULT_LANGUAGE {settings.default_language!r} has no catalog in "
-            f"{settings.translations_dir}. Available languages: {langs}"
+        # Not fatal: translate() degrades a missing catalog to the raw key, so the service still
+        # serves. This is the expected state with LOAD_EXAMPLES=false and an empty translations_dir.
+        log.warning(
+            "DEFAULT_LANGUAGE %r has no catalog in %s (available: %s); [[token]] chrome words will "
+            "render as their raw key until a catalog is provided.",
+            settings.default_language,
+            settings.translations_dir,
+            langs,
         )
     log.info("Loaded %d translation catalogs: %s", len(langs), langs)
     _require_auth_or_optout()
@@ -1517,7 +1537,6 @@ def _status_response(status: PrinterStatus, state: PrinterState) -> PrinterStatu
         phase=status.phase_type,
         errors=status.errors,
         serial=status.serial,
-        firmware=status.firmware,
         hostname=status.hostname,
         console_text=status.console_text,
         label_lifecount=status.label_lifecount,
@@ -1654,6 +1673,7 @@ def list_templates() -> list[TemplateInfo]:
                 optional=t.optional_fields,
             ),
             media=_template_media(t.label),
+            is_example=t.is_example,
         )
         for t in registry.all()
     ]
@@ -1687,14 +1707,21 @@ def get_template_source(name: str) -> TemplateSourceResponse:
     if tmpl is None:
         raise HTTPException(404, f"No template named {name!r}")
 
-    real_dir = settings.templates_dir.resolve()
+    # A registered template's source may live under templates_dir OR the bundled example dir (the
+    # registry merges both — see TemplateRegistry.load_all). Loading a bundled example's YAML into the
+    # studio is a read-only reference / edit-as-new; the two dirs are the only registry sources, so
+    # confining reads to them keeps the traversal guarantee intact.
+    allowed_dirs = {
+        settings.templates_dir.resolve(),
+        settings.example_templates_dir.resolve(),
+    }
     real_src = tmpl.source_path.resolve()
     if (
         tmpl.source_path.is_symlink()
-        or real_src.parent != real_dir
+        or real_src.parent not in allowed_dirs
         or tmpl.source_path.suffix != ".yaml"
     ):
-        # A registered template whose file is not a plain .yaml directly under templates_dir should
+        # A registered template whose file is not a plain .yaml directly under an allowed dir should
         # be unreachable (load_all rejects symlinks), but never serve it if the invariant is violated.
         raise HTTPException(404, f"No template named {name!r}")
 
@@ -2109,17 +2136,21 @@ def reload_templates() -> dict[str, Any]:
 
     Malformed files are skipped so the valid ones still load, but their errors are reported with a
     422 instead of a misleading 200 — otherwise a single YAML typo could silently drop a template
-    or the default-language catalog while the API claims success, and the next print would quietly
-    misbehave. The default-language catalog disappearing is itself treated as a reload failure.
+    while the API claims success, and the next print would quietly misbehave. A wholly absent
+    default-language catalog is NOT an error (it is the expected LOAD_EXAMPLES=false + empty
+    translations_dir state); it is warned about and `[[token]]` words render as their raw key. A
+    malformed USER catalog still surfaces as a 422 via translator.errors.
     """
     loaded = registry.load_all()
     langs = translator.load_all()
 
     errors = registry.errors + translator.errors
     if not translator.has(settings.default_language):
-        errors.append(
-            f"default language {settings.default_language!r} has no catalog after reload "
-            f"(available: {langs})"
+        log.warning(
+            "default language %r has no catalog after reload (available: %s); [[token]] words will "
+            "render as their raw key",
+            settings.default_language,
+            langs,
         )
     if errors:
         raise HTTPException(
@@ -2249,13 +2280,20 @@ _SAFE_TEMPLATE_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$")
 def _safe_template_path(name: str) -> Path:
     """Resolve ``name`` to its on-disk save target, or reject it (422) on traversal.
 
-    A template already registered under ``name`` writes back to its own ``source_path`` instead of
-    reconstructing ``{templates_dir}/{name}.yaml`` — otherwise a template whose file does not match
-    its internal name (e.g. a media-prefixed bundled file like ``12-simple-text.yaml`` declaring
+    A registered *user* template writes back to its own ``source_path`` instead of reconstructing
+    ``{templates_dir}/{name}.yaml`` — otherwise a template whose file does not match its internal
+    name (e.g. a media-prefixed bundled file like ``12-simple-text.yaml`` declaring
     ``name: simple-text-12``) would spawn a SECOND file with that name on every re-save, which the
     post-write duplicate-name check in :func:`save_template` would then roll back (see that
-    function's docstring). A name with no existing registration is new, and keeps the original
-    ``{templates_dir}/{name}.yaml`` convention.
+    function's docstring).
+
+    A registered *bundled example* (``is_example``) is the exception: its ``source_path`` lives under
+    the read-only ``example_templates_dir`` (baked into the image, outside the writable templates
+    mount), so writing back there 500s in Docker and destructively mutates the shipped example on a
+    writable bare-metal install. Instead it falls through to ``{templates_dir}/{name}.yaml`` so
+    customizing an example creates a USER override that shadows the bundle (loader precedence loads
+    the user dir first), which is the intended merge behaviour. A name with no existing registration
+    is new and keeps the same ``{templates_dir}/{name}.yaml`` convention.
 
     Two independent guards remain for the new-name path: a strict allowlist regex on the bare name
     (no separators, dots, or ``..``), then a defence-in-depth check that the resolved path's parent
@@ -2269,7 +2307,7 @@ def _safe_template_path(name: str) -> Path:
             "(no path separators, dots, or extension)",
         )
     existing = registry.get(name)
-    if existing is not None:
+    if existing is not None and not existing.is_example:
         return existing.source_path
     templates_dir = settings.templates_dir.resolve()
     candidate = (templates_dir / f"{name}.yaml").resolve()
@@ -2289,6 +2327,27 @@ def _safe_template_path(name: str) -> Path:
                 422,
                 f"Invalid template name {name!r}: collides with existing template {stem!r} on a "
                 "case-insensitive filesystem; choose a name that differs by more than case",
+            )
+    # Refuse to clobber a DIFFERENT template's file. The registry keys on the internal ``name``, not
+    # the filename, and filenames may legitimately differ from it (media-prefixed bundles, renamed
+    # files), so ``{name}.yaml`` can already hold another internal name — e.g. templates/simple-text.
+    # yaml declaring ``name: my-custom`` while an example declares ``name: simple-text``. Writing here
+    # would overwrite that file; on reload its template vanishes (no duplicate), so the post-write
+    # identity check in save_template passes and the other template is SILENTLY lost. Inspect the file
+    # ON DISK — not the in-memory registry, which a bind-mount or out-of-band edit since the last
+    # reload leaves stale — and 409 if its internal name differs from the target. A file that fails to
+    # load backs no live template, so overwriting it is allowed. (Reached only for a new name or an
+    # example override — an existing user template under this exact name returned its source_path above.)
+    if candidate.exists():
+        try:
+            on_disk: Template | None = load_template(candidate)
+        except TemplateLoadError:
+            on_disk = None
+        if on_disk is not None and on_disk.name != name:
+            raise HTTPException(
+                409,
+                f"Cannot save {name!r}: its target file {candidate.name} already stores a different "
+                f"template ({on_disk.name!r}); rename this template, or remove that file first",
             )
     return candidate
 
@@ -2804,6 +2863,9 @@ async def web_ui(request: Request) -> HTMLResponse:
             # both this AND a two-color-capable model (_two_color_unsupported_reason), but the roll's
             # actual colour is unknowable from SNMP, so this is a template-authoring signal, not proof.
             "red": t.label in red_labels,
+            # True when this is a bundled example (not from the user's templates_dir). Drives the
+            # muted "example" card styling + the Customize deep-link in the picker.
+            "is_example": t.is_example,
         }
         for t in registry.all()
     ]

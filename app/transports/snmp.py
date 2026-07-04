@@ -72,7 +72,6 @@ OID_DEVICE_ID_1284 = (
     "1.3.6.1.4.1.2435.2.3.9.1.1.7.0"  # Brother enterprise arc 2435 ⇒ multi-byte sub-id
 )
 OID_SERIAL = "1.3.6.1.2.1.43.5.1.1.17.1"
-OID_SYS_DESCR = "1.3.6.1.2.1.1.1.0"
 OID_SYS_NAME = "1.3.6.1.2.1.1.5.0"
 OID_PRT_MARKER_LIFE_COUNT = "1.3.6.1.2.1.43.10.2.1.4.1.1"
 
@@ -107,7 +106,6 @@ OPTIONAL_STATUS_OIDS: tuple[str, ...] = (
     OID_PRT_COVER_STATUS,
     OID_HR_DEVICE_DESCR,
     OID_SERIAL,
-    OID_SYS_DESCR,
     OID_SYS_NAME,
     OID_PRT_MARKER_LIFE_COUNT,
 )
@@ -444,7 +442,6 @@ class PrinterSNMPStatus:
     reachable: bool
     model: str | None = None
     serial: str | None = None
-    firmware: str | None = None
     hostname: str | None = None
     console_text: str | None = None
     error_state_bits: int = 0
@@ -540,7 +537,6 @@ def build_snmp_status(values: dict[str, object]) -> PrinterSNMPStatus:
         reachable=True,
         model=_as_str(values.get(OID_HR_DEVICE_DESCR)),
         serial=_as_str(values.get(OID_SERIAL)),
-        firmware=_as_str(values.get(OID_SYS_DESCR)),
         hostname=_as_str(values.get(OID_SYS_NAME)),
         console_text=console_text,
         error_state_bits=error_state_bits,

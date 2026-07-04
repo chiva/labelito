@@ -138,6 +138,7 @@ class Template:
 
     __slots__ = (
         "description",
+        "is_example",
         "label",
         "layout",
         "name",
@@ -157,6 +158,7 @@ class Template:
         optional_fields: list[str],
         layout: list[dict[str, Any]],
         source_path: Path,
+        is_example: bool = False,
     ) -> None:
         self.name = name
         self.description = description
@@ -166,6 +168,9 @@ class Template:
         self.optional_fields = optional_fields
         self.layout = layout
         self.source_path = source_path
+        # True when this template came from the bundled example dir (not the user's templates_dir).
+        # Set by TemplateRegistry._load_dir after construction; used to visually mark example cards.
+        self.is_example = is_example
 
     @property
     def all_fields(self) -> list[str]:
@@ -726,51 +731,109 @@ def validate_template_from_string(yaml_text: str, source_name: str = "<draft>") 
 class TemplateRegistry:
     """Hot-reloadable registry of all templates in a directory."""
 
-    def __init__(self, templates_dir: Path) -> None:
+    def __init__(self, templates_dir: Path, example_dir: Path | None = None) -> None:
         self.templates_dir = templates_dir
+        # Bundled examples baked outside the templates_dir volume (config.example_templates_dir).
+        # Loaded IN ADDITION to templates_dir so a bind-mount can't shadow them and upgrades ship new
+        # examples. ``None`` (or a path equal to templates_dir) means "single dir" — the common
+        # bare-metal/dev case where templates_dir already holds the shipped examples.
+        self.example_dir = example_dir
         self._templates: dict[str, Template] = {}
         self._errors: list[str] = []
 
     def load_all(self) -> list[str]:
-        """(Re)load all .yaml files; return list of loaded names.
+        """(Re)load all .yaml files from the user dir and the bundled-example dir; return loaded names.
 
         Files that fail to parse/validate are skipped (so the rest stay available) and their
         errors are retained in :attr:`errors` for the caller to surface — a reload must not report
         success while a malformed file has silently dropped a template.
 
-        Two distinct files declaring the same internal ``name`` are NOT silently merged: the registry
-        indexes by internal name, so a later file would otherwise overwrite an earlier one and the
-        winner would depend on filename sort order. Instead the FIRST file in sort
-        order keeps the name (deterministic, independent of which file was edited last) and every
-        later duplicate is rejected with an error naming BOTH files and the shared name. Because the
-        error lands in :attr:`errors`, ``save_template``'s existing ``if errors:`` branch rolls back a
-        save that introduces a duplicate, and ``/reload`` surfaces it as a 422.
+        Two distinct USER files declaring the same internal ``name`` are NOT silently merged: the
+        registry indexes by internal name, so a later file would otherwise overwrite an earlier one and
+        the winner would depend on filename sort order. Instead the FIRST file in sort order keeps the
+        name (deterministic, independent of which file was edited last) and every later duplicate is
+        rejected with an error naming BOTH files and the shared name. Because the error lands in
+        :attr:`errors`, the server-save route's ``if errors:`` branch rolls back a save that introduces
+        a duplicate, and ``/reload`` surfaces it as a 422.
+
+        The bundled-example dir is loaded AFTER the user dir and only fills names the user has not
+        already defined: a user template with the same internal ``name`` as a bundled example silently
+        shadows it (the intended override — NOT a duplicate error). A malformed or symlinked bundled
+        example is logged but never added to :attr:`errors`, so shipped-content problems can't block a
+        user's save or fail ``/reload``.
         """
         loaded: dict[str, Template] = {}
         errors: list[str] = []
 
-        for path in sorted(self.templates_dir.glob("*.yaml")):
+        # User dir first — its files take precedence and are the only source of user-actionable errors.
+        self._load_dir(self.templates_dir, loaded, errors, is_example=False)
+        # Bundled examples fill in the rest. Skip when there is no separate example dir (dev/bare-metal
+        # where it resolves to templates_dir), else the same files would be scanned twice. Compare
+        # RESOLVED paths so equivalent-but-differently-spelled dirs (relative vs absolute, ``.``/``..``
+        # components, symlinks) for the same physical directory still collapse to a single pass.
+        if (
+            self.example_dir is not None
+            and self.example_dir.resolve() != self.templates_dir.resolve()
+        ):
+            self._load_dir(self.example_dir, loaded, errors, is_example=True)
+
+        if errors:
+            log.warning("%d template(s) failed to load", len(errors))
+
+        self._templates = loaded
+        self._errors = errors
+        return list(loaded.keys())
+
+    def _load_dir(
+        self,
+        directory: Path,
+        loaded: dict[str, Template],
+        errors: list[str],
+        *,
+        is_example: bool,
+    ) -> None:
+        """Load ``directory/*.yaml`` into ``loaded``/``errors`` in filename-sort order.
+
+        ``is_example`` flips two behaviours: a name that already exists is treated as an intended
+        override (silent skip) rather than a duplicate error, and per-file failures (symlink, parse)
+        are logged but NOT appended to ``errors`` — bundled content must never gate user saves.
+        """
+        if not directory.exists():
+            return
+        for path in sorted(directory.glob("*.yaml")):
             # Never load a symlinked template file. ``glob`` follows symlinks, so a link such as
             # ``templates/x.yaml -> /elsewhere/valid.yaml`` whose target is valid YAML would otherwise
-            # enter the registry and expose a file OUTSIDE templates_dir to every consumer (render,
+            # enter the registry and expose a file OUTSIDE the directory to every consumer (render,
             # preview, and the studio's source-load endpoint). Rejecting it here — at the layer that
-            # owns ingestion — keeps the registry's contents confined to real files under
-            # templates_dir, so "load only what's under this directory" holds for all downstream paths.
+            # owns ingestion — keeps the registry's contents confined to real files under a known
+            # directory, so "load only what's under this dir" holds for all downstream paths.
             if path.is_symlink():
                 msg = f"{path.name}: skipped — symlinked template files are not loaded (security)"
                 log.warning("%s", msg)
-                errors.append(msg)
+                if not is_example:
+                    errors.append(msg)
                 continue
             try:
                 t = load_template(path)
             except TemplateLoadError as exc:
                 log.error("Failed to load template %s: %s", path.name, exc)
-                errors.append(str(exc))
+                if not is_example:
+                    errors.append(str(exc))
                 continue
             existing = loaded.get(t.name)
             if existing is not None:
-                # An earlier-sorting file already claimed this internal name. Keep the first
-                # registration and reject this duplicate so the registry stays deterministic.
+                if is_example:
+                    # A user template (or an earlier example) already claimed this internal name; the
+                    # bundled example is intentionally shadowed — skip it silently, NOT an error.
+                    log.debug(
+                        "Bundled example %r (%s) shadowed by %s",
+                        t.name,
+                        path.name,
+                        existing.source_path.name,
+                    )
+                    continue
+                # Two USER files share an internal name. Keep the first (sort order) so the registry
+                # stays deterministic, and reject this duplicate with an error naming BOTH files.
                 msg = (
                     f"{path.name}: internal template name {t.name!r} is already declared by "
                     f"{existing.source_path.name}; template names must be unique — rename one file's "
@@ -779,15 +842,9 @@ class TemplateRegistry:
                 log.error("%s", msg)
                 errors.append(msg)
                 continue
+            t.is_example = is_example
             loaded[t.name] = t
             log.debug("Loaded template %r from %s", t.name, path.name)
-
-        if errors:
-            log.warning("%d template(s) failed to load", len(errors))
-
-        self._templates = loaded
-        self._errors = errors
-        return list(loaded.keys())
 
     @property
     def errors(self) -> list[str]:

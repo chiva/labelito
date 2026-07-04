@@ -1,6 +1,6 @@
 # Known limitations
 
-Labelito targets a single-printer, single-process home/intranet deployment. A few behaviours
+labelito targets a single-printer, single-process home/intranet deployment. A few behaviours
 are deliberate trade-offs for that scope rather than bugs. They are recorded here so they are a
 conscious choice, not a surprise — and so the mitigations are ready if the project ever outgrows
 the home setup.

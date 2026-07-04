@@ -2,7 +2,7 @@
 {% from "partials/_icons.html" import icon %}
 <html lang="en">
 <head>
-  <title>Labelito — Template Studio</title>
+  <title>labelito — Template Studio</title>
   {% include "partials/_head.html" %}
   <style>
     /* Studio-specific styles; shared components live in app.css. */
@@ -134,10 +134,30 @@
         <p class="hint">A quick cheatsheet. The full reference (every parameter, defaults, and bounds) lives in <code>docs/template-format.md</code> in the repo.</p>
 
         <h3>Top-level keys</h3>
-        <p><code>name</code> (unique id), <code>description</code>, <code>label</code> (a label id from the reference above), and <code>layout</code> are required. <code>rotate</code> (0/90/180/270) and <code>fields</code> are optional.</p>
+        <table>
+          <thead><tr><th>key</th><th>notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>name</code></td><td>unique id (required)</td></tr>
+            <tr><td><code>description</code></td><td>required</td></tr>
+            <tr><td><code>label</code></td><td>a label id from the reference above (required)</td></tr>
+            <tr><td><code>layout</code></td><td>required</td></tr>
+            <tr><td><code>rotate</code></td><td>0/90/180/270 (optional)</td></tr>
+            <tr><td><code>fields</code></td><td>optional</td></tr>
+          </tbody>
+        </table>
 
         <h3>Fields &amp; tokens</h3>
-        <p>Declare <code>fields.required</code>/<code>fields.optional</code> (names: letters, digits, <code>_</code>). Reference each with <code>{{name}}</code> in an element's <code>text</code>, <code>data</code>, or <code>name</code>. Computed tokens are always available: <code>{{date}}</code>, <code>{{now}}</code> (with <code>±Nd/w/m/y</code> offset and <code>:strftime</code> format), and <code>{{seq}}</code> (sequence batches). Translation words use <code>[[key]]</code>.</p>
+        <table>
+          <thead><tr><th>token</th><th>notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>fields.required</code> / <code>fields.optional</code></td><td>declare field names (letters, digits, <code>_</code>)</td></tr>
+            <tr><td><code>{{name}}</code></td><td>reference a declared field in an element's <code>text</code>, <code>data</code>, or <code>name</code></td></tr>
+            <tr><td><code>{{date}}</code></td><td>computed, always available</td></tr>
+            <tr><td><code>{{now}}</code></td><td>computed; supports <code>±Nd/w/m/y</code> offset and <code>:strftime</code> format</td></tr>
+            <tr><td><code>{{seq}}</code></td><td>computed; sequence batches</td></tr>
+            <tr><td><code>[[key]]</code></td><td>translation word</td></tr>
+          </tbody>
+        </table>
 
         <h3>Element types</h3>
         <table>
@@ -463,8 +483,15 @@
     async function loadSelected() {
       const sel = document.getElementById('load-select');
       if (!sel || !sel.value) return;
-      const name = sel.value;
-      // Guard against silently discarding unsaved edits.
+      await loadByName(sel.value);
+    }
+
+    // Fetch a template's source and load it into the editor. Shared by the "Load" picker button and
+    // the ?load=<name> deep-link (the Print page's "Customize" action on a bundled example). The
+    // unsaved-edits guard only fires when there is content to lose, so a deep-link into a fresh
+    // editor loads straight away.
+    async function loadByName(name) {
+      if (!name) return;
       if (currentYaml().trim() && currentYaml() !== lastLoadedYaml &&
           !(await confirmDiscard(`Replace the current YAML with template "${name}"? Unsaved edits will be lost.`))) {
         return;
@@ -485,6 +512,9 @@
         document.getElementById('yaml').value = json.yaml;
         syncYamlHighlight();
         lastLoadedYaml = json.yaml;
+        // Reflect the loaded template in the picker when it lists that name.
+        const sel = document.getElementById('load-select');
+        if (sel) sel.value = name;
         clearStatus();
         doPreview();
       } catch (e) {
@@ -887,9 +917,19 @@ layout:
     {% endraw %}
     lastLoadedYaml = document.getElementById('yaml').value;  // seed counts as "not dirty"
     syncYamlHighlight();  // paint the overlay for the seed (a programmatic write fires no `input`)
-    populateLoadSelect();
     loadLabelReference();
-    doPreview();
+    // ?load=<name> deep-link (the Print page's "Customize" action). Populate the picker first so the
+    // loaded template reflects in the dropdown, then load it. The seed is "not dirty", so loadByName
+    // loads without a discard prompt. Without the param, just preview the starter seed.
+    (async () => {
+      await populateLoadSelect();
+      const preload = new URLSearchParams(window.location.search).get('load');
+      if (preload) {
+        await loadByName(preload);
+      } else {
+        doPreview();
+      }
+    })();
   </script>
 </body>
 </html>

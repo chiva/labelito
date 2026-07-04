@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:dc6831ca75771711b69e2fcaf47f2b4938bcfd7721daf254c1131791249d000d AS builder
 
-LABEL org.opencontainers.image.title="Labelito"
+LABEL org.opencontainers.image.title="labelito"
 LABEL org.opencontainers.image.description="Self-hosted label printing for Brother QL printers"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
 LABEL org.opencontainers.image.source="https://github.com/chiva/labelito"
@@ -50,6 +50,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app /app
 # Bundled collections live OUTSIDE the assets/icons VOLUME so a user's bind-mount can't shadow them.
 COPY --from=icons /icons /app/assets/icon-collections
+# Bundled example templates + translation catalogs, copied to paths OUTSIDE the /app/templates and
+# /app/translations VOLUMEs (same anti-shadowing split as the icon collections above). The loader and
+# translator merge these with the user volumes (EXAMPLE_*_DIR below), so a user who bind-mounts an
+# empty/own templates or translations dir still gets the shipped examples, image upgrades always ship
+# the latest examples, and the DEFAULT_LANGUAGE catalog is always present (no empty-mount boot crash).
+# User files win by internal name/language; these are never a runtime volume, so they can't be shadowed.
+COPY --from=builder /app/templates /app/examples/templates
+COPY --from=builder /app/translations /app/examples/translations
+# Empty the /app/templates and /app/translations VOLUME mountpoints: the shipped content now lives
+# ONLY under /app/examples/* (copied just above). Docker seeds an anonymous volume — a bare
+# `docker run` with no bind mount — from the image content at the mountpoint, so leaving the shipped
+# files here would make the loader read them from templates_dir FIRST (is_example=false), shadowing
+# the bundled examples and defeating the split (no example styling/customize links, and a saved
+# override can't shadow a bundle). Must run BEFORE the VOLUME declaration (Docker discards changes to
+# a volume path made after it). A user bind mount overrides this empty dir, so Compose is unaffected.
+RUN rm -rf /app/templates /app/translations && mkdir -p /app/templates /app/translations
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
 
@@ -69,7 +85,9 @@ VOLUME ["/app/templates", "/app/translations", "/app/fonts", "/app/assets/icons"
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TEMPLATES_DIR=/app/templates \
+    EXAMPLE_TEMPLATES_DIR=/app/examples/templates \
     TRANSLATIONS_DIR=/app/translations \
+    EXAMPLE_TRANSLATIONS_DIR=/app/examples/translations \
     FONTS_DIR=/app/fonts \
     ICONS_DIR=/app/assets/icons \
     ICON_COLLECTIONS_DIR=/app/assets/icon-collections \

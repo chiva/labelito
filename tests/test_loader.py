@@ -661,6 +661,117 @@ def test_registry_rejects_duplicate_internal_name(templates_dir: Path) -> None:
     assert any("zzz.yaml" in err and "aaa.yaml" in err and "shared" in err for err in reg.errors)
 
 
+# ── Bundled-example dir merge (templates_dir + example_dir) ───────────────────────
+def _example_template(directory: Path, filename: str, name: str, text: str) -> Path:
+    return write_yaml(
+        directory / filename,
+        f"""\
+        name: {name}
+        description: example
+        label: "62"
+        layout:
+          - {{type: text, text: {text}}}
+    """,
+    )
+
+
+def test_registry_loads_examples_when_user_dir_empty(tmp_path: Path, templates_dir: Path) -> None:
+    """A bind-mounted (empty) user dir must not hide the bundled examples: with templates_dir empty,
+    the examples still load. This is the core anti-shadowing guarantee."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _example_template(examples, "pantry.yaml", "pantry", "shipped")
+
+    reg = TemplateRegistry(templates_dir, examples)
+    names = reg.load_all()
+    assert names == ["pantry"]
+    assert reg.get("pantry").source_path.parent == examples
+    assert reg.errors == []
+
+
+def test_registry_user_overrides_example_of_same_name(tmp_path: Path, templates_dir: Path) -> None:
+    """A user template with the same internal `name` as a bundled example silently shadows it — the
+    intended override, NOT a duplicate-name error (which is reserved for two *user* files)."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _example_template(examples, "pantry.yaml", "pantry", "shipped")
+    _example_template(templates_dir, "my-pantry.yaml", "pantry", "mine")
+
+    reg = TemplateRegistry(templates_dir, examples)
+    names = reg.load_all()
+    assert names.count("pantry") == 1
+    # The USER file wins, and no error is recorded for the shadowed example.
+    assert reg.get("pantry").source_path.parent == templates_dir
+    assert reg.errors == []
+
+
+def test_registry_merges_distinct_user_and_examples(tmp_path: Path, templates_dir: Path) -> None:
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _example_template(examples, "shipped.yaml", "shipped", "a")
+    _example_template(templates_dir, "mine.yaml", "mine", "b")
+
+    reg = TemplateRegistry(templates_dir, examples)
+    assert sorted(reg.load_all()) == ["mine", "shipped"]
+    assert reg.errors == []
+
+
+def test_registry_example_dir_equal_to_user_loads_once(
+    templates_dir: Path, sample_template_yaml: Path
+) -> None:
+    """When example_dir resolves to templates_dir (the bare-metal/dev default) the dir is scanned
+    once — the same file must not register twice and raise a spurious duplicate-name error."""
+    reg = TemplateRegistry(templates_dir, templates_dir)
+    names = reg.load_all()
+    assert names == ["test-simple"]
+    assert reg.errors == []
+
+
+def test_registry_malformed_example_does_not_pollute_errors(
+    tmp_path: Path, templates_dir: Path, sample_template_yaml: Path
+) -> None:
+    """A malformed BUNDLED example is logged but never added to `errors` — shipped content must not
+    gate a user's server-save (whose rollback keys off a non-empty errors list) or fail /reload."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    (examples / "broken.yaml").write_text("name: [")
+
+    reg = TemplateRegistry(templates_dir, examples)
+    names = reg.load_all()
+    assert "test-simple" in names  # the user template still loads
+    assert reg.errors == []  # the bundled failure is not user-actionable
+
+
+def test_registry_marks_example_provenance(tmp_path: Path, templates_dir: Path) -> None:
+    """Templates loaded from the example dir carry is_example=True; the user's own carry False —
+    the flag the web UI uses to mute example cards."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _example_template(examples, "shipped.yaml", "shipped", "a")
+    _example_template(templates_dir, "mine.yaml", "mine", "b")
+
+    reg = TemplateRegistry(templates_dir, examples)
+    reg.load_all()
+    assert reg.get("mine").is_example is False
+    assert reg.get("shipped").is_example is True
+
+
+def test_registry_example_dir_none_loads_only_user(
+    tmp_path: Path, templates_dir: Path, sample_template_yaml: Path
+) -> None:
+    """LOAD_EXAMPLES=false is wired as example_dir=None: the shipped examples exist on disk but are
+    never scanned, so only the user's templates_dir loads."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _example_template(examples, "pantry.yaml", "pantry", "shipped")
+
+    reg = TemplateRegistry(templates_dir, None)
+    names = reg.load_all()
+    assert names == ["test-simple"]  # user only; the bundled 'pantry' is absent
+    assert "pantry" not in names
+    assert reg.errors == []
+
+
 # ── Row container validation ─────────────────────────────────────────────────────
 def test_valid_row_template_loads(tmp_path: Path) -> None:
     path = write_yaml(

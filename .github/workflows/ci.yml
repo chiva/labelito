@@ -62,7 +62,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        python-version: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -132,6 +132,13 @@ jobs:
             -d '{"template":"simple-text","fields":{"text":"CI Smoke"}}' \
             --output /dev/null
           docker stop label-test
+      # When the app crashes on startup the smoke test only sees "connection refused",
+      # which says nothing about the cause. Dump the container's stdout/stderr on failure
+      # so the traceback (e.g. a builder/runtime Python drift breaking the venv) is visible
+      # in the CI log without having to reproduce the build locally.
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs label-test
 
   template-validation:
     name: Template validation

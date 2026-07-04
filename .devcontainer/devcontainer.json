@@ -1,5 +1,5 @@
 {
-  "name": "Labelito",
+  "name": "labelito",
   // Matches the production runtime Python (Dockerfile is python:3.13-slim-trixie).
   "image": "mcr.microsoft.com/devcontainers/python:3.13",
   "features": {
@@ -15,7 +15,7 @@
   "postCreateCommand": "uv sync && uv run pre-commit install && uv run playwright install --with-deps chromium",
   "forwardPorts": [8765],
   "portsAttributes": {
-    "8765": { "label": "Labelito web UI", "onAutoForward": "notify" }
+    "8765": { "label": "labelito web UI", "onAutoForward": "notify" }
   },
   "customizations": {
     "vscode": {

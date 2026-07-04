@@ -1,6 +1,6 @@
 # SNMP-backed printer status & media guard
 
-Reference for how Labelito reads printer status over SNMP, why it exists, and the verified OID map.
+Reference for how labelito reads printer status over SNMP, why it exists, and the verified OID map.
 This is the "how it works now" companion to the original task document
 [snmp-status-feature.md](snmp-status-feature.md) (the step-by-step implementation plan) and the
 trade-off record in [known-limitations.md](known-limitations.md#the-network-back-channel-is-silent--snmp-is-the-status-channel).
@@ -19,7 +19,7 @@ hardware level because the loaded media ≠ the requested media.
 
 The same printer answers **SNMP instantly** (UDP 161, community `public`, v1/v2c) and exposes the
 loaded media, a reliable error bitmask, the console status line, identity, and a lifetime label
-counter. SNMP is therefore the status channel Labelito uses for the **network** transport. (USB
+counter. SNMP is therefore the status channel labelito uses for the **network** transport. (USB
 keeps its working print-time readback; `file://` is a synthetic-OK debug sink.)
 
 ## Verified OIDs (live, QL-810W)
@@ -40,7 +40,6 @@ live snapshot with 62 mm continuous tape loaded and the printer idle.
 | Model | `1.3.6.1.2.1.25.3.2.1.3.1` (hrDeviceDescr) | `"Brother QL-810W"` | cross-check vs `MODEL` |
 | Model (1284 ID) | `1.3.6.1.4.1.2435.2.3.9.1.1.7.0` | `MFG:Brother;…;MDL:QL-810W;…` | Brother enterprise arc `2435` ⇒ multi-byte sub-id |
 | Serial | `1.3.6.1.2.1.43.5.1.1.17.1` | `"B2Z160525"` | asset id |
-| Firmware / NIC | `1.3.6.1.2.1.1.1.0` (sysDescr) | `Brother NC-36002w, Firmware Ver.1.00` | |
 | Hostname | `1.3.6.1.2.1.1.5.0` (sysName) | `BRWF889D22FBB15` | |
 | Lifetime label count | `1.3.6.1.2.1.43.10.2.1.4.1.1` (prtMarkerLifeCount) | `9` | Prometheus gauge; reconcile vs `labels_printed_total` |
 
@@ -53,7 +52,7 @@ The error mask is a `BITS` value carried as an `OCTET STRING`. In BITS encoding 
 significant bit of the first octet**, so a one-octet mask uses the high bits of byte 0 — e.g. byte
 `0x08` ⇒ bit 4 ⇒ `doorOpen`. The decoder keeps the raw octets (never the lossy UTF-8 decode of the
 string) and re-indexes against the actual octet width, so the bit-name mapping is exact. The RFC
-3805 bit names Labelito decodes (`HR_PRINTER_ERROR_BITS`):
+3805 bit names labelito decodes (`HR_PRINTER_ERROR_BITS`):
 
 ```
 0 lowPaper      1 noPaper        2 lowToner       3 noToner
@@ -110,7 +109,7 @@ omits a descriptive OID from taking down the safety read, the OIDs are split:
   a reply that omits or mistypes one — even with `error-status=0` — is treated as **unreachable**
   (fail open), never decoded as a healthy printer with no errors.
 - **Optional** (`OPTIONAL_STATUS_OIDS`) — descriptive media name, console text, `hrPrinterStatus`,
-  cover, identity (model/serial/sysDescr/sysName), and the label lifecount. Fetched in a separate
+  cover, identity (model/serial/sysName), and the label lifecount. Fetched in a separate
   best-effort GetRequest; its failure simply leaves those fields absent and the guard still enforces.
 
 ### Anti-spoofing / robustness
@@ -187,7 +186,7 @@ and file transports ignore SNMP entirely.
   `printer_status_last_query_timestamp_seconds`. They are refreshed **lazily** on each
   `/printer/status` call and each print — a bare `/metrics` scrape never triggers a live SNMP query
   (no per-scrape SNMP traffic or print-lock contention); the values may be stale, and the timestamp
-  gauge makes that visible. `printer_info` exposes only the model — serial/firmware/hostname stay on
+  gauge makes that visible. `printer_info` exposes only the model — serial/hostname stay on
   the token-protected `/printer/status`, never on the unauthenticated metrics surface.
 
 ## Verifying against a real printer
@@ -202,7 +201,7 @@ snmpget -v1 -c public 192.168.5.14 1.3.6.1.2.1.43.8.2.1.5.1.1 1.3.6.1.2.1.43.8.2
 # error bitmask (00 == healthy)
 snmpget -v1 -c public 192.168.5.14 1.3.6.1.2.1.25.3.5.1.2.1
 
-# the same view through Labelito:
+# the same view through labelito:
 curl -s localhost:8765/printer/status -H "Authorization: Bearer $API_TOKEN" | jq
 ```
 

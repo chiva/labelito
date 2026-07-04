@@ -99,6 +99,45 @@ def authed_page_low_res(browser: Browser, live_server_low_res: str) -> Iterator[
         context.close()
 
 
+@pytest.fixture(scope="session")
+def live_server_examples(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    """A server whose bundled examples live in a SEPARATE dir from the user's templates (mirroring the
+    Docker split layout), so the print page can render the example/user distinction — muted cards +
+    the Customize deep-link. file:// sink, SNMP off; no hardware. The default TRANSLATIONS_DIR (repo)
+    still supplies the ``en`` catalog so the server boots."""
+    base = tmp_path_factory.mktemp("labelito-split")
+    user_dir = base / "templates"
+    examples_dir = base / "examples"
+    user_dir.mkdir()
+    examples_dir.mkdir()
+    _yaml = (
+        'name: {name}\ndescription: {desc}\nlabel: "62"\nlayout:\n  - {{type: title, text: "hi"}}\n'
+    )
+    (user_dir / "my-label.yaml").write_text(_yaml.format(name="my-own", desc="My own label"))
+    (examples_dir / "shipped.yaml").write_text(
+        _yaml.format(name="shipped-example", desc="A bundled example")
+    )
+    with LiveServer(
+        env_overrides={
+            "TEMPLATES_DIR": str(user_dir),
+            "EXAMPLE_TEMPLATES_DIR": str(examples_dir),
+        }
+    ) as server:
+        yield server.base_url
+
+
+@pytest.fixture
+def authed_page_examples(browser: Browser, live_server_examples: str) -> Iterator[Page]:
+    """Authenticated page against the split example/user-templates server."""
+    context = browser.new_context(base_url=live_server_examples)
+    context.add_init_script(web_token_init_script(DEFAULT_API_TOKEN))
+    page = context.new_page()
+    try:
+        yield page
+    finally:
+        context.close()
+
+
 @pytest.fixture
 def api_client(live_server: str) -> Iterator[httpx2.Client]:
     """HTTP client pre-authenticated with the harness's default bearer token."""

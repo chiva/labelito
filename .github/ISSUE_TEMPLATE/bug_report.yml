@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug in Labelito
+description: Report a bug in labelito
 labels: [bug, triage]
 body:
   - type: markdown

@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from app.render.i18n import (
-    DEFAULT_DATE_FORMAT,
     DEFAULT_DATETIME_FORMAT,
     DEFAULT_WEEKDAYS_ABBR,
     DEFAULT_WEEKDAYS_FULL,
@@ -92,9 +91,86 @@ def test_empty_dir_loads_nothing(tmp_path: Path) -> None:
     t = Translator(d, "en")
     assert t.load_all() == []
     assert t.available() == []
-    # Degrades gracefully: every token becomes its raw key, dates use module defaults.
-    assert t.translate("[[frozen]]", "en") == "frozen"
-    assert t.date_formats("en") == (DEFAULT_DATE_FORMAT, DEFAULT_DATETIME_FORMAT)
+
+
+# ── Bundled-example catalog merge (translations_dir + example_dir) ────────────────
+def test_translator_provides_default_language_when_user_dir_empty(tmp_path: Path) -> None:
+    """An empty (bind-mounted) translations dir must not drop the DEFAULT_LANGUAGE catalog: the
+    bundled example supplies it, so has(default) stays true and the service no longer crashes on boot."""
+    user = tmp_path / "translations"
+    user.mkdir()
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write(examples, "en", 'frozen: "Frozen"\n')
+
+    t = Translator(user, "en", examples)
+    assert t.load_all() == ["en"]
+    assert t.has("en")
+
+
+def test_translator_user_overrides_example_for_same_language(tmp_path: Path) -> None:
+    """A user catalog overrides the bundled one for the same language (loaded on top); a user-only
+    language is added alongside."""
+    user = tmp_path / "translations"
+    user.mkdir()
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write(examples, "en", 'frozen: "Frozen (shipped)"\n')
+    _write(examples, "de", 'frozen: "Gefroren"\n')
+    _write(user, "en", 'frozen: "Frozen (mine)"\n')
+
+    t = Translator(user, "en", examples)
+    assert sorted(t.load_all()) == ["de", "en"]
+    assert t.translate("[[frozen]]", "en") == "Frozen (mine)"  # user wins
+    assert t.translate("[[frozen]]", "de") == "Gefroren"  # bundled-only language kept
+
+
+def test_translator_example_dir_equal_to_user_loads_once(catalogs: Path) -> None:
+    t = Translator(catalogs, "en", catalogs)
+    assert sorted(t.load_all()) == ["en", "es"]
+
+
+def test_translator_example_dir_none_loads_only_user(tmp_path: Path) -> None:
+    """LOAD_EXAMPLES=false is wired as example_dir=None: bundled catalogs on disk are never scanned."""
+    user = tmp_path / "translations"
+    user.mkdir()
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write(examples, "de", 'frozen: "Gefroren"\n')
+    _write(user, "en", 'frozen: "Frozen"\n')
+
+    t = Translator(user, "en", None)
+    assert t.load_all() == ["en"]  # user only; the bundled 'de' is skipped
+    assert not t.has("de")
+
+
+def test_translator_no_default_catalog_degrades_to_raw_key(tmp_path: Path) -> None:
+    """With examples off and an empty translations dir there is no default catalog: load_all must not
+    raise, has(default) is False, and translate() renders the raw key (the softened-boot contract)."""
+    user = tmp_path / "translations"
+    user.mkdir()
+
+    t = Translator(user, "en", None)
+    assert t.load_all() == []
+    assert not t.has("en")
+    assert t.translate("[[frozen]]: today", "en") == "frozen: today"
+
+
+def test_translator_malformed_example_not_in_errors(tmp_path: Path) -> None:
+    """A malformed bundled catalog is logged but not recorded in errors (shipped content must not fail
+    /reload); a malformed USER catalog still is."""
+    user = tmp_path / "translations"
+    user.mkdir()
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write(examples, "en", 'frozen: "Frozen"\n')
+    (examples / "de.yaml").write_text(": : not a mapping :")  # malformed bundled
+
+    t = Translator(user, "en", examples)
+    t.load_all()
+    assert t.has("en")  # the valid bundled catalog still loads
+    assert t.errors == []  # the malformed bundled 'de' failure is not user-actionable
+    assert not t.has("de")  # and it did not register
 
 
 def test_load_rejects_substitution_tokens(tmp_path: Path) -> None:

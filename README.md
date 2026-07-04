@@ -1,4 +1,4 @@
-# Labelito
+# labelito
 
 Self-hosted label printing for [Brother QL](https://www.brother.com/en/products/all/labelmachine/index.htm)
 printers — a small container you point at your printer and drive from **Home Assistant**, a script,
@@ -40,7 +40,7 @@ services:
     ports:
       - "8765:8765"
     volumes:
-      - ./templates:/app/templates:ro     # your label templates (read-only)
+      - ./templates:/app/templates:ro     # YOUR label templates (override slot; examples ship baked-in)
       - ./assets/icons:/app/assets/icons:ro
       - ./data:/app/data                  # print history (persistent bind mount)
     environment:
@@ -156,7 +156,13 @@ layout:
 
 The repo ships **17 ready-to-use templates** — kitchen (`freezer-dated`, `fridge-dated`, `pantry`, …),
 generic (`simple-text`, `title-subtitle-qr`, …), and homelab/logistics (`cable-label`, `asset-tag`,
-`address`). Icons come from your own `assets/icons/` or the bundled Font Awesome / Material / Octicons
+`address`). These examples are **baked into the image** (at `/app/examples/templates`, outside the
+`templates/` volume), so bind-mounting your own `templates/` directory — even an empty one — never
+hides them, and image upgrades ship new examples automatically. Your own files are loaded alongside
+and win over a bundled example of the same name. The eight shipped translation catalogs work the same
+way. Prefer only your own templates? Set `LOAD_EXAMPLES=false` to skip the bundled examples entirely
+(with no catalogs, `[[key]]` chrome words simply render as their raw key). Icons come from your own
+`assets/icons/` or the bundled Font Awesome / Material / Octicons
 collections. Labels can be multilingual (`[[token]]` chrome words, 8 languages shipped).
 
 **→ The full template spec — every element type, tokens, rows/columns, icons, languages — is in
@@ -185,7 +191,7 @@ Brother's **network** printers have a silent back-channel: the NIC accepts a `:9
 bytes, but never returns the status frame — so a job rejected by the hardware (most often a **loaded
 roll that doesn't match the template**) makes the printer blink red while the call still reports `200`.
 
-Labelito closes this using the printer's real status channel — **SNMP** (UDP 161) on the network and a
+labelito closes this using the printer's real status channel — **SNMP** (UDP 161) on the network and a
 standalone **ESC i S** query on USB. `/print` and `/reprint` read the loaded roll first and reject a
 mismatch with **`409 Conflict`**; the web UI flags it advisorily. If the status channel is unreachable
 (or `SNMP_ENABLED=false`), the guard **fails open** — it never turns a working print into a hard

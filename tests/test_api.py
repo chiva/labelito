@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import math
 import re
 from pathlib import Path
@@ -31,7 +32,7 @@ def test_health_reports_version_contract(client: TestClient) -> None:
 
     data = client.get("/health").json()
     assert data["version"] == importlib.metadata.version("labelito")
-    assert data["api_version"] == 1
+    assert data["api_version"] == 2
 
     # The OpenAPI document must report the same release, not a stale hardcode.
     openapi = client.get("/openapi.json").json()
@@ -359,15 +360,20 @@ def test_reload_reports_malformed_template_file(client: TestClient) -> None:
     assert "simple" in detail["loaded"]
 
 
-def test_reload_reports_missing_default_language(client: TestClient) -> None:
-    """If reload would drop the default-language catalog, that is a reported failure."""
+def test_reload_missing_default_language_warns_but_succeeds(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reload that drops the default-language catalog is NOT a failure — it warns and renders
+    `[[token]]` words as raw keys (the softened LOAD_EXAMPLES contract). Remaining catalogs still
+    load, so the reload reports 200."""
     import app.main as main_mod
 
     (main_mod.translator.translations_dir / "en.yaml").unlink()
-    resp = client.post("/reload")
-    assert resp.status_code == 422
-    detail = resp.json()["detail"]
-    assert any("default language" in err for err in detail["errors"])
+    with caplog.at_level(logging.WARNING):
+        resp = client.post("/reload")
+    assert resp.status_code == 200
+    assert not main_mod.translator.has("en")
+    assert any("default language" in r.message for r in caplog.records)
 
 
 def test_metrics_endpoint(client: TestClient) -> None:
@@ -420,27 +426,35 @@ def test_print_persists_language_and_reprint_reuses_it(client: TestClient) -> No
 
 
 @pytest.mark.asyncio
-async def test_startup_rejects_missing_default_catalog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_startup_warns_but_serves_when_default_catalog_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A DEFAULT_LANGUAGE with no catalog must fail fast at startup."""
+    """A DEFAULT_LANGUAGE with no catalog (LOAD_EXAMPLES=false + empty translations dir) no longer
+    fails startup — it warns and the service serves with `[[token]]` rendered as its raw key."""
     import app.main as main_mod
 
     empty_translations = tmp_path / "translations"
     empty_translations.mkdir()
     monkeypatch.setattr(main_mod.settings, "data_dir", tmp_path)
     monkeypatch.setattr(main_mod.settings, "default_language", "en")
+    # file:// sink + unauth so startup proceeds past the (softened) translation check to completion.
+    monkeypatch.setattr(main_mod.settings, "printer_uri", f"file://{tmp_path / 'out.bin'}")
+    monkeypatch.setattr(main_mod.settings, "api_token", None)
+    monkeypatch.setattr(main_mod.settings, "allow_unauthenticated", True)
     monkeypatch.setattr(main_mod.translator, "translations_dir", empty_translations)
+    monkeypatch.setattr(main_mod.translator, "example_dir", None)  # LOAD_EXAMPLES=false
     monkeypatch.setattr(main_mod.translator, "default_language", "en")
-    with pytest.raises(RuntimeError, match="no catalog"):
+    with caplog.at_level(logging.WARNING):
         await main_mod.startup()
+    assert not main_mod.translator.has("en")
+    assert any("no catalog" in r.message for r in caplog.records)
 
 
 def test_web_ui_renders(client: TestClient) -> None:
     resp = client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "Labelito" in resp.text
+    assert "labelito" in resp.text
 
 
 # ── Reverse-proxy path prefix (PROXY_PATH_HEADER — Home Assistant ingress, nginx sub-path) ──────
@@ -1534,7 +1548,7 @@ def test_printer_status_usb_printing_phase_reports_printing(
 def test_printer_status_surfaces_snmp_identity_fields(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The status response carries the SNMP identity/telemetry fields (serial, firmware, hostname,
+    """The status response carries the SNMP identity/telemetry fields (serial, hostname,
     console, lifecount) so the web status card can render them (Step 7)."""
     import app.main as main_mod
     from app.transports.base import PrinterStatus
@@ -1556,7 +1570,6 @@ def test_printer_status_surfaces_snmp_identity_fields(
                 media_type="continuous",
                 reachable=True,
                 serial="B2Z160525",
-                firmware="Brother NC-36002w, Firmware Ver.1.00",
                 hostname="labelprinter",
                 console_text="READY",
                 label_lifecount=9,
@@ -1569,7 +1582,6 @@ def test_printer_status_surfaces_snmp_identity_fields(
 
     data = client.get("/printer/status").json()
     assert data["serial"] == "B2Z160525"
-    assert data["firmware"] == "Brother NC-36002w, Firmware Ver.1.00"
     assert data["hostname"] == "labelprinter"
     assert data["console_text"] == "READY"
     assert data["label_lifecount"] == 9
@@ -3924,6 +3936,122 @@ def test_save_template_writes_back_to_renamed_source_path(
     assert main_mod.registry.get("mismatched-name").source_path == tdir / "12-mismatched.yaml"
 
 
+def test_save_customized_example_writes_user_override_not_example_source(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Customizing a BUNDLED EXAMPLE and saving it must create a user override under templates_dir,
+    never write back to the example's own source_path under the (read-only, baked) example dir.
+
+    Before the fix, _safe_template_path returned existing.source_path for any registered name, so a
+    saved example targeted example_templates_dir — which 500s on the read-only Docker mount and
+    destructively mutates the shipped example on writable bare-metal. The save must instead land at
+    ``{templates_dir}/{name}.yaml`` so the loader (user dir first) shadows the bundle with the user's
+    copy — the intended merge behaviour.
+    """
+    import app.main as main_mod
+    from app.loader import TemplateRegistry
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    tdir = main_mod.settings.templates_dir
+    exdir = tmp_path / "examples-templates"
+    exdir.mkdir()
+    example_yaml = _DRAFT_YAML.replace("draft-simple", "example-card")
+    (exdir / "example-card.yaml").write_text(example_yaml, encoding="utf-8")
+
+    # Point the registry at a SEPARATE example dir (mirrors the Docker split) and confirm the example
+    # registered from there, flagged as a bundled example.
+    main_mod.registry = TemplateRegistry(tdir, example_dir=exdir)
+    main_mod.registry.load_all()
+    registered = main_mod.registry.get("example-card")
+    assert registered.source_path == exdir / "example-card.yaml"
+    assert registered.is_example is True
+
+    edited = example_yaml.replace("A draft template", "My customized label")
+    resp = client.post("/templates", json={"name": "example-card", "yaml": edited})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["path"] == "example-card.yaml"
+
+    # The write landed under templates_dir as a user override; the baked example is untouched.
+    assert (tdir / "example-card.yaml").read_text(encoding="utf-8") == edited
+    assert (exdir / "example-card.yaml").read_text(encoding="utf-8") == example_yaml
+    # After reload the user copy wins and is no longer flagged as an example.
+    override = main_mod.registry.get("example-card")
+    assert override.source_path == tdir / "example-card.yaml"
+    assert override.is_example is False
+
+
+def test_save_example_override_refuses_to_clobber_unrelated_user_file(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saving an example override must not overwrite a DIFFERENT template that already owns the target
+    filename. The registry keys on the internal name, not the filename, so ``{name}.yaml`` can be the
+    source_path of another template: templates/simple-text.yaml declaring ``name: my-custom`` while the
+    example declares ``name: simple-text``. Writing there would delete ``my-custom`` on reload with no
+    duplicate error to trigger rollback — a silent data loss. The save must 409 and leave the file be.
+    """
+    import app.main as main_mod
+    from app.loader import TemplateRegistry
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    tdir = main_mod.settings.templates_dir
+    exdir = tmp_path / "examples-templates"
+    exdir.mkdir()
+    # A user file whose FILENAME (simple-text) equals the example's INTERNAL name, but which declares a
+    # different internal name of its own.
+    user_yaml = _DRAFT_YAML.replace("draft-simple", "my-custom")
+    (tdir / "simple-text.yaml").write_text(user_yaml, encoding="utf-8")
+    example_yaml = _DRAFT_YAML.replace("draft-simple", "simple-text")
+    (exdir / "simple-text.yaml").write_text(example_yaml, encoding="utf-8")
+
+    main_mod.registry = TemplateRegistry(tdir, example_dir=exdir)
+    main_mod.registry.load_all()
+    assert main_mod.registry.get("my-custom").source_path == tdir / "simple-text.yaml"
+    assert main_mod.registry.get("simple-text").is_example is True
+
+    edited = example_yaml.replace("A draft template", "My customized label")
+    resp = client.post("/templates", json={"name": "simple-text", "yaml": edited})
+    assert resp.status_code == 409, resp.text
+
+    # The unrelated user file is untouched and its template still registers.
+    assert (tdir / "simple-text.yaml").read_text(encoding="utf-8") == user_yaml
+    assert main_mod.registry.get("my-custom").source_path == tdir / "simple-text.yaml"
+
+
+def test_save_override_refuses_stale_on_disk_file_not_in_registry(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The clobber guard must read the candidate file ON DISK, not just the in-memory registry. A file
+    dropped/edited under TEMPLATES_DIR after the last reload (a bind mount, an out-of-band edit) is
+    invisible to the registry, so a registry-only guard would overwrite it. Here simple-text.yaml
+    (name: my-custom) lands on disk but is never loaded; saving the bundled example ``simple-text``
+    must still 409 and preserve the stale file.
+    """
+    import app.main as main_mod
+    from app.loader import TemplateRegistry
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    tdir = main_mod.settings.templates_dir
+    exdir = tmp_path / "examples-templates"
+    exdir.mkdir()
+    example_yaml = _DRAFT_YAML.replace("draft-simple", "simple-text")
+    (exdir / "simple-text.yaml").write_text(example_yaml, encoding="utf-8")
+
+    # Register ONLY the example; the registry has no knowledge of the user file dropped next.
+    main_mod.registry = TemplateRegistry(tdir, example_dir=exdir)
+    main_mod.registry.load_all()
+    assert main_mod.registry.get("simple-text").is_example is True
+
+    # Drop an unrelated user file straight onto disk WITHOUT reloading — the registry stays stale.
+    stale_yaml = _DRAFT_YAML.replace("draft-simple", "my-custom")
+    (tdir / "simple-text.yaml").write_text(stale_yaml, encoding="utf-8")
+    assert main_mod.registry.get("my-custom") is None  # confirm it is not registered
+
+    edited = example_yaml.replace("A draft template", "My customized label")
+    resp = client.post("/templates", json={"name": "simple-text", "yaml": edited})
+    assert resp.status_code == 409, resp.text
+    assert (tdir / "simple-text.yaml").read_text(encoding="utf-8") == stale_yaml
+
+
 def test_save_template_new_name_still_uses_name_yaml_convention(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4480,7 +4608,7 @@ def test_print_records_snmp_telemetry_metrics(
     assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="noToner") == 0
     assert _metric_sample(main_mod.PRINTER_DETECTED_ERROR_STATE, condition="jammed") == 0
     assert _metric_sample(main_mod.PRINTER_LABEL_LIFECOUNT) == 42
-    # printer_info exposes only the model (already public via /health); serial/firmware/hostname are
+    # printer_info exposes only the model (already public via /health); serial/hostname are
     # deliberately NOT on the unauthenticated metrics surface.
     assert _metric_sample(main_mod.PRINTER_INFO, model="Brother QL-810W") == 1
     info_label_keys = {

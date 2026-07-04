@@ -48,11 +48,10 @@ class PrinterStatus:
     status_type: str | None = None
     phase_type: str | None = None
     # SNMP-derived identity/health fields (populated by from_snmp on the network transport; None on
-    # the ESC i S / file / USB paths, which cannot read them). serial/firmware/hostname are inventory
+    # the ESC i S / file / USB paths, which cannot read them). serial/hostname are inventory
     # identity; console_text is the printer's front-panel line ("READY" when idle); cover_status is
     # the raw prtCoverStatus enum; label_lifecount is the lifetime prtMarkerLifeCount gauge.
     serial: str | None = None
-    firmware: str | None = None
     hostname: str | None = None
     console_text: str | None = None
     cover_status: int | None = None
@@ -132,7 +131,6 @@ class PrinterStatus:
             status_type=None,
             phase_type=None,
             serial=snmp.serial,
-            firmware=snmp.firmware,
             hostname=snmp.hostname,
             console_text=snmp.console_text,
             cover_status=snmp.cover_status,

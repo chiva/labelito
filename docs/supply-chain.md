@@ -52,7 +52,7 @@ do not run it.
 
 ## Enforce it in Kubernetes (optional)
 
-If you deploy Labelito into a cluster, admission controllers such as
+If you deploy labelito into a cluster, admission controllers such as
 [Kyverno](https://kyverno.io/policies/) or the
 [sigstore policy-controller](https://docs.sigstore.dev/policy-controller/overview/) can **reject**
 any `ghcr.io/chiva/labelito` image that is not signed by the identity above, turning verification

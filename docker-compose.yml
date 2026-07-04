@@ -16,6 +16,11 @@ services:
     ports:
       - "8765:8765"
     volumes:
+      # templates/ and translations/ are OVERRIDE/EXTENSION slots, not the primary store: the image
+      # bakes the shipped examples at /app/examples/{templates,translations} (outside these volumes),
+      # so these mounts may be empty or omitted and the examples still load. Files here win over a
+      # bundled example of the same internal name/language; new files here are added. (This repo mounts
+      # its own copies read-only, which simply match the baked examples.)
       - ./templates:/app/templates:ro
       - ./translations:/app/translations:ro
       - ./assets/icons:/app/assets/icons:ro

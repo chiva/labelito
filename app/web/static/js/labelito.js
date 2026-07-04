@@ -1,4 +1,4 @@
-/* Shared browser logic for the Labelito web UI.
+/* Shared browser logic for the labelito web UI.
  *
  * Loaded as a classic script from the shared head partial, so everything here is a
  * deliberate global: the pages' inline scripts AND the Playwright e2e suite (via

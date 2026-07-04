@@ -1,6 +1,6 @@
 # SNMP-backed printer status & media guard
 
-Reference for how Labelito reads printer status over SNMP, why it exists, and the verified OID map.
+Reference for how labelito reads printer status over SNMP, why it exists, and the verified OID map.
 This is the "how it works now" companion to the original task document
 [snmp-status-feature.md](snmp-status-feature.md) (the step-by-step implementation plan) and the
 trade-off record in [known-limitations.md](known-limitations.md#the-network-back-channel-is-silent--snmp-is-the-status-channel).
@@ -19,7 +19,7 @@ hardware level because the loaded media ≠ the requested media.
 
 The same printer answers **SNMP instantly** (UDP 161, community `public`, v1/v2c) and exposes the
 loaded media, a reliable error bitmask, the console status line, identity, and a lifetime label
-counter. SNMP is therefore the status channel Labelito uses for the **network** transport. (USB
+counter. SNMP is therefore the status channel labelito uses for the **network** transport. (USB
 keeps its working print-time readback; `file://` is a synthetic-OK debug sink.)
 
 ## Verified OIDs (live, QL-810W)
@@ -53,7 +53,7 @@ The error mask is a `BITS` value carried as an `OCTET STRING`. In BITS encoding 
 significant bit of the first octet**, so a one-octet mask uses the high bits of byte 0 — e.g. byte
 `0x08` ⇒ bit 4 ⇒ `doorOpen`. The decoder keeps the raw octets (never the lossy UTF-8 decode of the
 string) and re-indexes against the actual octet width, so the bit-name mapping is exact. The RFC
-3805 bit names Labelito decodes (`HR_PRINTER_ERROR_BITS`):
+3805 bit names labelito decodes (`HR_PRINTER_ERROR_BITS`):
 
 ```
 0 lowPaper      1 noPaper        2 lowToner       3 noToner
@@ -202,7 +202,7 @@ snmpget -v1 -c public 192.168.5.14 1.3.6.1.2.1.43.8.2.1.5.1.1 1.3.6.1.2.1.43.8.2
 # error bitmask (00 == healthy)
 snmpget -v1 -c public 192.168.5.14 1.3.6.1.2.1.25.3.5.1.2.1
 
-# the same view through Labelito:
+# the same view through labelito:
 curl -s localhost:8765/printer/status -H "Authorization: Bearer $API_TOKEN" | jq
 ```
 

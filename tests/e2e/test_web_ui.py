@@ -59,7 +59,7 @@ def _group_labels(page: Page) -> list[str]:
 
 def test_page_loads_and_lists_templates(authed_page: Page) -> None:
     authed_page.goto("/")
-    expect(authed_page).to_have_title("Labelito")
+    expect(authed_page).to_have_title("labelito")
     cards = authed_page.locator("#template-groups .tpl-card")
     assert cards.count() > 0, "template picker should be populated from the shipped templates"
 
@@ -265,6 +265,54 @@ def test_print_page_focuses_matching_size_group(authed_page_snmp: Page) -> None:
     expect(
         authed_page_snmp.locator("#template-groups .tpl-group[data-match] .group-label")
     ).to_have_text("62mm continuous")
+
+
+def test_size_group_mismatch_marker_on_header_not_per_card(authed_page_snmp: Page) -> None:
+    """A size group that doesn't match the loaded roll is flagged ONCE on its header (an amber
+    '≠ loaded roll' pill) in show-all mode — replacing the old, redundant per-card 'needs …' note that
+    repeated identically on every card in the group."""
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(media_width_mm=62, media_type="continuous", media_length_mm=None),
+        ),
+    )
+    authed_page_snmp.goto("/")
+    # Reveal every size group (focus mode collapses the non-matching ones by default).
+    toggle = authed_page_snmp.locator("#size-filter-toggle")
+    expect(toggle).to_be_visible(timeout=8000)
+    toggle.click()
+
+    # A non-matching group carries the amber marker on its header…
+    non_match = authed_page_snmp.locator("#template-groups .tpl-group:not([data-match])").first
+    expect(non_match.locator(".tpl-group-head .roll-pill")).to_have_text("≠ loaded roll")
+    # …the matching group keeps the green "loaded roll" pill…
+    expect(
+        authed_page_snmp.locator("#template-groups .tpl-group[data-match] .roll-pill")
+    ).to_have_text("loaded roll")
+    # …and the old per-card note is gone entirely.
+    assert authed_page_snmp.locator(".tpl-card .tpl-needs").count() == 0
+
+
+def test_media_pill_shows_tick_and_loaded_media_type(authed_page_snmp: Page) -> None:
+    """The single Media pill reads ✓/✗ + the ACTUAL loaded roll — the loaded media type lives only
+    here, never duplicated as a separate detail line."""
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(media_width_mm=62, media_type="continuous", media_length_mm=None),
+        ),
+    )
+    authed_page_snmp.goto("/")
+    badge = authed_page_snmp.locator("#media-badge")
+    # Focus mode auto-selects a matching 62mm template → green ✓ + the loaded roll's description.
+    expect(badge).to_have_class(re.compile(r"media-ok"), timeout=8000)
+    expect(badge).to_contain_text("✓")
+    expect(badge).to_contain_text("62mm continuous")
 
 
 def test_print_page_refocuses_when_media_changes_mid_session(authed_page_snmp: Page) -> None:
@@ -536,6 +584,45 @@ def test_print_page_shows_all_when_loaded_roll_has_no_templates(authed_page_snmp
     assert len(labels) >= 4, f"empty-match fallback must show every size group, got {labels}"
     # Nothing matched, so no group is focused/marked as the loaded roll.
     expect(authed_page_snmp.locator("#template-groups .tpl-group[data-match]")).to_have_count(0)
+
+
+def test_studio_reference_renders_keys_and_tokens_as_tables(authed_page: Page) -> None:
+    """The Template-format reference lists Top-level keys and Fields & tokens as one-row-per-item
+    tables (previously comma-separated prose), matching the existing Element-types table — so the
+    card now holds three tables and a discriminating key/token appears in its own row."""
+    authed_page.goto("/editor")
+    ref = authed_page.locator(".help-ref")
+    expect(ref).to_contain_text("Top-level keys")
+    # Three tables: Top-level keys, Fields & tokens, Element types.
+    expect(ref.locator("table")).to_have_count(3)
+    # A per-item row exists for a top-level key and for a computed token (each unique to one table).
+    expect(ref.locator("table tbody tr td code", has_text="rotate")).to_have_count(1)
+    expect(ref.locator("table tbody tr td code", has_text="{{seq}}")).to_have_count(1)
+
+
+def test_switching_template_clears_the_previous_preview(authed_page: Page) -> None:
+    """Picking a DIFFERENT template blanks the live preview immediately, so the previous template's
+    label doesn't linger (dimmed) while the new one renders — the new render reveals it on success."""
+    authed_page.goto("/")
+    expect(authed_page.locator("#template-groups .tpl-card").first).to_be_visible(timeout=8000)
+    # Seed a prior "successful render" on the current template (the first preview would otherwise 422
+    # on empty required fields). A 1x1 data URI needs no /preview round-trip and no blob to revoke.
+    authed_page.evaluate(
+        """() => {
+          const img = document.getElementById('preview-img');
+          img.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+          document.getElementById('preview-section').style.display = '';
+        }"""
+    )
+    expect(authed_page.locator("#preview-img")).to_have_attribute("src", re.compile(r".+"))
+    # Make the NEXT /preview hang so the interim blanked state is observable.
+    authed_page.route("**/preview", lambda route: None)
+    names = authed_page.evaluate("() => TEMPLATES.map(t => t.name)")
+    current = authed_page.evaluate("() => currentTemplate().name")
+    other = next(n for n in names if n != current)
+    _select_template(authed_page, other)
+    # The previous image's src is dropped the instant the template changes (before the new one lands).
+    expect(authed_page.locator("#preview-img:not([src])")).to_have_count(1)
 
 
 def test_editor_download_yaml_uses_yaml_extension(authed_page: Page) -> None:
@@ -1660,6 +1747,91 @@ def test_printer_status_model_mismatch_warns_in_primary_area(authed_page_snmp: P
     expect(warning).to_contain_text("differs from the configured")
     # Amber .hint-warn, not the fatal-looking .detail-err reserved for genuine printer faults.
     assert "detail-err" not in (warning.get_attribute("class") or "")
+
+
+def test_printer_status_console_is_its_own_kv_row(authed_page_snmp: Page) -> None:
+    """The SNMP console line renders as a dedicated Media/Connection-style kv row (right-aligned via
+    .kv .v), not a loose #printer-detail line — so it aligns with the rest of the status card."""
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(
+                media_width_mm=62, media_type="continuous", media_length_mm=None, console_text="READY"
+            ),
+        ),
+    )
+    authed_page_snmp.goto("/")
+    expect(authed_page_snmp.locator("#printer-state")).to_have_text("Idle", timeout=8000)
+
+    row = authed_page_snmp.locator("#console-row")
+    expect(row).to_be_visible()
+    expect(row.locator(".k")).to_have_text("Console")
+    expect(authed_page_snmp.locator("#console-value")).to_have_text("READY")
+
+
+def test_printer_status_console_not_duplicated_as_error_line(authed_page_snmp: Page) -> None:
+    """A non-READY console (e.g. the transient PRINTING) that the SNMP layer also echoes into `errors`
+    as `console: …` must NOT double-render: it shows once in the Console row, and the echo is filtered
+    from the red .detail-err fault line."""
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(
+                media_width_mm=62,
+                media_type="continuous",
+                media_length_mm=None,
+                console_text="PRINTING",
+                errors=["console: PRINTING"],
+            ),
+        ),
+    )
+    authed_page_snmp.goto("/")
+    expect(authed_page_snmp.locator("#console-value")).to_have_text("PRINTING", timeout=8000)
+    # The echo is filtered — no red fault line repeating the console text.
+    assert authed_page_snmp.locator("#printer-detail .detail-err").count() == 0
+
+
+def test_printer_status_details_show_web_ui_link_for_network(authed_page_snmp: Page) -> None:
+    """A tcp:// printer gets a Web UI link (http://<host>) in the Details disclosure, built from the
+    print URI's host — shown unconditionally (no port-80 probe)."""
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(media_width_mm=62, media_type="continuous", media_length_mm=None),
+        ),
+    )
+    authed_page_snmp.goto("/")
+    expect(authed_page_snmp.locator("#printer-state")).to_have_text("Idle", timeout=8000)
+
+    link = authed_page_snmp.locator('#printer-detail details a[href="http://192.0.2.10"]')
+    expect(link).to_have_count(1)
+
+
+def test_printer_status_firmware_labeled_as_wifi_module(authed_page_snmp: Page) -> None:
+    """The SNMP sysDescr firmware is the NIC's, not the print engine's — the Details row says so."""
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(
+                media_width_mm=62,
+                media_type="continuous",
+                media_length_mm=None,
+                firmware="Brother NC-36002w, Firmware Ver.1.00",
+            ),
+        ),
+    )
+    authed_page_snmp.goto("/")
+    details = authed_page_snmp.locator("#printer-detail details")
+    details.locator("summary").click()
+    expect(details).to_contain_text("Wi-Fi module firmware: Brother NC-36002w, Firmware Ver.1.00")
 
 
 # ── Media badge de-duplication (Step 2) ─────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-/* Design tokens + base styles shared by every Labelito page.
+/* Design tokens + base styles shared by every labelito page.
  * Dark is the default theme; [data-theme="light"] overrides the surfaces/inks.
  * Fonts are self-hosted (SIL OFL 1.1 — see ../fonts/OFL-*.txt); url() is relative
  * to this file so the assets stay prefix-safe behind a reverse proxy.

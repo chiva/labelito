@@ -563,7 +563,9 @@ class PrinterStatusResponse(BaseModel):
     )
     firmware: str | None = Field(
         default=None,
-        description="Firmware / NIC description (SNMP sysDescr), e.g. 'Brother NC-36002w, Firmware Ver.1.00'.",
+        description="Wi-Fi module / NIC firmware description (SNMP sysDescr), e.g. 'Brother NC-36002w, "
+        "Firmware Ver.1.00'. This is the network card's firmware, NOT the print engine's — the engine "
+        "firmware is not exposed over SNMP. Surfaced in the UI as 'Wi-Fi module firmware'.",
     )
     hostname: str | None = Field(
         default=None,

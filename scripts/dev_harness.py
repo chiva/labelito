@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Manual dev harness: run Labelito locally and open a browser to it, ready to use.
+"""Manual dev harness: run labelito locally and open a browser to it, ready to use.
 
 Starts a real server (token auth on, printer-less ``file://`` sink, in-memory history) and opens a
 browser to the web UI with the default API token already filled in, so previewing/printing works
@@ -86,7 +86,7 @@ def _check(base_url: str, token: str) -> int:
         page = context.new_page()
         try:
             page.goto("/")
-            assert page.title() == "Labelito", f"unexpected title: {page.title()!r}"
+            assert page.title() == "labelito", f"unexpected title: {page.title()!r}"
             page.click(f'.tpl-card[data-name="{SAMPLE_TEMPLATE}"]')
             inputs = page.locator("#fields-container input")
             inputs.first.wait_for(state="visible")
@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     with LiveServer(token=args.token, port=args.port) as server:
-        print(f"Labelito running at {server.base_url}  (token: {args.token})")
+        print(f"labelito running at {server.base_url}  (token: {args.token})")
 
         if args.check:
             return _check(server.base_url, args.token)

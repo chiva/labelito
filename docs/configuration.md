@@ -18,13 +18,15 @@ working directory; names are case-insensitive). Defaults come from `app/config.p
 | `PRINTER_URI` | `tcp://192.168.1.100:9100` | Printer address. The transport is **inferred from the scheme** — `tcp://` → network, `usb://` → usb, `file://` → file (see formats below). |
 | `API_TOKEN` | *(unset)* | If set, all `/preview`, `/print*`, `/reprint/{job_id}`, and `/reload` endpoints require `Authorization: Bearer <token>`. The service **refuses to start** unless this or `ALLOW_UNAUTHENTICATED` is set. |
 | `ALLOW_UNAUTHENTICATED` | `false` | Set `true` to explicitly run protected endpoints without a token (trusted intranet only). Logs a loud warning at startup. |
-| `TEMPLATES_DIR` | `templates` (`/app/templates` in Docker) | Template search path. |
+| `TEMPLATES_DIR` | `templates` (`/app/templates` in Docker) | Template search path — the user/override slot. Loaded **in addition** to `EXAMPLE_TEMPLATES_DIR`; a file here wins over a bundled example of the same internal `name`. May be empty. |
+| `EXAMPLE_TEMPLATES_DIR` | `templates` (`/app/examples/templates` in Docker) | Bundled example templates, baked into the image **outside** the `TEMPLATES_DIR` volume so a bind-mount can't shadow them and upgrades ship new examples. Read-only, not a volume. Defaults to `TEMPLATES_DIR` on bare-metal (loaded once). |
 | `FONTS_DIR` | `fonts` (`/app/fonts`) | Custom TrueType font directory. Falls back to bundled DejaVu. |
 | `ICONS_DIR` | `assets/icons` (`/app/assets/icons`) | Custom icon directory (svg/png), referenced by `icon` elements by filename. See [template format → Icons](template-format.md). |
 | `ICON_COLLECTIONS_DIR` | `assets/icon-collections` (`/app/assets/icon-collections`) | Bundled icon collections (FontAwesome/Material/Octicons) baked into the image. Read-only, not a volume. |
 | `DATA_DIR` | `data` (`/app/data`) | Persistent state: the SQLite history DB in `file` mode (`history.db`). |
-| `TRANSLATIONS_DIR` | `translations` (`/app/translations`) | Translation catalogs (`<lang>.yaml`) for `[[key]]` chrome words and locale date formats. |
-| `DEFAULT_LANGUAGE` | `en` | Default label language; the per-request `language` field overrides it. Service fails fast at startup if this language has no catalog. |
+| `TRANSLATIONS_DIR` | `translations` (`/app/translations`) | Translation catalogs (`<lang>.yaml`) for `[[key]]` chrome words and locale date formats — the user/override slot. Loaded **on top of** `EXAMPLE_TRANSLATIONS_DIR` (a catalog here overrides the bundled one for that language; new languages are added). May be empty. |
+| `EXAMPLE_TRANSLATIONS_DIR` | `translations` (`/app/examples/translations` in Docker) | Bundled translation catalogs, baked **outside** the `TRANSLATIONS_DIR` volume (same anti-shadowing split as templates). Guarantees the `DEFAULT_LANGUAGE` catalog always exists — so an empty `TRANSLATIONS_DIR` mount no longer crashes startup. Read-only, not a volume. |
+| `DEFAULT_LANGUAGE` | `en` | Default label language; the per-request `language` field overrides it. Service fails fast at startup only if this language has no catalog in **either** dir (the bundled `en` always satisfies the default). |
 | `HISTORY_MODE` | `memory` | Job-history backend: `memory` (in-process, reset on restart), `file` (durable SQLite at `{DATA_DIR}/history.db`), or `disabled` (no dedup, `/reprint` 404s). See [Job history & idempotency](#job-history--idempotency). |
 | `HISTORY_KEEP_ENTRIES` | `1000` | Rows retained after a prune (SQLite modes). Bounds the reprint/dedup window. |
 | `HISTORY_PRUNE_AT_ENTRIES` | `1500` | Prune triggers once the table exceeds this (hysteresis). Must be greater than `HISTORY_KEEP_ENTRIES`. |
@@ -56,7 +58,7 @@ DHCP can reassign your printer's IP after a reboot, breaking `PRINTER_URI`. Two 
 
 - **DHCP reservation (recommended).** In your router's DHCP settings, bind the printer's MAC address
   to a fixed lease (sometimes called "static DHCP" or "address reservation"). The IP stays the same
-  forever. This is the most portable option — it works identically whether Labelito runs in Docker,
+  forever. This is the most portable option — it works identically whether labelito runs in Docker,
   bare-metal, or any other environment.
 
 - **Hostname URI.** Brother network printers advertise a mDNS hostname of the form `BRWxxxxxx.local`
@@ -68,10 +70,10 @@ DHCP can reassign your printer's IP after a reboot, breaking `PRINTER_URI`. Two 
 
   The OS resolver (including mDNS/`.local` via avahi + nss-mdns on Linux) resolves the hostname at
   connect time, so the URI survives IP changes. The transport passes the hostname unchanged to the
-  kernel — no resolution code is needed inside Labelito.
+  kernel — no resolution code is needed inside labelito.
 
   **Caveat:** `.local` resolution requires avahi and nss-mdns in the runtime environment. If
-  Labelito runs inside a Docker container using the default bridge network, those services may not
+  labelito runs inside a Docker container using the default bridge network, those services may not
   be present. Either install avahi in the image, use `--network host`, or rely on a DHCP reservation
   instead. A plain DNS hostname (one your router assigns, e.g. `brother-ql.lan`) works without
   avahi as long as the container can reach your LAN's DNS server.
@@ -142,7 +144,7 @@ original request); see [known limitations](known-limitations.md).
 - **Auth & network exposure.** The service fails closed — it won't start without either `API_TOKEN`
   or an explicit `ALLOW_UNAUTHENTICATED=true`. Prefer a token whenever the service is reachable
   beyond a trusted LAN; it guards every write/preview path. The bearer token is sent **in clear over
-  plain HTTP**, so for anything past a trusted intranet put Labelito behind a TLS-terminating reverse
+  plain HTTP**, so for anything past a trusted intranet put labelito behind a TLS-terminating reverse
   proxy rather than relying on the token alone. **Don't expose port `8765` to the public internet.**
   Serving under a sub-path (`https://host/labelito/`)? Have the proxy send the prefix in a header and
   set `PROXY_PATH_HEADER` to that header's name so generated URLs stay prefix-correct.

@@ -52,6 +52,14 @@ class Settings(BaseSettings):
 
     # Directories
     templates_dir: Path = Path("templates")
+    # Bundled example templates, baked into the image at a path OUTSIDE the templates_dir VOLUME
+    # (mirrors icon_collections_dir). They are LOADED IN ADDITION to templates_dir, so a user who
+    # bind-mounts an empty/own templates_dir still gets the shipped examples, and an image upgrade
+    # always ships the latest examples. A user file wins over a bundled example of the same internal
+    # `name` (see TemplateRegistry.load_all). Defaults to templates_dir so bare-metal/dev loads the
+    # single dir once (the loader skips the second pass when the two resolve equal); Docker sets
+    # EXAMPLE_TEMPLATES_DIR=/app/examples/templates to split them.
+    example_templates_dir: Path = Path("templates")
     fonts_dir: Path = Path("fonts")
     icons_dir: Path = Path("assets/icons")
     # Bundled icon collections (FontAwesome/Material/Octicons) baked into the image. Kept separate
@@ -60,6 +68,12 @@ class Settings(BaseSettings):
     icon_collections_dir: Path = Path("assets/icon-collections")
     data_dir: Path = Path("data")
     translations_dir: Path = Path("translations")
+    # Bundled translation catalogs, baked outside the translations_dir VOLUME — same rationale as
+    # example_templates_dir. Merged UNDER translations_dir (a user catalog for a language overrides
+    # the bundled one; user-only languages add to it). Guarantees the DEFAULT_LANGUAGE catalog always
+    # exists even against an empty translations mount, so the service no longer hard-fails on boot
+    # when the volume is empty. Docker sets EXAMPLE_TRANSLATIONS_DIR=/app/examples/translations.
+    example_translations_dir: Path = Path("translations")
     # Template studio server-save gate. Default false because docker-compose mounts
     # templates/ read-only: with the mount read-only a write would fail anyway, and a default-on
     # write endpoint would be an unexpected authoring-surface change. Set TEMPLATES_WRITABLE=true

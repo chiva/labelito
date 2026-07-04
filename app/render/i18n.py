@@ -104,29 +104,41 @@ def load_catalog(path: Path) -> dict[str, str | list[str]]:
 class Translator:
     """Hot-reloadable registry of translation catalogs keyed by lowercased language code."""
 
-    def __init__(self, translations_dir: Path, default_language: str) -> None:
+    def __init__(
+        self,
+        translations_dir: Path,
+        default_language: str,
+        example_dir: Path | None = None,
+    ) -> None:
         self.translations_dir = translations_dir
         self.default_language = default_language.lower()
+        # Bundled catalogs baked outside the translations_dir volume (config.example_translations_dir).
+        # Loaded UNDER translations_dir so a user catalog overrides the bundled one for the same
+        # language and user-only languages add to it — and the DEFAULT_LANGUAGE catalog always exists
+        # even against an empty translations mount (no boot hard-fail). ``None`` / equal-to-primary
+        # means "single dir" (dev/bare-metal).
+        self.example_dir = example_dir
         self._catalogs: dict[str, dict[str, str | list[str]]] = {}
         self._errors: list[str] = []
 
     def load_all(self) -> list[str]:
-        """(Re)load all ``*.yaml`` catalogs; return the list of loaded language codes.
+        """(Re)load all ``*.yaml`` catalogs from the bundled-example dir and the user dir.
 
-        Catalogs that fail to parse/validate are skipped and their errors retained in
+        Catalogs that fail to parse/validate are skipped and USER-dir errors retained in
         :attr:`errors`, so a reload can report the failure instead of silently dropping a language.
+
+        Bundled examples load FIRST and user catalogs load on top: a user catalog for language ``xx``
+        overrides the bundled ``xx``; a user-only language adds to the set. A malformed/failed bundled
+        catalog is logged but NOT recorded in :attr:`errors` (shipped content must not fail ``/reload``).
         """
         loaded: dict[str, dict[str, str | list[str]]] = {}
         errors: list[str] = []
 
-        for path in sorted(self.translations_dir.glob("*.yaml")):
-            lang = path.stem.lower()
-            try:
-                loaded[lang] = load_catalog(path)
-                log.debug("Loaded translation catalog %r from %s", lang, path.name)
-            except TranslationLoadError as exc:
-                log.error("Failed to load translation catalog %s: %s", path.name, exc)
-                errors.append(str(exc))
+        # Bundled examples first (lower precedence). Skip when there's no separate dir (dev/bare-metal).
+        if self.example_dir is not None and self.example_dir != self.translations_dir:
+            self._load_dir(self.example_dir, loaded, errors, is_example=True)
+        # User catalogs override the bundled ones for the same language code.
+        self._load_dir(self.translations_dir, loaded, errors, is_example=False)
 
         if errors:
             log.warning("%d translation catalog(s) failed to load", len(errors))
@@ -134,6 +146,29 @@ class Translator:
         self._catalogs = loaded
         self._errors = errors
         return list(loaded.keys())
+
+    def _load_dir(
+        self,
+        directory: Path,
+        loaded: dict[str, dict[str, str | list[str]]],
+        errors: list[str],
+        *,
+        is_example: bool,
+    ) -> None:
+        """Load ``directory/<lang>.yaml`` into ``loaded``, keyed by lowercased stem. A later call for
+        the same language overwrites the earlier one (that is how user dirs override bundled ones).
+        Bundled-dir failures are logged but never appended to ``errors``."""
+        if not directory.exists():
+            return
+        for path in sorted(directory.glob("*.yaml")):
+            lang = path.stem.lower()
+            try:
+                loaded[lang] = load_catalog(path)
+                log.debug("Loaded translation catalog %r from %s", lang, path.name)
+            except TranslationLoadError as exc:
+                log.error("Failed to load translation catalog %s: %s", path.name, exc)
+                if not is_example:
+                    errors.append(str(exc))
 
     @property
     def errors(self) -> list[str]:

@@ -440,7 +440,7 @@ def test_web_ui_renders(client: TestClient) -> None:
     resp = client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "Labelito" in resp.text
+    assert "labelito" in resp.text
 
 
 # ── Reverse-proxy path prefix (PROXY_PATH_HEADER — Home Assistant ingress, nginx sub-path) ──────

@@ -358,7 +358,7 @@ except importlib.metadata.PackageNotFoundError:
 API_VERSION = 1
 
 app = FastAPI(
-    title="Labelito",
+    title="labelito",
     version=APP_VERSION,
     description="Self-hosted label printing for Brother QL printers.",
     license_info={"name": "GPL-3.0-or-later"},
@@ -464,8 +464,12 @@ _ASSET_VERSION = _compute_asset_version()
 # instead of interleaving raster sends.
 _print_lock = asyncio.Lock()
 
-registry = TemplateRegistry(_templates_dir)
-translator = Translator(settings.translations_dir.resolve(), settings.default_language)
+registry = TemplateRegistry(_templates_dir, settings.example_templates_dir.resolve())
+translator = Translator(
+    settings.translations_dir.resolve(),
+    settings.default_language,
+    settings.example_translations_dir.resolve(),
+)
 engine = RenderEngine(
     fonts_dir=settings.fonts_dir.resolve(),
     icons_dir=settings.icons_dir.resolve(),
@@ -1687,14 +1691,21 @@ def get_template_source(name: str) -> TemplateSourceResponse:
     if tmpl is None:
         raise HTTPException(404, f"No template named {name!r}")
 
-    real_dir = settings.templates_dir.resolve()
+    # A registered template's source may live under templates_dir OR the bundled example dir (the
+    # registry merges both — see TemplateRegistry.load_all). Loading a bundled example's YAML into the
+    # studio is a read-only reference / edit-as-new; the two dirs are the only registry sources, so
+    # confining reads to them keeps the traversal guarantee intact.
+    allowed_dirs = {
+        settings.templates_dir.resolve(),
+        settings.example_templates_dir.resolve(),
+    }
     real_src = tmpl.source_path.resolve()
     if (
         tmpl.source_path.is_symlink()
-        or real_src.parent != real_dir
+        or real_src.parent not in allowed_dirs
         or tmpl.source_path.suffix != ".yaml"
     ):
-        # A registered template whose file is not a plain .yaml directly under templates_dir should
+        # A registered template whose file is not a plain .yaml directly under an allowed dir should
         # be unreachable (load_all rejects symlinks), but never serve it if the invariant is violated.
         raise HTTPException(404, f"No template named {name!r}")
 

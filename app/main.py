@@ -355,7 +355,9 @@ except importlib.metadata.PackageNotFoundError:
 # Compatibility contract for API consumers (the Home Assistant integration gates on this via
 # /health). Bump ONLY on breaking changes to existing endpoints/fields — additive changes keep
 # the number. Independent of the package version, which release-please bumps every release.
-API_VERSION = 1
+# v2: dropped the `firmware` field from PrinterStatusResponse (/printer/status) — a breaking
+# field removal, so the contract number moves per the rule above.
+API_VERSION = 2
 
 app = FastAPI(
     title="labelito",

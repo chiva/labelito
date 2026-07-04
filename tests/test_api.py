@@ -32,7 +32,7 @@ def test_health_reports_version_contract(client: TestClient) -> None:
 
     data = client.get("/health").json()
     assert data["version"] == importlib.metadata.version("labelito")
-    assert data["api_version"] == 1
+    assert data["api_version"] == 2
 
     # The OpenAPI document must report the same release, not a stale hardcode.
     openapi = client.get("/openapi.json").json()

@@ -31,7 +31,7 @@ jobs:
           # Deploy-only job: it never pushes with git, so don't leave GITHUB_TOKEN in
           # .git/config where it could ride along into an uploaded artifact (zizmor: artipacked).
           persist-credentials: false
-      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: site/

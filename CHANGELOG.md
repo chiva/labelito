@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/chiva/labelito/compare/v0.2.0...v0.3.0) (2026-07-04)
+
+
+### Features
+
+* studio tables, example templates, print/docker polish, Python 3.13 floor ([#14](https://github.com/chiva/labelito/issues/14)) ([4d2dde1](https://github.com/chiva/labelito/commit/4d2dde169b1534045748fd95cd47adaaa2bf2642))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fortawesome/fontawesome-free to v7 ([#15](https://github.com/chiva/labelito/issues/15)) ([3d205af](https://github.com/chiva/labelito/commit/3d205af36ec3fb8723bf8fcc28e6bc8c46fa0a8f))
+
 ## [0.2.0](https://github.com/chiva/labelito/compare/v0.1.3...v0.2.0) (2026-07-04)
 
 

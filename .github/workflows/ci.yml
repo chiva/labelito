@@ -132,6 +132,13 @@ jobs:
             -d '{"template":"simple-text","fields":{"text":"CI Smoke"}}' \
             --output /dev/null
           docker stop label-test
+      # When the app crashes on startup the smoke test only sees "connection refused",
+      # which says nothing about the cause. Dump the container's stdout/stderr on failure
+      # so the traceback (e.g. a builder/runtime Python drift breaking the venv) is visible
+      # in the CI log without having to reproduce the build locally.
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs label-test
 
   template-validation:
     name: Template validation

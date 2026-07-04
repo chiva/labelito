@@ -1758,7 +1758,10 @@ def test_printer_status_console_is_its_own_kv_row(authed_page_snmp: Page) -> Non
             status=200,
             content_type="application/json",
             body=_status_body(
-                media_width_mm=62, media_type="continuous", media_length_mm=None, console_text="READY"
+                media_width_mm=62,
+                media_type="continuous",
+                media_length_mm=None,
+                console_text="READY",
             ),
         ),
     )

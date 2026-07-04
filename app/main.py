@@ -466,7 +466,9 @@ _print_lock = asyncio.Lock()
 
 # LOAD_EXAMPLES=false disables the bundled examples by passing None as the example dir — the
 # already-supported "single dir" sentinel in both TemplateRegistry and Translator.
-_example_templates_dir = settings.example_templates_dir.resolve() if settings.load_examples else None
+_example_templates_dir = (
+    settings.example_templates_dir.resolve() if settings.load_examples else None
+)
 _example_translations_dir = (
     settings.example_translations_dir.resolve() if settings.load_examples else None
 )

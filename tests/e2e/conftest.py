@@ -110,7 +110,9 @@ def live_server_examples(tmp_path_factory: pytest.TempPathFactory) -> Iterator[s
     examples_dir = base / "examples"
     user_dir.mkdir()
     examples_dir.mkdir()
-    _yaml = 'name: {name}\ndescription: {desc}\nlabel: "62"\nlayout:\n  - {{type: title, text: "hi"}}\n'
+    _yaml = (
+        'name: {name}\ndescription: {desc}\nlabel: "62"\nlayout:\n  - {{type: title, text: "hi"}}\n'
+    )
     (user_dir / "my-label.yaml").write_text(_yaml.format(name="my-own", desc="My own label"))
     (examples_dir / "shipped.yaml").write_text(
         _yaml.format(name="shipped-example", desc="A bundled example")

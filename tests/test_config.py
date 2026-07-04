@@ -150,6 +150,51 @@ def test_metrics_path_rejects_non_literal_characters() -> None:
             Settings(metrics_path=bad)
 
 
+# ── Example dirs mirror their primary dir unless set explicitly ────────────────────
+def test_example_dirs_default_to_primary_dirs() -> None:
+    """With nothing overridden, the example dirs equal their primary dirs (single-dir behavior)."""
+    s = Settings()
+    assert s.example_templates_dir == s.templates_dir
+    assert s.example_translations_dir == s.translations_dir
+
+
+def test_overriding_only_templates_dir_mirrors_example_templates_dir() -> None:
+    """Setting TEMPLATES_DIR alone must move example_templates_dir with it, not leave it at the
+    default CWD-relative 'templates' (which would scan an unrelated directory)."""
+    s = Settings(templates_dir=Path("/data/labels"))
+    assert s.templates_dir == Path("/data/labels")
+    assert s.example_templates_dir == Path("/data/labels")
+
+
+def test_overriding_only_translations_dir_mirrors_example_translations_dir() -> None:
+    """Setting TRANSLATIONS_DIR alone must move example_translations_dir with it."""
+    s = Settings(translations_dir=Path("/data/i18n"))
+    assert s.translations_dir == Path("/data/i18n")
+    assert s.example_translations_dir == Path("/data/i18n")
+
+
+def test_explicit_example_dirs_are_not_overridden() -> None:
+    """When the example dir is set on purpose (Docker's split layout), it stays distinct from the
+    primary dir — the mirror only fills unset values."""
+    s = Settings(
+        templates_dir=Path("/data/labels"),
+        example_templates_dir=Path("/app/examples/templates"),
+        translations_dir=Path("/data/i18n"),
+        example_translations_dir=Path("/app/examples/translations"),
+    )
+    assert s.example_templates_dir == Path("/app/examples/templates")
+    assert s.example_translations_dir == Path("/app/examples/translations")
+
+
+def test_example_dirs_mirror_primary_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mirror also applies when the primary dir is overridden via its env var and the example
+    env var is absent (the real Docker-vs-bare-metal distinction)."""
+    monkeypatch.setenv("TEMPLATES_DIR", "/mnt/templates")
+    monkeypatch.delenv("EXAMPLE_TEMPLATES_DIR", raising=False)
+    s = Settings()
+    assert s.example_templates_dir == Path("/mnt/templates")
+
+
 # ── Env-file compatibility across releases ─────────────────────────────────────────
 def test_stale_env_file_keys_are_ignored(tmp_path: Path) -> None:
     """A leftover key from an older release (e.g. the removed LABEL_SIZE) in a user's .env

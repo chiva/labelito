@@ -768,8 +768,13 @@ class TemplateRegistry:
         # User dir first — its files take precedence and are the only source of user-actionable errors.
         self._load_dir(self.templates_dir, loaded, errors, is_example=False)
         # Bundled examples fill in the rest. Skip when there is no separate example dir (dev/bare-metal
-        # where it resolves to templates_dir), else the same files would be scanned twice.
-        if self.example_dir is not None and self.example_dir != self.templates_dir:
+        # where it resolves to templates_dir), else the same files would be scanned twice. Compare
+        # RESOLVED paths so equivalent-but-differently-spelled dirs (relative vs absolute, ``.``/``..``
+        # components, symlinks) for the same physical directory still collapse to a single pass.
+        if (
+            self.example_dir is not None
+            and self.example_dir.resolve() != self.templates_dir.resolve()
+        ):
             self._load_dir(self.example_dir, loaded, errors, is_example=True)
 
         if errors:

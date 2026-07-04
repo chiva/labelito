@@ -438,8 +438,10 @@
         addLine('detail-err').textContent = faultErrors.join('; ');
       }
       // ── Secondary: URI + SNMP identity/inventory behind a disclosure, off by default so they never
-      //    crowd the live status. All device-supplied → textContent keeps them inert (see XSS note).
-      //    Open state persists across this rebuild and reloads via printerDetailsOpen.
+      //    crowd the live status. URI is server config (settings.printer_uri); the rest are
+      //    device-supplied. Every value is rendered via textContent, which keeps all of them inert
+      //    regardless of source (see XSS note). Open state persists across this rebuild and reloads
+      //    via printerDetailsOpen.
       //    Tuple: [label, value, asCode?, asLink?].
       const secondary = [];
       if (data.uri) secondary.push(['URI', data.uri, true]);

@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,9 +56,11 @@ class Settings(BaseSettings):
     # (mirrors icon_collections_dir). They are LOADED IN ADDITION to templates_dir, so a user who
     # bind-mounts an empty/own templates_dir still gets the shipped examples, and an image upgrade
     # always ships the latest examples. A user file wins over a bundled example of the same internal
-    # `name` (see TemplateRegistry.load_all). Defaults to templates_dir so bare-metal/dev loads the
-    # single dir once (the loader skips the second pass when the two resolve equal); Docker sets
-    # EXAMPLE_TEMPLATES_DIR=/app/examples/templates to split them.
+    # `name` (see TemplateRegistry.load_all). When not set explicitly it MIRRORS templates_dir (see
+    # _mirror_example_dirs_to_primary), so overriding TEMPLATES_DIR alone keeps both pointed at the
+    # same directory and bare-metal/dev loads the single dir once (the loader skips the second pass
+    # when the two resolve equal); Docker sets EXAMPLE_TEMPLATES_DIR=/app/examples/templates to split
+    # them.
     example_templates_dir: Path = Path("templates")
     fonts_dir: Path = Path("fonts")
     icons_dir: Path = Path("assets/icons")
@@ -72,7 +74,8 @@ class Settings(BaseSettings):
     # example_templates_dir. Merged UNDER translations_dir (a user catalog for a language overrides
     # the bundled one; user-only languages add to it). Guarantees the DEFAULT_LANGUAGE catalog always
     # exists even against an empty translations mount, so the service no longer hard-fails on boot
-    # when the volume is empty. Docker sets EXAMPLE_TRANSLATIONS_DIR=/app/examples/translations.
+    # when the volume is empty. Mirrors translations_dir when not set explicitly (see
+    # _mirror_example_dirs_to_primary). Docker sets EXAMPLE_TRANSLATIONS_DIR=/app/examples/translations.
     example_translations_dir: Path = Path("translations")
     # Load the bundled example templates AND translation catalogs (default true). Set
     # LOAD_EXAMPLES=false to load ONLY the user's own templates_dir/translations_dir — the shipped
@@ -186,6 +189,26 @@ class Settings(BaseSettings):
     # Render limits for continuous labels
     min_length_px: int = 200
     max_length_px: int = 6000
+
+    @model_validator(mode="after")
+    def _mirror_example_dirs_to_primary(self) -> "Settings":
+        """Point each example dir at its primary dir when it was not configured explicitly.
+
+        ``example_templates_dir`` / ``example_translations_dir`` are separate settings so Docker can
+        split the bundled, image-baked content from the user's writable volume. But their literal
+        defaults are independent of ``templates_dir`` / ``translations_dir``: overriding only
+        ``TEMPLATES_DIR`` (or ``TRANSLATIONS_DIR``) would otherwise leave the example loader pointed at
+        the default CWD-relative ``templates``/``translations`` — a *different* directory — which both
+        breaks the intended single-dir behavior (the two no longer resolve equal, so the loader scans
+        twice) and can pull unrelated YAML into the registry/translator. Mirroring the primary here
+        keeps them aligned unless the example dir was set on purpose (``EXAMPLE_*_DIR`` present in the
+        environment, which pydantic-settings records in ``model_fields_set``).
+        """
+        if "example_templates_dir" not in self.model_fields_set:
+            self.example_templates_dir = self.templates_dir
+        if "example_translations_dir" not in self.model_fields_set:
+            self.example_translations_dir = self.translations_dir
+        return self
 
 
 settings = Settings()

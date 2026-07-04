@@ -51,6 +51,7 @@ from app.loader import (
     Template,
     TemplateLoadError,
     TemplateRegistry,
+    load_template,
     validate_template_from_string,
 )
 from app.media import LoadedMedia, MediaMatch, RequiredMedia, media_matches, required_media_for
@@ -2329,19 +2330,24 @@ def _safe_template_path(name: str) -> Path:
             )
     # Refuse to clobber a DIFFERENT template's file. The registry keys on the internal ``name``, not
     # the filename, and filenames may legitimately differ from it (media-prefixed bundles, renamed
-    # files), so ``{name}.yaml`` can already be the source_path of a template registered under another
-    # name — e.g. templates/simple-text.yaml declaring ``name: my-custom`` while an example declares
-    # ``name: simple-text``. Writing here would overwrite that file; on reload its template vanishes
-    # (no duplicate), so the post-write identity check in save_template passes and the other template
-    # is SILENTLY lost. Reject the collision with a 409 so a save can only ever create-or-replace the
-    # template it actually names. (Reached only for a new name or an example override — an existing
-    # user template under this exact name already returned its own source_path above.)
-    for other in registry.all():
-        if other.name != name and other.source_path.resolve() == candidate:
+    # files), so ``{name}.yaml`` can already hold another internal name — e.g. templates/simple-text.
+    # yaml declaring ``name: my-custom`` while an example declares ``name: simple-text``. Writing here
+    # would overwrite that file; on reload its template vanishes (no duplicate), so the post-write
+    # identity check in save_template passes and the other template is SILENTLY lost. Inspect the file
+    # ON DISK — not the in-memory registry, which a bind-mount or out-of-band edit since the last
+    # reload leaves stale — and 409 if its internal name differs from the target. A file that fails to
+    # load backs no live template, so overwriting it is allowed. (Reached only for a new name or an
+    # example override — an existing user template under this exact name returned its source_path above.)
+    if candidate.exists():
+        try:
+            on_disk: Template | None = load_template(candidate)
+        except TemplateLoadError:
+            on_disk = None
+        if on_disk is not None and on_disk.name != name:
             raise HTTPException(
                 409,
                 f"Cannot save {name!r}: its target file {candidate.name} already stores a different "
-                f"template ({other.name!r}); rename this template, or remove that file first",
+                f"template ({on_disk.name!r}); rename this template, or remove that file first",
             )
     return candidate
 

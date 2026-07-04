@@ -4017,6 +4017,41 @@ def test_save_example_override_refuses_to_clobber_unrelated_user_file(
     assert main_mod.registry.get("my-custom").source_path == tdir / "simple-text.yaml"
 
 
+def test_save_override_refuses_stale_on_disk_file_not_in_registry(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The clobber guard must read the candidate file ON DISK, not just the in-memory registry. A file
+    dropped/edited under TEMPLATES_DIR after the last reload (a bind mount, an out-of-band edit) is
+    invisible to the registry, so a registry-only guard would overwrite it. Here simple-text.yaml
+    (name: my-custom) lands on disk but is never loaded; saving the bundled example ``simple-text``
+    must still 409 and preserve the stale file.
+    """
+    import app.main as main_mod
+    from app.loader import TemplateRegistry
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    tdir = main_mod.settings.templates_dir
+    exdir = tmp_path / "examples-templates"
+    exdir.mkdir()
+    example_yaml = _DRAFT_YAML.replace("draft-simple", "simple-text")
+    (exdir / "simple-text.yaml").write_text(example_yaml, encoding="utf-8")
+
+    # Register ONLY the example; the registry has no knowledge of the user file dropped next.
+    main_mod.registry = TemplateRegistry(tdir, example_dir=exdir)
+    main_mod.registry.load_all()
+    assert main_mod.registry.get("simple-text").is_example is True
+
+    # Drop an unrelated user file straight onto disk WITHOUT reloading — the registry stays stale.
+    stale_yaml = _DRAFT_YAML.replace("draft-simple", "my-custom")
+    (tdir / "simple-text.yaml").write_text(stale_yaml, encoding="utf-8")
+    assert main_mod.registry.get("my-custom") is None  # confirm it is not registered
+
+    edited = example_yaml.replace("A draft template", "My customized label")
+    resp = client.post("/templates", json={"name": "simple-text", "yaml": edited})
+    assert resp.status_code == 409, resp.text
+    assert (tdir / "simple-text.yaml").read_text(encoding="utf-8") == stale_yaml
+
+
 def test_save_template_new_name_still_uses_name_yaml_convention(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

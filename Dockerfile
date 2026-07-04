@@ -58,6 +58,14 @@ COPY --from=icons /icons /app/assets/icon-collections
 # User files win by internal name/language; these are never a runtime volume, so they can't be shadowed.
 COPY --from=builder /app/templates /app/examples/templates
 COPY --from=builder /app/translations /app/examples/translations
+# Empty the /app/templates and /app/translations VOLUME mountpoints: the shipped content now lives
+# ONLY under /app/examples/* (copied just above). Docker seeds an anonymous volume — a bare
+# `docker run` with no bind mount — from the image content at the mountpoint, so leaving the shipped
+# files here would make the loader read them from templates_dir FIRST (is_example=false), shadowing
+# the bundled examples and defeating the split (no example styling/customize links, and a saved
+# override can't shadow a bundle). Must run BEFORE the VOLUME declaration (Docker discards changes to
+# a volume path made after it). A user bind mount overrides this empty dir, so Compose is unaffected.
+RUN rm -rf /app/templates /app/translations && mkdir -p /app/templates /app/translations
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
 

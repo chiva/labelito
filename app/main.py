@@ -2327,6 +2327,22 @@ def _safe_template_path(name: str) -> Path:
                 f"Invalid template name {name!r}: collides with existing template {stem!r} on a "
                 "case-insensitive filesystem; choose a name that differs by more than case",
             )
+    # Refuse to clobber a DIFFERENT template's file. The registry keys on the internal ``name``, not
+    # the filename, and filenames may legitimately differ from it (media-prefixed bundles, renamed
+    # files), so ``{name}.yaml`` can already be the source_path of a template registered under another
+    # name — e.g. templates/simple-text.yaml declaring ``name: my-custom`` while an example declares
+    # ``name: simple-text``. Writing here would overwrite that file; on reload its template vanishes
+    # (no duplicate), so the post-write identity check in save_template passes and the other template
+    # is SILENTLY lost. Reject the collision with a 409 so a save can only ever create-or-replace the
+    # template it actually names. (Reached only for a new name or an example override — an existing
+    # user template under this exact name already returned its own source_path above.)
+    for other in registry.all():
+        if other.name != name and other.source_path.resolve() == candidate:
+            raise HTTPException(
+                409,
+                f"Cannot save {name!r}: its target file {candidate.name} already stores a different "
+                f"template ({other.name!r}); rename this template, or remove that file first",
+            )
     return candidate
 
 

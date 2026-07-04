@@ -3980,6 +3980,43 @@ def test_save_customized_example_writes_user_override_not_example_source(
     assert override.is_example is False
 
 
+def test_save_example_override_refuses_to_clobber_unrelated_user_file(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saving an example override must not overwrite a DIFFERENT template that already owns the target
+    filename. The registry keys on the internal name, not the filename, so ``{name}.yaml`` can be the
+    source_path of another template: templates/simple-text.yaml declaring ``name: my-custom`` while the
+    example declares ``name: simple-text``. Writing there would delete ``my-custom`` on reload with no
+    duplicate error to trigger rollback — a silent data loss. The save must 409 and leave the file be.
+    """
+    import app.main as main_mod
+    from app.loader import TemplateRegistry
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    tdir = main_mod.settings.templates_dir
+    exdir = tmp_path / "examples-templates"
+    exdir.mkdir()
+    # A user file whose FILENAME (simple-text) equals the example's INTERNAL name, but which declares a
+    # different internal name of its own.
+    user_yaml = _DRAFT_YAML.replace("draft-simple", "my-custom")
+    (tdir / "simple-text.yaml").write_text(user_yaml, encoding="utf-8")
+    example_yaml = _DRAFT_YAML.replace("draft-simple", "simple-text")
+    (exdir / "simple-text.yaml").write_text(example_yaml, encoding="utf-8")
+
+    main_mod.registry = TemplateRegistry(tdir, example_dir=exdir)
+    main_mod.registry.load_all()
+    assert main_mod.registry.get("my-custom").source_path == tdir / "simple-text.yaml"
+    assert main_mod.registry.get("simple-text").is_example is True
+
+    edited = example_yaml.replace("A draft template", "My customized label")
+    resp = client.post("/templates", json={"name": "simple-text", "yaml": edited})
+    assert resp.status_code == 409, resp.text
+
+    # The unrelated user file is untouched and its template still registers.
+    assert (tdir / "simple-text.yaml").read_text(encoding="utf-8") == user_yaml
+    assert main_mod.registry.get("my-custom").source_path == tdir / "simple-text.yaml"
+
+
 def test_save_template_new_name_still_uses_name_yaml_convention(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

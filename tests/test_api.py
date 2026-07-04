@@ -3936,6 +3936,50 @@ def test_save_template_writes_back_to_renamed_source_path(
     assert main_mod.registry.get("mismatched-name").source_path == tdir / "12-mismatched.yaml"
 
 
+def test_save_customized_example_writes_user_override_not_example_source(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Customizing a BUNDLED EXAMPLE and saving it must create a user override under templates_dir,
+    never write back to the example's own source_path under the (read-only, baked) example dir.
+
+    Before the fix, _safe_template_path returned existing.source_path for any registered name, so a
+    saved example targeted example_templates_dir — which 500s on the read-only Docker mount and
+    destructively mutates the shipped example on writable bare-metal. The save must instead land at
+    ``{templates_dir}/{name}.yaml`` so the loader (user dir first) shadows the bundle with the user's
+    copy — the intended merge behaviour.
+    """
+    import app.main as main_mod
+    from app.loader import TemplateRegistry
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    tdir = main_mod.settings.templates_dir
+    exdir = tmp_path / "examples-templates"
+    exdir.mkdir()
+    example_yaml = _DRAFT_YAML.replace("draft-simple", "example-card")
+    (exdir / "example-card.yaml").write_text(example_yaml, encoding="utf-8")
+
+    # Point the registry at a SEPARATE example dir (mirrors the Docker split) and confirm the example
+    # registered from there, flagged as a bundled example.
+    main_mod.registry = TemplateRegistry(tdir, example_dir=exdir)
+    main_mod.registry.load_all()
+    registered = main_mod.registry.get("example-card")
+    assert registered.source_path == exdir / "example-card.yaml"
+    assert registered.is_example is True
+
+    edited = example_yaml.replace("A draft template", "My customized label")
+    resp = client.post("/templates", json={"name": "example-card", "yaml": edited})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["path"] == "example-card.yaml"
+
+    # The write landed under templates_dir as a user override; the baked example is untouched.
+    assert (tdir / "example-card.yaml").read_text(encoding="utf-8") == edited
+    assert (exdir / "example-card.yaml").read_text(encoding="utf-8") == example_yaml
+    # After reload the user copy wins and is no longer flagged as an example.
+    override = main_mod.registry.get("example-card")
+    assert override.source_path == tdir / "example-card.yaml"
+    assert override.is_example is False
+
+
 def test_save_template_new_name_still_uses_name_yaml_convention(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

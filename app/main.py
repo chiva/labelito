@@ -2279,13 +2279,20 @@ _SAFE_TEMPLATE_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$")
 def _safe_template_path(name: str) -> Path:
     """Resolve ``name`` to its on-disk save target, or reject it (422) on traversal.
 
-    A template already registered under ``name`` writes back to its own ``source_path`` instead of
-    reconstructing ``{templates_dir}/{name}.yaml`` — otherwise a template whose file does not match
-    its internal name (e.g. a media-prefixed bundled file like ``12-simple-text.yaml`` declaring
+    A registered *user* template writes back to its own ``source_path`` instead of reconstructing
+    ``{templates_dir}/{name}.yaml`` — otherwise a template whose file does not match its internal
+    name (e.g. a media-prefixed bundled file like ``12-simple-text.yaml`` declaring
     ``name: simple-text-12``) would spawn a SECOND file with that name on every re-save, which the
     post-write duplicate-name check in :func:`save_template` would then roll back (see that
-    function's docstring). A name with no existing registration is new, and keeps the original
-    ``{templates_dir}/{name}.yaml`` convention.
+    function's docstring).
+
+    A registered *bundled example* (``is_example``) is the exception: its ``source_path`` lives under
+    the read-only ``example_templates_dir`` (baked into the image, outside the writable templates
+    mount), so writing back there 500s in Docker and destructively mutates the shipped example on a
+    writable bare-metal install. Instead it falls through to ``{templates_dir}/{name}.yaml`` so
+    customizing an example creates a USER override that shadows the bundle (loader precedence loads
+    the user dir first), which is the intended merge behaviour. A name with no existing registration
+    is new and keeps the same ``{templates_dir}/{name}.yaml`` convention.
 
     Two independent guards remain for the new-name path: a strict allowlist regex on the bare name
     (no separators, dots, or ``..``), then a defence-in-depth check that the resolved path's parent
@@ -2299,7 +2306,7 @@ def _safe_template_path(name: str) -> Path:
             "(no path separators, dots, or extension)",
         )
     existing = registry.get(name)
-    if existing is not None:
+    if existing is not None and not existing.is_example:
         return existing.source_path
     templates_dir = settings.templates_dir.resolve()
     candidate = (templates_dir / f"{name}.yaml").resolve()

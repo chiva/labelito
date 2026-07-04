@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/chiva/labelito/compare/v0.1.3...v0.2.0) (2026-07-04)
+
+
+### Features
+
+* initial release ([#4](https://github.com/chiva/labelito/issues/4)) ([a3a13d7](https://github.com/chiva/labelito/commit/a3a13d7965a49e7328353d8a36193bf12889771a))
+
 ## [0.1.3](https://github.com/chiva/labelito/compare/v0.1.2...v0.1.3) (2026-06-27)
 
 

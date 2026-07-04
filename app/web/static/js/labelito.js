@@ -219,15 +219,25 @@ function groupSortKey(media) {
  * hidden; backs off when the printer is unreachable. Pages provide the tick (their
  * refresh function) and a health check for cadence selection.
  */
-const STATUS_POLL_MS = 4000; // base cadence while the printer is reachable
+const STATUS_POLL_MS = 4000; // base cadence while the printer is reachable and idle
+const STATUS_POLL_BUSY_MS = 1000; // fast cadence while a job is in flight, so the badge converges
+// back to Idle within ~1s of the printer reporting it instead of on the next 4s boundary
 const STATUS_POLL_UNREACHABLE_MS = 15000; // slower cadence once a poll comes back unreachable
 const STATUS_FETCH_TIMEOUT_MS = 8000; // abort a status fetch that hangs, so it can't wedge polling
 
-function createStatusPoller({ tick, isHealthy }) {
+// Pages pass tick (their refresh fn) and isHealthy (cadence: reachable→base, else back off). An
+// optional isBusy predicate opts into the fast cadence while it returns true (a print in flight or the
+// printer still reporting a working state), so the poll tightens during a print and relaxes when idle.
+function createStatusPoller({ tick, isHealthy, isBusy }) {
   let timer = null;
   function schedule(ms) {
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(run, ms);
+  }
+  function nextDelay() {
+    if (!isHealthy()) return STATUS_POLL_UNREACHABLE_MS; // can't poll a dead host fast; back off
+    if (isBusy && isBusy()) return STATUS_POLL_BUSY_MS;
+    return STATUS_POLL_MS;
   }
   async function run() {
     if (document.hidden) {
@@ -235,7 +245,7 @@ function createStatusPoller({ tick, isHealthy }) {
       return;
     }
     await tick();
-    schedule(isHealthy() ? STATUS_POLL_MS : STATUS_POLL_UNREACHABLE_MS);
+    schedule(nextDelay());
   }
   // Resume immediately when the tab regains focus (polls paused while hidden go stale fast).
   document.addEventListener('visibilitychange', () => {

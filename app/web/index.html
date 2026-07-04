@@ -259,6 +259,14 @@
     // media. Null until the first status arrives (or when the status query fails) → compat unknown.
     let printerStatus = null;
 
+    // Fast-poll bridge: a print is sent, but the printer takes ~1-2s to start reporting a working
+    // hrPrinterStatus, so keying "busy" purely off printerStatus.state would miss that gap and poll
+    // slowly right when the state is changing. doPrint sets this a few seconds ahead so the poller
+    // runs at the fast cadence from the instant a job is sent until either the printer reports idle
+    // again or the bridge lapses. Absolute epoch-ms deadline; 0 = no print pending.
+    const STATUS_PRINT_BRIDGE_MS = 3000;
+    let printBridgeUntil = 0;
+
     // Persisted UI pref: whether the status card's "Details" disclosure is expanded. Mirrors the
     // TOKEN_KEY pattern so the choice survives #printer-detail's per-refresh rebuild and page reloads.
     const PRINTER_DETAILS_KEY = 'labelito_printer_details_open';
@@ -579,6 +587,10 @@
     const statusPoller = createStatusPoller({
       tick: refreshPrinterStatus,
       isHealthy: () => !!(printerStatus && printerStatus.reachable),
+      // Poll fast while a job is in flight: during the post-send bridge, or while the printer still
+      // reports a working state. Converges the badge back to Idle within ~1s of the print finishing
+      // instead of on the next 4s boundary; relaxes to the base cadence once idle.
+      isBusy: () => Date.now() < printBridgeUntil || !!(printerStatus && printerStatus.state === 'printing'),
     });
 
     // The loaded roll from the latest status (shared loadedMediaFrom in labelito.js): a
@@ -1194,7 +1206,12 @@
         }
         showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
         await doPreview();
-        refreshPrinterStatus();
+        // Open the fast-poll bridge so the card tracks the print→idle transition at ~1s instead of the
+        // 4s base cadence. On SNMP, re-tick the poller now (schedule(0)) and let isBusy hold the fast
+        // cadence until idle; on USB there is no background poller, so fall back to a one-shot reconcile.
+        printBridgeUntil = Date.now() + STATUS_PRINT_BRIDGE_MS;
+        if (LIVE_STATUS_POLL) statusPoller.schedule(0);
+        else refreshPrinterStatus();
       } catch (e) {
         showStatus('Network error: ' + e.message, 'err');
         refreshPrinterStatus();

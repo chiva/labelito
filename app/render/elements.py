@@ -248,6 +248,35 @@ def _safe_icon_name(name: str) -> str | None:
     return name
 
 
+def resolve_custom_icon_path(name: str, icons_dir: Path) -> Path | None:
+    """Resolve a custom-asset icon *name* to an EXISTING file in *icons_dir*, or None.
+
+    A custom asset (an ``icon`` element with no ``collection``) loads from ``icons_dir``: an explicit
+    ``.svg``/``.png`` suffix is taken verbatim, otherwise ``<name>.svg`` is probed before
+    ``<name>.png`` (vector preferred). Returns None when no matching file exists, so the same call
+    both loads an icon (:meth:`IconElement._load_icon`) and detects a missing one at boot
+    (:func:`app.render.engine.missing_custom_icons`). *name* must already be sanitized by
+    :func:`_safe_icon_name`.
+
+    ``OSError`` from :meth:`Path.exists` is treated as "missing": ``_safe_icon_name`` bounds the
+    charset but not the length, and an overlong path component makes ``exists()`` raise
+    ``ENAMETOOLONG`` (rather than return False) on some platforms/Python versions. Swallowing it here
+    keeps a malformed-but-loadable icon name from crashing the render loop OR the startup/reload/save
+    scan that calls this — it degrades to a blank strip plus a warning instead.
+    """
+    try:
+        if Path(name).suffix.lower() in ICON_ASSET_EXTS:
+            candidate = icons_dir / name
+            return candidate if candidate.exists() else None
+        for ext in ICON_ASSET_EXTS:
+            candidate = icons_dir / f"{name}{ext}"
+            if candidate.exists():
+                return candidate
+    except OSError:
+        return None
+    return None
+
+
 def _rasterize_svg(path: Path, size: int) -> Image.Image:
     """Rasterize a (trusted, server-side) SVG to a 1-bit-thresholded grayscale square.
 
@@ -660,14 +689,9 @@ class IconElement(ElementBase):
                 base = base / style
             return base / f"{name}.svg"
 
-        # Custom asset: an explicit suffix is taken verbatim; otherwise probe svg→png.
-        if Path(name).suffix.lower() in ICON_ASSET_EXTS:
-            return icons_dir / name
-        for ext in ICON_ASSET_EXTS:
-            candidate = icons_dir / f"{name}{ext}"
-            if candidate.exists():
-                return candidate
-        return None
+        # Custom asset: existence-checked resolution shared with the boot warning (single source of
+        # truth for the svg→png probe and explicit-suffix rule).
+        return resolve_custom_icon_path(name, icons_dir)
 
     def _load_icon(
         self, name: str, icons_dir: Path, icon_collections_dir: Path

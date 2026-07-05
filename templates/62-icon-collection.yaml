@@ -8,6 +8,10 @@ fields:
 layout:
   # collection icons are rasterized from bundled SVGs. FontAwesome also takes a `style`
   # (solid/regular/brands); Material and Octicons need only `collection` + `name`.
-  - {type: icon, collection: fontawesome, style: solid, name: mug-hot, size: 90, align: right}
-  - {type: title, text: "{{title}}", max_lines: 2}
+  # icon + title share one row: title flexes to fill, icon reserves a fixed column on the right.
+  - type: row
+    align_items: center
+    children:
+      - {type: title, text: "{{title}}", align: left, max_lines: 2}
+      - {type: icon, collection: fontawesome, style: solid, name: mug-hot, size: 90, width: 110, align: right}
   - {type: subtitle, text: "{{subtitle}}"}

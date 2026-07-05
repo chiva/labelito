@@ -82,6 +82,7 @@ from app.render.engine import (
     _brother_ql_model_max_rows,
     format_seq,
     image_field_names,
+    missing_custom_icons,
     uses_seq,
 )
 from app.render.i18n import Translator
@@ -762,6 +763,36 @@ async def _enforce_print_preflight(label_id: str, *, dry_run: bool) -> None:
 _history: HistoryStore = build_history_store(settings)
 
 
+def _warn_missing_custom_icons() -> None:
+    """Boot warning: for each loaded template, log any custom-asset icon whose file is absent from
+    ICONS_DIR.
+
+    This is the silently-blank case a bind-mounted ``assets/icons`` creates: a mount REPLACES the
+    bundled dir, so a file a template references (e.g. the bundled ``snowflake.png``) can vanish and
+    the icon renders as a blank strip while the label still prints. Surfacing it at boot — naming the
+    template — is proactive, unlike the render-path warning that only fires on the first print that
+    hits the template. Non-fatal by design (a missing decorative icon must not stop the service);
+    collection icons and ``{{token}}`` names are excluded (see :func:`missing_custom_icons`).
+    """
+    # Strictly best-effort: this is advisory observability, so a failure scanning ONE template must
+    # never abort startup, a hot /reload, or a template save (which would 500 after the file is
+    # already persisted, then fail every restart on the same bad file). Guard per-template.
+    for tmpl in registry.all():
+        try:
+            missing = missing_custom_icons(tmpl.layout, settings.icons_dir)
+        except Exception:
+            log.exception("Missing-icon scan failed for template %r; skipping", tmpl.name)
+            continue
+        if missing:
+            log.warning(
+                "template %r references custom icon(s) %s not found in %s; they will render blank "
+                "(a bind-mounted assets/icons must contain every referenced file)",
+                tmpl.name,
+                sorted(missing),
+                settings.icons_dir,
+            )
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global _history
@@ -771,6 +802,7 @@ async def startup() -> None:
     log.info("History store: mode=%s", settings.history_mode)
     loaded = registry.load_all()
     log.info("Loaded %d templates: %s", len(loaded), loaded)
+    _warn_missing_custom_icons()
     langs = translator.load_all()
     if not translator.has(settings.default_language):
         # Not fatal: translate() degrades a missing catalog to the raw key, so the service still
@@ -2142,6 +2174,7 @@ def reload_templates() -> dict[str, Any]:
     malformed USER catalog still surfaces as a 422 via translator.errors.
     """
     loaded = registry.load_all()
+    _warn_missing_custom_icons()
     langs = translator.load_all()
 
     errors = registry.errors + translator.errors
@@ -2495,6 +2528,10 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
                 "saved": None,
             },
         )
+    # Save succeeded: run the same missing-icon scan as startup/reload so a template saved with a
+    # reference to an absent custom asset is flagged now, not only after a restart (the reload/save
+    # workflow must not reintroduce the silent blank-icon gap the boot warning closes).
+    _warn_missing_custom_icons()
     # Report the name actually registered after reload (the file's stem == tmpl.name), so the
     # response can never claim a save under a name that was not the one persisted.
     return {"saved": tmpl.name, "path": path.name, "loaded": loaded, "errors": errors}

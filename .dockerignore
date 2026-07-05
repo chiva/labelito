@@ -28,6 +28,15 @@ fonts/
 .gitignore
 .github/
 
+# Not part of the runtime image: the wheel packages only `app` (pyproject:
+# [tool.hatch.build.targets.wheel] packages = ["app"]), and `uv sync --no-dev` never touches these.
+# Without these, `COPY . /app` bakes the marketing site (published separately to GitHub Pages), the
+# test suite (~3 MB of fixtures), and the docs into image layers for no runtime benefit. The app keeps
+# its own copy of the logo at app/web/logo.svg, so excluding site/ does not affect the served favicon.
+site/
+tests/
+docs/
+
 # Python caches and build artifacts
 __pycache__/
 *.py[cod]

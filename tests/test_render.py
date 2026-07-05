@@ -431,6 +431,63 @@ def test_icon_element_rejects_path_traversal(
     assert _icon_ink(img) == 0
 
 
+def test_missing_custom_icons_reports_absent_asset(icons_dir: Path) -> None:
+    """A static custom-asset icon whose file is absent from icons_dir is reported (the shadowed
+    bind-mount case); a present one (snowflake.png in the fixture) is not."""
+    from app.render.engine import missing_custom_icons
+
+    layout = [
+        {"type": "icon", "name": "snowflake"},  # present → not reported
+        {"type": "icon", "name": "ghost"},  # absent → reported
+    ]
+    assert missing_custom_icons(layout, icons_dir) == {"ghost"}
+
+
+def test_missing_custom_icons_skips_collection_and_token_names(icons_dir: Path) -> None:
+    """Collection icons (baked, absent in dev/test by design) and {{token}}-driven names
+    (request-controlled, unknowable at boot) are excluded from the boot check."""
+    from app.render.engine import missing_custom_icons
+
+    layout = [
+        {"type": "icon", "collection": "fontawesome", "name": "ghost"},  # collection → skip
+        {"type": "icon", "name": "{{sym}}"},  # token → skip
+    ]
+    assert missing_custom_icons(layout, icons_dir) == set()
+
+
+def test_missing_custom_icons_recurses_into_rows(icons_dir: Path) -> None:
+    """The walk descends into row children — mirroring the subtree the renderer draws — so an
+    absent icon nested in a row is still reported."""
+    from app.render.engine import missing_custom_icons
+
+    layout = [{"type": "row", "children": [{"type": "icon", "name": "ghost"}]}]
+    assert missing_custom_icons(layout, icons_dir) == {"ghost"}
+
+
+def test_missing_custom_icons_explicit_suffix(icons_dir: Path) -> None:
+    """An explicit .png/.svg suffix is honoured: the present snowflake.png resolves, an absent
+    explicit file is reported."""
+    from app.render.engine import missing_custom_icons
+
+    layout = [
+        {"type": "icon", "name": "snowflake.png"},  # present → not reported
+        {"type": "icon", "name": "ghost.svg"},  # absent → reported
+    ]
+    assert missing_custom_icons(layout, icons_dir) == {"ghost.svg"}
+
+
+def test_missing_custom_icons_handles_overlong_name(icons_dir: Path) -> None:
+    """An overlong static icon name must not crash the scan: Path.exists() can raise OSError
+    (ENAMETOOLONG) for a too-long path component instead of returning False, and the scan runs at
+    startup/reload/save. The name is treated as a missing file and reported, never propagated."""
+    from app.render.elements import resolve_custom_icon_path
+    from app.render.engine import missing_custom_icons
+
+    long_name = "a" * 5000  # exceeds NAME_MAX on any real filesystem
+    assert resolve_custom_icon_path(long_name, icons_dir) is None
+    assert missing_custom_icons([{"type": "icon", "name": long_name}], icons_dir) == {long_name}
+
+
 def test_image_field_passes_through_to_element(engine: RenderEngine) -> None:
     """A raw `image` field must reach ImageElement; previously the engine dropped it."""
     src = Image.new("L", (50, 50), 0)  # solid black square

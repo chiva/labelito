@@ -2167,6 +2167,7 @@ def reload_templates() -> dict[str, Any]:
     malformed USER catalog still surfaces as a 422 via translator.errors.
     """
     loaded = registry.load_all()
+    _warn_missing_custom_icons()
     langs = translator.load_all()
 
     errors = registry.errors + translator.errors
@@ -2520,6 +2521,10 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
                 "saved": None,
             },
         )
+    # Save succeeded: run the same missing-icon scan as startup/reload so a template saved with a
+    # reference to an absent custom asset is flagged now, not only after a restart (the reload/save
+    # workflow must not reintroduce the silent blank-icon gap the boot warning closes).
+    _warn_missing_custom_icons()
     # Report the name actually registered after reload (the file's stem == tmpl.name), so the
     # response can never claim a save under a name that was not the one persisted.
     return {"saved": tmpl.name, "path": path.name, "loaded": loaded, "errors": errors}

@@ -440,6 +440,25 @@ def test_warn_missing_custom_icons_silent_when_present(
     assert "has-icon" not in caplog.text
 
 
+def test_reload_warns_on_missing_custom_icon(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A template hot-reloaded with a reference to an absent custom asset is flagged at reload time,
+    not only at startup — closing the silent blank-icon gap for the normal template-update workflow."""
+    import app.main as main_mod
+
+    (main_mod.registry.templates_dir / "ghost-icon.yaml").write_text(
+        'name: ghost-icon\ndescription: references a missing custom icon\nlabel: "62"\n'
+        "fields:\n  required: [title]\n"
+        'layout:\n  - {type: icon, name: ghost}\n  - {type: title, text: "{{title}}"}\n'
+    )
+    with caplog.at_level(logging.WARNING):
+        resp = client.post("/reload")
+    assert resp.status_code == 200
+    assert "ghost-icon" in caplog.text
+    assert "ghost" in caplog.text
+
+
 def test_metrics_endpoint(client: TestClient) -> None:
     resp = client.get("/metrics")
     assert resp.status_code == 200

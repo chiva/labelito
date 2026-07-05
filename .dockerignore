@@ -23,6 +23,11 @@ node_modules/
 # never from the build context. Without this, a dev's fetched ./fonts would bake into /app/fonts.
 fonts/
 
+# Local merge/review artifacts from the commit-export tooling (.gitignored, never runtime). Docker
+# does not honor .gitignore, so without this `COPY . /app` would bake these local archives (~MBs)
+# into image layers, leaking local review state and bloating the image.
+commit-zips/
+
 # Version control / project metadata
 .git/
 .gitignore

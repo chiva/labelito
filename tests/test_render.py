@@ -476,6 +476,18 @@ def test_missing_custom_icons_explicit_suffix(icons_dir: Path) -> None:
     assert missing_custom_icons(layout, icons_dir) == {"ghost.svg"}
 
 
+def test_missing_custom_icons_handles_overlong_name(icons_dir: Path) -> None:
+    """An overlong static icon name must not crash the scan: Path.exists() can raise OSError
+    (ENAMETOOLONG) for a too-long path component instead of returning False, and the scan runs at
+    startup/reload/save. The name is treated as a missing file and reported, never propagated."""
+    from app.render.elements import resolve_custom_icon_path
+    from app.render.engine import missing_custom_icons
+
+    long_name = "a" * 5000  # exceeds NAME_MAX on any real filesystem
+    assert resolve_custom_icon_path(long_name, icons_dir) is None
+    assert missing_custom_icons([{"type": "icon", "name": long_name}], icons_dir) == {long_name}
+
+
 def test_image_field_passes_through_to_element(engine: RenderEngine) -> None:
     """A raw `image` field must reach ImageElement; previously the engine dropped it."""
     src = Image.new("L", (50, 50), 0)  # solid black square

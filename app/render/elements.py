@@ -257,14 +257,23 @@ def resolve_custom_icon_path(name: str, icons_dir: Path) -> Path | None:
     both loads an icon (:meth:`IconElement._load_icon`) and detects a missing one at boot
     (:func:`app.render.engine.missing_custom_icons`). *name* must already be sanitized by
     :func:`_safe_icon_name`.
+
+    ``OSError`` from :meth:`Path.exists` is treated as "missing": ``_safe_icon_name`` bounds the
+    charset but not the length, and an overlong path component makes ``exists()`` raise
+    ``ENAMETOOLONG`` (rather than return False) on some platforms/Python versions. Swallowing it here
+    keeps a malformed-but-loadable icon name from crashing the render loop OR the startup/reload/save
+    scan that calls this — it degrades to a blank strip plus a warning instead.
     """
-    if Path(name).suffix.lower() in ICON_ASSET_EXTS:
-        candidate = icons_dir / name
-        return candidate if candidate.exists() else None
-    for ext in ICON_ASSET_EXTS:
-        candidate = icons_dir / f"{name}{ext}"
-        if candidate.exists():
-            return candidate
+    try:
+        if Path(name).suffix.lower() in ICON_ASSET_EXTS:
+            candidate = icons_dir / name
+            return candidate if candidate.exists() else None
+        for ext in ICON_ASSET_EXTS:
+            candidate = icons_dir / f"{name}{ext}"
+            if candidate.exists():
+                return candidate
+    except OSError:
+        return None
     return None
 
 

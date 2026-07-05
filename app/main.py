@@ -774,8 +774,15 @@ def _warn_missing_custom_icons() -> None:
     hits the template. Non-fatal by design (a missing decorative icon must not stop the service);
     collection icons and ``{{token}}`` names are excluded (see :func:`missing_custom_icons`).
     """
+    # Strictly best-effort: this is advisory observability, so a failure scanning ONE template must
+    # never abort startup, a hot /reload, or a template save (which would 500 after the file is
+    # already persisted, then fail every restart on the same bad file). Guard per-template.
     for tmpl in registry.all():
-        missing = missing_custom_icons(tmpl.layout, settings.icons_dir)
+        try:
+            missing = missing_custom_icons(tmpl.layout, settings.icons_dir)
+        except Exception:
+            log.exception("Missing-icon scan failed for template %r; skipping", tmpl.name)
+            continue
         if missing:
             log.warning(
                 "template %r references custom icon(s) %s not found in %s; they will render blank "

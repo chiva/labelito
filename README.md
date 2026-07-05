@@ -1,10 +1,19 @@
-# labelito
+<p align="center">
+  <img src="site/assets/labelito-logo.svg" alt="labelito" width="140">
+</p>
 
-Self-hosted label printing for [Brother QL](https://www.brother.com/en/products/all/labelmachine/index.htm)
-printers — a small container you point at your printer and drive from **Home Assistant**, a script,
-or the built-in web UI. Define labels once as YAML templates; print them with one HTTP call.
+<h1 align="center">labelito</h1>
 
-**Website**: [chiva.github.io/labelito](https://chiva.github.io/labelito/) · [brand guidelines](https://chiva.github.io/labelito/brand.html)
+<p align="center">
+  Self-hosted label printing for <a href="https://www.brother.com/en/products/all/labelmachine/index.htm">Brother QL</a> printers.<br>
+  A small container you point at your printer and drive from <b>Home Assistant</b>, a script, or the built-in web UI.<br>
+  Define labels once as YAML templates; print them with one HTTP call.
+</p>
+
+<p align="center">
+  <a href="https://chiva.github.io/labelito/">Website</a> ·
+  <a href="https://chiva.github.io/labelito/brand.html">Brand guidelines</a>
+</p>
 
 ```bash
 curl -X POST http://localhost:8765/print \

@@ -1,5 +1,5 @@
 name: custom-icon
-description: "Custom icon loaded from a server-side file in app/assets/icons (this demo uses the bundled snowflake.png)"
+description: "Custom icon loaded from a server-side file in app/assets/icons"
 label: "62"
 rotate: 0
 fields:

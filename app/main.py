@@ -2263,6 +2263,24 @@ async def preview_draft(request: DraftPreviewRequest) -> Response:
     """
     tmpl = _validate_draft_template(request.yaml)
 
+    # Enforce the required-field contract before rendering, exactly as /preview does via
+    # _resolve_template. Without this a blank/whitespace-only required field would substitute "" and
+    # return a silently blank-field label the studio would present as a valid draft preview (the
+    # symptom on first loading a template into the studio, whose sample-value inputs start empty).
+    # Reuse the SAME 422 detail shape /preview sends (msg + missing_required list) so the studio's
+    # Draft preview surfaces "Preview unavailable" + the missing names inline, identical to the print
+    # page's Live preview.
+    missing = _missing_required_fields(tmpl, request.fields)
+    if missing:
+        raise HTTPException(
+            422,
+            detail={
+                "msg": "Missing required fields",
+                "template": tmpl.name,
+                "missing_required": missing,
+            },
+        )
+
     # A draft with a {{seq}} layout but no sequence object would render {{seq}} to "" — reject it
     # exactly like /preview does for a saved {{seq}} template (forward direction only; preview
     # carries no sequence object).

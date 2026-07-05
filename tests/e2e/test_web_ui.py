@@ -1045,6 +1045,37 @@ def test_editor_yaml_highlight_overlay_smoke(authed_page: Page) -> None:
     )
 
 
+def test_studio_draft_preview_unavailable_until_required_field_filled(authed_page: Page) -> None:
+    """The studio's Draft preview matches the print page's Live preview for a missing required field:
+    the seeded starter declares a required `title` that starts blank, so the preview opens on the
+    #preview-placeholder ("Preview unavailable") + an inline #preview-error naming the field — never a
+    silently blank-field label. Typing a title renders the label and clears both. Regression guard for
+    /preview/draft's required-field enforcement (previously it returned a blank 200 render)."""
+    authed_page.goto("/editor")
+    # The auto-detected field form still renders even though the preview can't — that is the point:
+    # the operator sees exactly which input to fill.
+    expect(authed_page.locator("#field-title")).to_be_visible()
+    expect(authed_page.locator("#preview-placeholder")).to_be_visible()
+    expect(authed_page.locator("#preview-img")).to_be_hidden()
+    error = authed_page.locator("#preview-error")
+    expect(error).to_contain_text("title")
+    assert "missing_required" not in error.inner_text(), (
+        f"must render a friendly sentence, not the raw JSON key: {error.inner_text()!r}"
+    )
+    expect(authed_page.locator("#draft-status")).to_have_text("invalid")
+
+    # Filling the required field renders the label and clears the placeholder + inline error.
+    with authed_page.expect_response(lambda r: "/preview/draft" in r.url):
+        authed_page.fill("#field-title", "Freezer A")
+    authed_page.wait_for_function(
+        "() => { const i = document.getElementById('preview-img'); return i && i.naturalWidth > 0; }"
+    )
+    expect(authed_page.locator("#preview-placeholder")).to_be_hidden()
+    expect(authed_page.locator("#preview-img")).to_be_visible()
+    expect(error).to_have_text("")
+    expect(authed_page.locator("#draft-status")).to_have_text("valid")
+
+
 def test_studio_horizontal_scroll_proxy_shows_and_syncs_for_long_lines(authed_page: Page) -> None:
     """A long, unwrapped line overflows #yaml horizontally: the themed proxy scroller (#yaml-hscroll)
     becomes visible, and its scrollLeft stays mirrored with the textarea's in both directions. The

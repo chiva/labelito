@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/chiva/labelito/compare/v0.3.0...v0.4.0) (2026-07-05)
+
+
+### Features
+
+* sample icon/image templates, missing-icon boot warning, slimmer image ([#18](https://github.com/chiva/labelito/issues/18)) ([a638072](https://github.com/chiva/labelito/commit/a638072e78c58f3fe944d8c1501693fa06f8f62c))
+
 ## [0.3.0](https://github.com/chiva/labelito/compare/v0.2.0...v0.3.0) (2026-07-04)
 
 

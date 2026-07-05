@@ -82,6 +82,7 @@ from app.render.engine import (
     _brother_ql_model_max_rows,
     format_seq,
     image_field_names,
+    missing_custom_icons,
     uses_seq,
 )
 from app.render.i18n import Translator
@@ -762,6 +763,29 @@ async def _enforce_print_preflight(label_id: str, *, dry_run: bool) -> None:
 _history: HistoryStore = build_history_store(settings)
 
 
+def _warn_missing_custom_icons() -> None:
+    """Boot warning: for each loaded template, log any custom-asset icon whose file is absent from
+    ICONS_DIR.
+
+    This is the silently-blank case a bind-mounted ``assets/icons`` creates: a mount REPLACES the
+    bundled dir, so a file a template references (e.g. the bundled ``snowflake.png``) can vanish and
+    the icon renders as a blank strip while the label still prints. Surfacing it at boot — naming the
+    template — is proactive, unlike the render-path warning that only fires on the first print that
+    hits the template. Non-fatal by design (a missing decorative icon must not stop the service);
+    collection icons and ``{{token}}`` names are excluded (see :func:`missing_custom_icons`).
+    """
+    for tmpl in registry.all():
+        missing = missing_custom_icons(tmpl.layout, settings.icons_dir)
+        if missing:
+            log.warning(
+                "template %r references custom icon(s) %s not found in %s; they will render blank "
+                "(a bind-mounted assets/icons must contain every referenced file)",
+                tmpl.name,
+                sorted(missing),
+                settings.icons_dir,
+            )
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global _history
@@ -771,6 +795,7 @@ async def startup() -> None:
     log.info("History store: mode=%s", settings.history_mode)
     loaded = registry.load_all()
     log.info("Loaded %d templates: %s", len(loaded), loaded)
+    _warn_missing_custom_icons()
     langs = translator.load_all()
     if not translator.has(settings.default_language):
         # Not fatal: translate() degrades a missing catalog to the raw key, so the service still

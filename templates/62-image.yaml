@@ -1,0 +1,15 @@
+name: image
+description: "API-only (no web-UI upload): image supplied via POST /print as base64 in fields.image, with an optional caption"
+label: "62"
+rotate: 0
+fields:
+  required: [image]
+  optional: [title]
+layout:
+  # The `image` element's bytes come from the print request itself (base64 or a multipart
+  # upload on the `image` field), NOT from a server-side file. It reads nothing from
+  # assets/icons, so an `assets/icons` bind-mount can never shadow or hide it.
+  - {type: spacer, size: 6}
+  - {type: image, field: image, max_height: 220, align: center}
+  - {type: title, text: "{{title}}", max_lines: 1, align: center}
+  - {type: spacer, size: 6}

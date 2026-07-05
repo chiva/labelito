@@ -376,6 +376,70 @@ def test_reload_missing_default_language_warns_but_succeeds(
     assert any("default language" in r.message for r in caplog.records)
 
 
+def test_warn_missing_custom_icons_logs_template_and_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The boot pass warns — naming the template and the missing file — when a template references a
+    custom-asset icon absent from ICONS_DIR (the shadowed bind-mount case). Non-fatal: it only logs."""
+    import app.main as main_mod
+    from app.loader import TemplateRegistry
+
+    tdir = tmp_path / "templates"
+    tdir.mkdir()
+    (tdir / "t.yaml").write_text(
+        'name: needs-icon\ndescription: needs a custom icon\nlabel: "62"\n'
+        "fields:\n  required: [title]\n"
+        'layout:\n  - {type: icon, name: ghost}\n  - {type: title, text: "{{title}}"}\n'
+    )
+    reg = TemplateRegistry(tdir)
+    reg.load_all()
+    assert not reg.errors, reg.errors
+
+    empty_icons = tmp_path / "icons"  # ghost.svg / ghost.png both absent
+    empty_icons.mkdir()
+    monkeypatch.setattr(main_mod, "registry", reg)
+    monkeypatch.setattr(main_mod.settings, "icons_dir", empty_icons)
+
+    with caplog.at_level(logging.WARNING):
+        main_mod._warn_missing_custom_icons()
+
+    assert "needs-icon" in caplog.text
+    assert "ghost" in caplog.text
+
+
+def test_warn_missing_custom_icons_silent_when_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No warning when the referenced custom asset is present in ICONS_DIR — the out-of-box state
+    (bundled snowflake.png) must stay quiet."""
+    import app.main as main_mod
+    from app.loader import TemplateRegistry
+
+    tdir = tmp_path / "templates"
+    tdir.mkdir()
+    (tdir / "t.yaml").write_text(
+        'name: has-icon\ndescription: has a custom icon\nlabel: "62"\n'
+        "fields:\n  required: [title]\n"
+        "layout:\n  - {type: icon, name: mark}\n"
+    )
+    reg = TemplateRegistry(tdir)
+    reg.load_all()
+    assert not reg.errors, reg.errors
+
+    icons = tmp_path / "icons"
+    icons.mkdir()
+    from PIL import Image as _Image
+
+    _Image.new("L", (10, 10), 0).save(icons / "mark.png")
+    monkeypatch.setattr(main_mod, "registry", reg)
+    monkeypatch.setattr(main_mod.settings, "icons_dir", icons)
+
+    with caplog.at_level(logging.WARNING):
+        main_mod._warn_missing_custom_icons()
+
+    assert "has-icon" not in caplog.text
+
+
 def test_metrics_endpoint(client: TestClient) -> None:
     resp = client.get("/metrics")
     assert resp.status_code == 200

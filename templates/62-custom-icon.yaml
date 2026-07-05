@@ -1,0 +1,21 @@
+name: custom-icon
+description: "Custom icon loaded from a server-side file in app/assets/icons (this demo uses the bundled snowflake.png)"
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle]
+layout:
+  # An `icon` element with NO `collection` loads a CUSTOM ASSET from icons_dir (app/assets/icons).
+  # The `name` resolves to a file there — it probes <name>.svg first, then <name>.png (vector wins);
+  # an explicit suffix (e.g. name: logo.png) forces that file. This demo uses the bundled
+  # snowflake.png. To add your own: drop <name>.svg or <name>.png into app/assets/icons and set
+  # `name` to it. NOTE: bind-mounting your own app/assets/icons REPLACES the bundled dir, so the
+  # mount must contain every referenced file (include snowflake.png, or point `name` at your own).
+  # A missing file renders a blank strip — the label still prints, minus the icon.
+  - type: row
+    align_items: center
+    children:
+      - {type: title, text: "{{title}}", align: left, max_lines: 2}
+      - {type: icon, name: snowflake, size: 90, width: 110, align: right}
+  - {type: subtitle, text: "{{subtitle}}"}

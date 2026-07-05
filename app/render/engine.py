@@ -13,7 +13,7 @@ from typing import Any
 
 from PIL import Image
 
-from app.render.elements import ElementBase, build_element
+from app.render.elements import ElementBase, build_element, resolve_custom_icon_path
 from app.render.i18n import Translator
 
 
@@ -189,6 +189,35 @@ def image_field_names(layout: list[dict[str, Any]]) -> set[str]:
             if isinstance(children, list):
                 names |= image_field_names(children)
     return names
+
+
+def missing_custom_icons(layout: list[dict[str, Any]], icons_dir: Path) -> set[str]:
+    """Static custom-asset icon names in *layout* with no matching file in *icons_dir*.
+
+    A custom-asset icon is an ``icon`` element with no ``collection``: it loads ``<name>.svg`` then
+    ``<name>.png`` from ``icons_dir`` (see :class:`~app.render.elements.IconElement`). Only STATIC
+    names are reported — a ``{{token}}``-driven name is request-controlled and unknowable at boot,
+    and collection icons are skipped (their files are baked image content, absent in dev/test by
+    design). Recurses into ``row`` children, mirroring the subtree the renderer actually draws.
+
+    Powers the boot warning that surfaces a bind-mounted ``assets/icons`` which omits a file a
+    template names — the silently-blank case (see ``app.main.startup``). Loaded templates have
+    already had their static icon names sanitized by the loader, so no re-validation is needed here.
+    """
+    missing: set[str] = set()
+    for el in layout:
+        if not isinstance(el, dict):
+            continue
+        if el.get("type") == "icon" and not el.get("collection"):
+            name = el.get("name")
+            if isinstance(name, str) and name and "{{" not in name:
+                if resolve_custom_icon_path(name, icons_dir) is None:
+                    missing.add(name)
+        if el.get("type") == "row":
+            children = el.get("children")
+            if isinstance(children, list):
+                missing |= missing_custom_icons(children, icons_dir)
+    return missing
 
 
 def unresolved_tokens(layout: list[dict[str, Any]], declared_fields: list[str]) -> list[str]:

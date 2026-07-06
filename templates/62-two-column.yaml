@@ -8,7 +8,8 @@ fields:
 layout:
   - {type: spacer, size: 6}
   # A row of two equal-weight columns with a vertical rule drawn in the gap between them.
-  # Each `*_items` field is newline-separated, e.g. "one\ntwo\nthree".
+  # Each `*_items` field is semicolon-separated, e.g. "one; two; three" — a `;` (not the list
+  # element's default newline) keeps the items enterable from the web UI's single-line field inputs.
   - type: row
     align_items: top
     spacing: 16
@@ -18,9 +19,9 @@ layout:
       - type: column
         children:
           - {type: subtitle, text: "{{left_title}}", align: left, bold: true}
-          - {type: list, text: "{{left_items}}", size: 24, align: left, marker: bullet, max_items: 6}
+          - {type: list, text: "{{left_items}}", separator: ";", size: 24, align: left, marker: bullet, max_items: 6}
       - type: column
         children:
           - {type: subtitle, text: "{{right_title}}", align: left, bold: true}
-          - {type: list, text: "{{right_items}}", size: 24, align: left, marker: number, max_items: 6}
+          - {type: list, text: "{{right_items}}", separator: ";", size: 24, align: left, marker: number, max_items: 6}
   - {type: spacer, size: 6}

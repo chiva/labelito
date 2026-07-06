@@ -16,8 +16,27 @@
     .field-label .optional-tag { text-transform: none; letter-spacing: 0; color: var(--ink3); font-weight: 400; }
     #fields-empty { display: block; margin: 0 0 14px; }
 
-    #draft-preview .paper-frame { min-height: 90px; margin-top: 4px; }
+    #draft-preview .paper-frame { min-height: 90px; margin-top: 4px; align-items: center; }
     #preview-img:not([src]) { display: none; }
+
+    /* "Preview unavailable" placeholder + inline error — mirrors the print page's Live preview so a
+       draft that can't render (missing required fields, invalid YAML) reports the reason in the card
+       instead of a transient toast. Warning (amber), not fatal red: a failed draft is recoverable. */
+    #preview-placeholder { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--ink3); padding: 14px 0; }
+    #preview-placeholder .icon { width: 28px; height: 28px; opacity: 0.55; }
+    #preview-placeholder span { font-size: 12.5px; }
+    .printer-detail { font-size: 12.5px; color: var(--ink3); line-height: 1.6; overflow-wrap: anywhere; }
+    .printer-detail:empty { display: none; }
+    #preview-error { margin-top: 10px; }
+    #preview-error:empty { display: none; }
+    #preview-error:not(:empty) {
+      color: var(--amber);
+      background: color-mix(in srgb, var(--amber) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--amber) 32%, transparent);
+      border-radius: 9px;
+      padding: 8px 12px;
+    }
+    #preview-img.preview-stale { opacity: 0.25; filter: grayscale(1); }
 
     /* "Your Printer" callout + match highlighting in the label reference (ids/classes e2e-pinned). */
     .your-printer { background: color-mix(in srgb, var(--blue) 10%, transparent); border: 1px solid color-mix(in srgb, var(--blue) 35%, transparent); border-radius: 11px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; line-height: 1.6; }
@@ -101,7 +120,14 @@
         </div>
         <p class="hint" id="fields-empty">Auto-detected <code>{{ '{{placeholder}}' }}</code> fields appear here. Computed tokens (date/now/seq) and translations are excluded.</p>
         <div id="fields-container"></div>
-        <div class="paper-frame"><img id="preview-img" alt="Label preview"></div>
+        <div class="paper-frame">
+          <img id="preview-img" alt="Label preview">
+          <div id="preview-placeholder" style="display:none">
+            {{ icon("image") }}
+            <span>Preview unavailable</span>
+          </div>
+        </div>
+        <div id="preview-error" class="printer-detail"></div>
       </div>
     </div>
 
@@ -314,6 +340,51 @@
       }
     }
 
+    // Flatten a /preview/draft failure into ONE human sentence for the inline error (never a toast,
+    // never the raw status code). Mirrors index.html#previewErrorMessage but also handles the draft
+    // route's own shapes: the {msg, error} invalid-YAML body from _validate_draft_template and the
+    // {msg, missing_required:[...]} body this route now returns for a blank required field (same shape
+    // /preview sends). The sequence/image/text validators raise plain-string details — surfaced
+    // verbatim. Anything unexpected falls back to the shared formatError rather than leaking JSON.
+    function previewErrorMessage(status, detail) {
+      if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+        if (Array.isArray(detail.missing_required) && detail.missing_required.length) {
+          return `${detail.msg || 'Missing required fields'}: ${detail.missing_required.join(', ')}`;
+        }
+        if (detail.error) return detail.msg ? `${detail.msg}: ${detail.error}` : detail.error;
+      } else if (Array.isArray(detail)) {
+        const msgs = detail.map((d) => d && d.msg).filter(Boolean);
+        if (msgs.length) return `Invalid request: ${msgs.join('; ')}`;
+      } else if (typeof detail === 'string' && detail) {
+        return detail;
+      }
+      return formatError(status, detail);
+    }
+
+    // A failed draft preview renders INSIDE the Draft preview card (like the print page's Live
+    // preview), never as a toast: a prior good image is dimmed so it can't be mistaken for current,
+    // and with no prior success the "Preview unavailable" placeholder shows the reason beside it. The
+    // next successful preview (clearPreviewError, in doPreview) restores both.
+    function showPreviewError(msg) {
+      document.getElementById('preview-error').textContent = msg;
+      const img = document.getElementById('preview-img');
+      const placeholder = document.getElementById('preview-placeholder');
+      if (img.naturalWidth) {
+        // A prior successful preview is showing — dim it rather than hide it, so the stale image
+        // stays visible (clearly marked stale) instead of collapsing to the placeholder.
+        img.classList.add('preview-stale');
+        placeholder.style.display = 'none';
+      } else {
+        placeholder.style.display = '';
+      }
+    }
+
+    function clearPreviewError() {
+      document.getElementById('preview-error').textContent = '';
+      document.getElementById('preview-img').classList.remove('preview-stale');
+      document.getElementById('preview-placeholder').style.display = 'none';
+    }
+
     // ── Draft preview → swap the <img>. Validation errors (422) are shown inline. ──
     // Draft previews fire from typing (debounced), field edits, loads and language changes with
     // no serialization, so responses can land out of order. Each call claims a sequence number
@@ -332,6 +403,7 @@
         img.removeAttribute('src');
         delete img.dataset.url;
         clearStatus();
+        clearPreviewError();  // an empty draft is a clean frame, not an error/placeholder state
         setDraftStatus('empty');
         return;
       }
@@ -345,9 +417,7 @@
           if (handleAuthError(res)) { setDraftStatus('unknown'); return; }
           const err = await res.json().catch(() => ({detail: res.statusText}));
           if (seq !== previewSeq) return;
-          const d = err.detail || err;
-          const msg = (d && d.error) ? d.error : formatError(res.status, d);
-          showStatus('Preview error: ' + msg, 'err');
+          showPreviewError(previewErrorMessage(res.status, err.detail));
           setDraftStatus('invalid');
           return;
         }
@@ -359,10 +429,11 @@
         img.src = url;
         img.dataset.url = url;
         clearStatus();
+        clearPreviewError();
         setDraftStatus('valid');
       } catch (e) {
         if (seq !== previewSeq) return;
-        showStatus('Network error: ' + e.message, 'err');
+        showPreviewError('Network error: ' + e.message);
         setDraftStatus('unknown');
       }
     }
@@ -895,7 +966,10 @@
     // Re-render the draft preview when the nav's label language changes ([[key]] translations).
     onLanguageChange(() => doPreview());
 
-    // Seed with a minimal, valid starter template so the studio renders something immediately.
+    // Seed with a minimal, valid starter template so the YAML editor + field form populate on load.
+    // Its `title` is required and starts blank, so the Draft preview opens on the "Preview unavailable
+    // — Missing required fields: title" state (same as the print page for an unfilled required field);
+    // it renders as soon as the operator types a title. This is the intended teaching flow, not a gap.
     {% raw %}
     // The title/subtitle placeholders below must survive Jinja: editor.html renders through Jinja2,
     // which would otherwise resolve them as undefined variables and emit empty strings — silently

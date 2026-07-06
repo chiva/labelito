@@ -3357,6 +3357,27 @@ def test_preview_draft_happy_path_returns_png(client: TestClient) -> None:
     assert img.height > 0
 
 
+def test_preview_draft_missing_required_field_is_422(client: TestClient) -> None:
+    """A blank/omitted required field returns 422 with missing_required, exactly like /preview.
+
+    Without this the draft would substitute "" and return a silently blank-field label — the studio
+    would present it as a valid preview. The detail shape matches /preview so the client surfaces it
+    inline identically on both pages.
+    """
+    resp = client.post("/preview/draft", json={"yaml": _DRAFT_YAML, "fields": {}})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["missing_required"] == ["title"]
+    assert detail["template"] == "draft-simple"
+
+
+def test_preview_draft_blank_required_field_is_422(client: TestClient) -> None:
+    """A whitespace-only required value counts as missing (same _is_provided rule as /print)."""
+    resp = client.post("/preview/draft", json={"yaml": _DRAFT_YAML, "fields": {"title": "   "}})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["missing_required"] == ["title"]
+
+
 def test_preview_draft_honors_default_dither(client: TestClient) -> None:
     """Regression: /preview/draft must inherit DEFAULT_DITHER like /preview, not hardcode dither=False.
 

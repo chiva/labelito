@@ -39,6 +39,10 @@ coverage.xml
 # Node deps for the icon collections — installed from the committed pnpm-lock.yaml; never committed
 /node_modules/
 
+# Label gallery previews — rendered at deploy time by scripts/build_gallery.py (never committed;
+# the Pages workflow regenerates them so they can't drift from templates/).
+/site/assets/samples/
+
 # Local data directory — runtime/generated files not for version control
 /data/
 docker-compose.override.yml

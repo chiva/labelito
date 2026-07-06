@@ -809,7 +809,7 @@ def test_nested_row_raises(tmp_path: Path) -> None:
                   - {type: text, text: x}
     """,
     )
-    with pytest.raises(TemplateLoadError, match="another 'row'"):
+    with pytest.raises(TemplateLoadError, match="cannot be nested here"):
         load_template(path)
 
 
@@ -1095,7 +1095,9 @@ def test_children_on_non_row_element_raises(tmp_path: Path) -> None:
               - {type: image, field: title}
     """,
     )
-    with pytest.raises(TemplateLoadError, match=r"only a 'row' element may have 'children'"):
+    with pytest.raises(
+        TemplateLoadError, match=r"only a 'row' or 'column' element may have 'children'"
+    ):
         load_template(path)
 
 
@@ -1412,4 +1414,302 @@ def test_non_int_dimension_rejected(tmp_path: Path) -> None:
     """,
     )
     with pytest.raises(TemplateLoadError, match=r"'size' must be an integer"):
+        load_template(path)
+
+
+# ── Column container ─────────────────────────────────────────────────────────────
+def test_valid_column_in_row_loads(tmp_path: Path) -> None:
+    """A row holding a column of leaf elements is the intended single-level grid."""
+    path = write_yaml(
+        tmp_path / "col.yaml",
+        """\
+        name: col
+        description: column inside a row
+        label: "62"
+        fields:
+          required: [title]
+          optional: [subtitle, qr]
+        layout:
+          - type: row
+            children:
+              - type: column
+                children:
+                  - {type: title, text: "{{title}}"}
+                  - {type: subtitle, text: "{{subtitle}}"}
+              - {type: qr, data: "{{qr}}", width: 140}
+    """,
+    )
+    t = load_template(path)
+    assert t.layout[0]["type"] == "row"
+    assert t.layout[0]["children"][0]["type"] == "column"
+
+
+def test_top_level_column_loads(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "topcol.yaml",
+        """\
+        name: topcol
+        description: top-level column
+        label: "62"
+        fields:
+          required: [title]
+        layout:
+          - type: column
+            children:
+              - {type: title, text: "{{title}}"}
+    """,
+    )
+    assert load_template(path).layout[0]["type"] == "column"
+
+
+def test_column_in_column_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "colcol.yaml",
+        """\
+        name: colcol
+        description: column inside a column
+        label: "62"
+        layout:
+          - type: column
+            children:
+              - type: column
+                children:
+                  - {type: text, text: x}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="cannot be nested here"):
+        load_template(path)
+
+
+def test_row_in_column_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "rowcol.yaml",
+        """\
+        name: rowcol
+        description: row inside a column
+        label: "62"
+        layout:
+          - type: column
+            children:
+              - type: row
+                children:
+                  - {type: text, text: x}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="cannot be nested here"):
+        load_template(path)
+
+
+def test_column_empty_children_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "emptycol.yaml",
+        """\
+        name: emptycol
+        description: column with no children
+        label: "62"
+        layout:
+          - {type: column, children: []}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="'column' requires a non-empty 'children'"):
+        load_template(path)
+
+
+def test_column_bad_spacing_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "colspace.yaml",
+        """\
+        name: colspace
+        description: column with negative spacing
+        label: "62"
+        fields:
+          required: [title]
+        layout:
+          - type: column
+            spacing: -1
+            children:
+              - {type: title, text: "{{title}}"}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="'spacing'"):
+        load_template(path)
+
+
+def test_column_height_budget_uses_sum(tmp_path: Path) -> None:
+    """A column of many tall children sums their heights, so it can exceed the budget where a row
+    (which takes the tallest) would not."""
+    tall = ", ".join(["{type: spacer, size: 9000}"] * 6)  # 6 x 9000 summed = 54000 > 40000
+    path = write_yaml(
+        tmp_path / "tallcol.yaml",
+        f"""\
+        name: tallcol
+        description: tall column
+        label: "62"
+        layout:
+          - {{type: column, children: [{tall}]}}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="combined declared height"):
+        load_template(path)
+
+
+# ── List element ─────────────────────────────────────────────────────────────────
+def test_valid_list_loads(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "list.yaml",
+        """\
+        name: listtmpl
+        description: bulleted list
+        label: "62"
+        fields:
+          required: [items]
+        layout:
+          - {type: list, text: "{{items}}", marker: bullet, size: 26, max_items: 5}
+    """,
+    )
+    assert load_template(path).layout[0]["type"] == "list"
+
+
+def test_list_bad_marker_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "badmarker.yaml",
+        """\
+        name: badmarker
+        description: bad list marker
+        label: "62"
+        fields:
+          required: [items]
+        layout:
+          - {type: list, text: "{{items}}", marker: stars}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="'marker'"):
+        load_template(path)
+
+
+def test_list_bad_separator_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "badsep.yaml",
+        """\
+        name: badsep
+        description: empty list separator
+        label: "62"
+        fields:
+          required: [items]
+        layout:
+          - {type: list, text: "{{items}}", separator: ""}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="'separator'"):
+        load_template(path)
+
+
+def test_list_size_times_max_items_bounded(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "biglist.yaml",
+        """\
+        name: biglist
+        description: list strip too large
+        label: "62"
+        fields:
+          required: [items]
+        layout:
+          - {type: list, text: "{{items}}", size: 200, max_items: 100}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match=r"list 'size' x 'max_items'"):
+        load_template(path)
+
+
+# ── Badge / boxed text & filled box ──────────────────────────────────────────────
+def test_text_background_and_border_load(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "badge.yaml",
+        """\
+        name: badge
+        description: badge and boxed text
+        label: "62"
+        fields:
+          required: [handling, ref]
+        layout:
+          - {type: text, text: "{{handling}}", background: black}
+          - {type: text, text: "{{ref}}", border: 3, border_color: red}
+    """,
+    )
+    assert load_template(path).layout[0]["background"] == "black"
+
+
+def test_text_bad_background_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "badbg.yaml",
+        """\
+        name: badbg
+        description: bad background
+        label: "62"
+        fields:
+          required: [title]
+        layout:
+          - {type: title, text: "{{title}}", background: blue}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="'background'"):
+        load_template(path)
+
+
+def test_box_fill_loads(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "fillbox.yaml",
+        """\
+        name: fillbox
+        description: filled box bar
+        label: "62"
+        layout:
+          - {type: box, height: 20, fill: true, color: red}
+    """,
+    )
+    assert load_template(path).layout[0]["fill"] is True
+
+
+# ── Row vertical divider ─────────────────────────────────────────────────────────
+def test_row_divider_loads(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "divider.yaml",
+        """\
+        name: divtmpl
+        description: row with divider
+        label: "62"
+        fields:
+          required: [a, b]
+        layout:
+          - type: row
+            divider: true
+            divider_thickness: 3
+            divider_color: red
+            children:
+              - {type: text, text: "{{a}}"}
+              - {type: text, text: "{{b}}"}
+    """,
+    )
+    assert load_template(path).layout[0]["divider"] is True
+
+
+def test_row_bad_divider_color_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "baddiv.yaml",
+        """\
+        name: baddiv
+        description: bad divider color
+        label: "62"
+        fields:
+          required: [a, b]
+        layout:
+          - type: row
+            divider: true
+            divider_color: green
+            children:
+              - {type: text, text: "{{a}}"}
+              - {type: text, text: "{{b}}"}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="'divider_color'"):
         load_template(path)

@@ -7,7 +7,14 @@ fields:
   optional: [subtitle, qr]
 layout:
   - {type: spacer, size: 8}
-  - {type: title, text: "{{title}}", max_lines: 2}
-  - {type: subtitle, text: "{{subtitle}}", max_lines: 2}
-  - {type: qr, data: "{{qr}}", size: 180, align: right}
+  # Text stack on the left (a column), QR fixed-width on the right (same row), vertically centered.
+  - type: row
+    align_items: center
+    spacing: 12
+    children:
+      - type: column
+        children:
+          - {type: title, text: "{{title}}", align: left, max_lines: 2}
+          - {type: subtitle, text: "{{subtitle}}", align: left, max_lines: 2}
+      - {type: qr, data: "{{qr}}", size: 160, width: 176, align: right, valign: center}
   - {type: spacer, size: 8}

@@ -122,12 +122,12 @@
         <div id="fields-container"></div>
         <div class="paper-frame">
           <img id="preview-img" alt="Label preview">
-          <div id="preview-placeholder" style="display:none">
+          <div id="preview-placeholder" style="display:none" role="status" aria-live="polite">
             {{ icon("image") }}
             <span>Preview unavailable</span>
           </div>
         </div>
-        <div id="preview-error" class="printer-detail"></div>
+        <div id="preview-error" class="printer-detail" role="alert" aria-live="assertive">
       </div>
     </div>
 

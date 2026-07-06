@@ -1,5 +1,5 @@
 name: image
-description: "API-only: image supplied via POST /print as base64 in fields.image, with an optional caption"
+description: "API-only: image supplied via POST /print in fields.image (base64 or multipart upload), with an optional title"
 label: "62"
 rotate: 0
 fields:

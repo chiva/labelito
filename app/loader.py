@@ -382,6 +382,18 @@ def _require_choice(
         )
 
 
+def _require_bool(file_name: str, label: str, key: str, value: Any) -> None:
+    """Reject a toggle control that is not a real YAML boolean.
+
+    The renderer gates on plain truthiness (``if self.divider``/``if self.fill``), so the common
+    quoting typo ``divider: "false"`` would load as a non-empty *string* — truthy — and print the
+    feature the author meant to disable. A wrong-label failure, so reject any non-bool up front."""
+    if not isinstance(value, bool):
+        raise TemplateLoadError(
+            f"{file_name}: {label} '{key}' must be a boolean (true/false), got {value!r}"
+        )
+
+
 def _validate_row_child_sizing(file_name: str, label: str, child: dict[str, Any]) -> None:
     """Validate the per-child column hints (``width``/``weight``/``valign``) of a row child."""
     width = child.get("width")
@@ -463,7 +475,11 @@ def _validate_element(
             raise TemplateLoadError(
                 f"{file_name}: {label} image 'field' must be a non-empty string, got {image_field!r}"
             )
+    if el_type == "box" and "fill" in el:
+        _require_bool(file_name, label, "fill", el["fill"])
     if el_type == "list":
+        if "bold" in el:
+            _require_bool(file_name, label, "bold", el["bold"])
         if "marker" in el:
             _require_choice(file_name, label, "marker", el["marker"], LIST_MARKER_CHOICES)
         if "separator" in el:
@@ -481,6 +497,8 @@ def _validate_element(
         if "align_items" in el:
             _require_choice(file_name, label, "align_items", el["align_items"], VALIGN_CHOICES)
         # Optional vertical dividers between columns.
+        if "divider" in el:
+            _require_bool(file_name, label, "divider", el["divider"])
         if "divider_thickness" in el:
             _require_int(
                 file_name,

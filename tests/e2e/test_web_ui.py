@@ -2603,13 +2603,14 @@ def test_language_selector_has_visible_label_caption(authed_page: Page) -> None:
         expect(label).to_have_text("Label language")
 
 
-# ── Example vs user templates: muted cards + Customize deep-link (round 6) ──────────────────────────
+# ── Example vs user templates: muted cards + per-card edit pencil deep-link (round 6) ───────────────
 
 
-def test_example_card_is_muted_with_customize_link(authed_page_examples: Page) -> None:
-    """A bundled example card is visually flagged (`.tpl-card-example`) and carries a Customize
-    deep-link to the studio preloaded with that template; the user's own card has neither. The
-    legend explaining the dimming is shown."""
+def test_edit_pencil_on_every_card_deep_links_to_studio(authed_page_examples: Page) -> None:
+    """Every template card — bundled example AND the user's own — carries a pencil `.tpl-edit`
+    deep-link to the studio preloaded with that template, with an accessible name. The example card
+    is still visually flagged (`.tpl-card-example`); the user's own is not. The legend explaining the
+    dimming is shown."""
     authed_page_examples.goto("/")
 
     example_card = authed_page_examples.locator('.tpl-card[data-name="shipped-example"]')
@@ -2621,12 +2622,13 @@ def test_example_card_is_muted_with_customize_link(authed_page_examples: Page) -
     expect(example_card).to_have_class(re.compile(r"\btpl-card-example\b"))
     expect(user_card).not_to_have_class(re.compile(r"\btpl-card-example\b"))
 
-    # The example carries a Customize link to /editor?load=<name>; the user's own does not.
-    customize = example_card.locator("a.tpl-customize")
-    expect(customize).to_have_count(1)
-    href = customize.get_attribute("href")
-    assert href is not None and href.endswith("/editor?load=shipped-example"), href
-    expect(user_card.locator("a.tpl-customize")).to_have_count(0)
+    # Both cards carry a pencil edit link to /editor?load=<name> with an accessible name.
+    for card, name in ((example_card, "shipped-example"), (user_card, "my-own")):
+        edit = card.locator("a.tpl-edit")
+        expect(edit).to_have_count(1)
+        href = edit.get_attribute("href")
+        assert href is not None and href.endswith(f"/editor?load={name}"), href
+        assert edit.get_attribute("aria-label") == f"Edit {name} in Studio"
 
     # The legend is shown and explains the dimming.
     legend = authed_page_examples.locator("#tpl-legend")
@@ -2634,9 +2636,9 @@ def test_example_card_is_muted_with_customize_link(authed_page_examples: Page) -
     expect(legend).to_contain_text("Dimmed = bundled example")
 
 
-def test_customize_deep_link_preloads_editor(authed_page_examples: Page) -> None:
+def test_edit_pencil_deep_link_preloads_editor(authed_page_examples: Page) -> None:
     """Opening /editor?load=<name> preloads that template's YAML into the studio textarea — the
-    landing target of the Print page's Customize action."""
+    landing target of the Print page's per-card edit pencil."""
     authed_page_examples.goto("/editor?load=shipped-example")
     yaml_box = authed_page_examples.locator("#yaml")
     expect(yaml_box).to_have_value(re.compile(r"name:\s*shipped-example"))

@@ -41,15 +41,27 @@ def registered_names() -> set[str]:
     return set(app_main.registry.load_all())
 
 
-@pytest.fixture
-def manifest(build_mod, tmp_path: Path) -> list[dict]:
-    return build_mod.build(tmp_path)
+@pytest.fixture(scope="module")
+def _gallery_build(build_mod, tmp_path_factory) -> tuple[list[dict], Path]:
+    """Build the gallery once per module — the consuming tests only read it, never mutate."""
+    out_dir = tmp_path_factory.mktemp("gallery")
+    return build_mod.build(out_dir), out_dir
+
+
+@pytest.fixture(scope="module")
+def manifest(_gallery_build) -> list[dict]:
+    return _gallery_build[0]
+
+
+@pytest.fixture(scope="module")
+def manifest_out(_gallery_build) -> Path:
+    return _gallery_build[1]
 
 
 def test_one_preview_png_per_registered_template(
-    build_mod, tmp_path: Path, manifest: list[dict], registered_names: set[str]
+    build_mod, manifest_out: Path, manifest: list[dict], registered_names: set[str]
 ) -> None:
-    samples_dir = tmp_path / build_mod.SAMPLES_SUBDIR
+    samples_dir = manifest_out / build_mod.SAMPLES_SUBDIR
     png_stems = {p.stem for p in samples_dir.glob("*.png")}
     manifest_names = {e["name"] for e in manifest}
 
@@ -60,18 +72,18 @@ def test_one_preview_png_per_registered_template(
 
 
 def test_manifest_written_and_matches_return(
-    build_mod, tmp_path: Path, manifest: list[dict]
+    build_mod, manifest_out: Path, manifest: list[dict]
 ) -> None:
-    manifest_path = tmp_path / build_mod.SAMPLES_SUBDIR / build_mod.MANIFEST_NAME
+    manifest_path = manifest_out / build_mod.SAMPLES_SUBDIR / build_mod.MANIFEST_NAME
     assert manifest_path.is_file()
     on_disk = json.loads(manifest_path.read_text())
     assert on_disk == manifest
 
 
 def test_every_preview_is_a_valid_png_at_label_width(
-    build_mod, tmp_path: Path, manifest: list[dict]
+    build_mod, manifest_out: Path, manifest: list[dict]
 ) -> None:
-    samples_dir = tmp_path / build_mod.SAMPLES_SUBDIR
+    samples_dir = manifest_out / build_mod.SAMPLES_SUBDIR
     for entry in manifest:
         png_path = samples_dir / f"{entry['name']}.png"
         img = Image.open(io.BytesIO(png_path.read_bytes()))

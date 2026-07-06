@@ -30,6 +30,7 @@ import argparse
 import base64
 import json
 import os
+import shlex
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -166,12 +167,10 @@ def _fields_for(tmpl: Template) -> dict[str, Any]:
 def _size_label(label_id: str) -> str:
     """A human-readable media descriptor, e.g. ``62 mm · continuous`` or ``62 x 29 mm · die-cut``."""
     media = required_media_for(label_id)
-    kind = "continuous" if media.media_type == MEDIA_TYPE_CONTINUOUS else "die-cut"
     width = f"{media.width_mm:g}"
-    if "x" in label_id:
-        _, length = label_id.split("x", 1)
-        return f"{width} x {length} mm · {kind}"
-    return f"{width} mm · {kind}"
+    if media.media_type == MEDIA_TYPE_CONTINUOUS:
+        return f"{width} mm · continuous"
+    return f"{width} x {media.length_mm:g} mm · die-cut"
 
 
 def _curl_example(name: str, fields: dict[str, Any]) -> str:
@@ -181,7 +180,7 @@ def _curl_example(name: str, fields: dict[str, Any]) -> str:
     return (
         "curl -X POST http://localhost:8765/print \\\n"
         "  -H 'Content-Type: application/json' \\\n"
-        f"  -d '{body}'"
+        f"  -d {shlex.quote(body)}"
     )
 
 
@@ -248,7 +247,9 @@ def build(out_dir: Path) -> list[dict[str, Any]]:
         image_rel = f"{SAMPLES_SUBDIR.as_posix()}/{name}.png"
         entries.append(_entry(tmpl, image_rel, fields))
 
-    entries.sort(key=lambda e: (e["label"], e["name"]))
+    # height_px is None for continuous labels (no fixed length); treat as 0 so those sort ahead of
+    # die-cut labels of the same width, keeping the order total and deterministic.
+    entries.sort(key=lambda e: (e["width_px"], e["height_px"] or 0, e["name"]))
     manifest_path = samples_dir / MANIFEST_NAME
     manifest_path.write_text(json.dumps(entries, indent=2, ensure_ascii=False) + "\n")
     return entries

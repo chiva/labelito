@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/chiva/labelito/compare/v0.4.0...v0.5.0) (2026-07-06)
+
+
+### Features
+
+* column/list layout primitives + text fill/border/divider ([#24](https://github.com/chiva/labelito/issues/24)) ([0ed416b](https://github.com/chiva/labelito/commit/0ed416b9fe05cbd96cec0c06da01985707f5cc5d))
+* label gallery page with a rendered example per template ([#26](https://github.com/chiva/labelito/issues/26)) ([f8b1cb5](https://github.com/chiva/labelito/commit/f8b1cb5fdc7a4d59e1ab361713220bab2c454394))
+* per-template 'Edit in Studio' pencil on the Print page ([#25](https://github.com/chiva/labelito/issues/25)) ([66221e4](https://github.com/chiva/labelito/commit/66221e45edad9982b824abadebd64c91f3f3b94a))
+* studio draft preview parity with print page ([#23](https://github.com/chiva/labelito/issues/23)) ([a9414d6](https://github.com/chiva/labelito/commit/a9414d6cd703a0332ce4e93f533b0ea6be9ea747))
+
+
+### Documentation
+
+* add logo to README header ([#20](https://github.com/chiva/labelito/issues/20)) ([1205ae1](https://github.com/chiva/labelito/commit/1205ae12a9d3efc1ab5a48c32ed91e65d7615c7c))
+
 ## [0.4.0](https://github.com/chiva/labelito/compare/v0.3.0...v0.4.0) (2026-07-05)
 
 

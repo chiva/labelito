@@ -1713,3 +1713,59 @@ def test_row_bad_divider_color_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(TemplateLoadError, match="'divider_color'"):
         load_template(path)
+
+
+def test_row_quoted_false_divider_raises(tmp_path: Path) -> None:
+    """`divider: "false"` (a quoted string) is truthy at render — reject it as a non-bool."""
+    path = write_yaml(
+        tmp_path / "quoteddiv.yaml",
+        """\
+        name: quoteddiv
+        description: quoted-false divider
+        label: "62"
+        fields:
+          required: [a, b]
+        layout:
+          - type: row
+            divider: "false"
+            children:
+              - {type: text, text: "{{a}}"}
+              - {type: text, text: "{{b}}"}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="'divider' must be a boolean"):
+        load_template(path)
+
+
+def test_box_quoted_false_fill_raises(tmp_path: Path) -> None:
+    """`fill: "false"` on a box is a truthy string — reject it so the bar isn't silently filled."""
+    path = write_yaml(
+        tmp_path / "quotedfill.yaml",
+        """\
+        name: quotedfill
+        description: quoted-false box fill
+        label: "62"
+        layout:
+          - {type: box, height: 20, fill: "false"}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="'fill' must be a boolean"):
+        load_template(path)
+
+
+def test_list_quoted_false_bold_raises(tmp_path: Path) -> None:
+    """`bold: "false"` on a list is a truthy string — reject it so the text isn't silently bold."""
+    path = write_yaml(
+        tmp_path / "quotedbold.yaml",
+        """\
+        name: quotedbold
+        description: quoted-false list bold
+        label: "62"
+        fields:
+          required: [items]
+        layout:
+          - {type: list, text: "{{items}}", bold: "false"}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="'bold' must be a boolean"):
+        load_template(path)

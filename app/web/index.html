@@ -252,9 +252,13 @@
   <script>
     const TEMPLATES = {{ templates | tojson }};
     const templateMap = Object.fromEntries(TEMPLATES.map(t => [t.name, t]));
-    // Whether the template studio is reachable — gates the per-card "Customize" deep-link on example
-    // cards (with the editor off, /editor 404s, so there is nothing to link to).
+    // Whether the template studio is reachable — one half of the gate for the per-card edit pencil
+    // (with the editor off, /editor 404s, so there is nothing to link to).
     const EDITOR_ENABLED = {{ editor_enabled | tojson }};
+    // Whether GET /templates/{name}/source is served. The pencil deep-links into /editor?load=<name>,
+    // which fetches that route to preload the YAML — so with loading disabled the link would land on a
+    // 404. Gate the pencil (and its legend hint) on EDITOR_ENABLED && TEMPLATES_LOADABLE.
+    const TEMPLATES_LOADABLE = {{ templates_loadable | tojson }};
     // Latest /printer/status body, used to compare the loaded roll against each template's required
     // media. Null until the first status arrives (or when the status query fails) → compat unknown.
     let printerStatus = null;
@@ -801,7 +805,7 @@
           // and Copy/Download/Save it into their own templates dir. Shown on EVERY card (examples and
           // the user's own templates alike) whenever the editor is reachable. A pencil <a> inside the
           // <label> card: clicking it must NOT toggle the card's radio, so stop the event from bubbling.
-          if (EDITOR_ENABLED) {
+          if (EDITOR_ENABLED && TEMPLATES_LOADABLE) {
             const base = (window.LABELITO_BASE || '');
             const edit = document.createElement('a');
             edit.className = 'tpl-edit';
@@ -866,7 +870,7 @@
       if (!anyExample) { el.style.display = 'none'; return; }
       el.style.display = '';
       el.append('Dimmed = bundled example');
-      if (EDITOR_ENABLED) el.append(' — use the pencil to edit any template in the studio.');
+      if (EDITOR_ENABLED && TEMPLATES_LOADABLE) el.append(' — use the pencil to edit any template in the studio.');
     }
 
     // The "Show all sizes" / "Show only matching size" toggle + hidden-count hint in the Template

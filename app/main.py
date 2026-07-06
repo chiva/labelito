@@ -2082,6 +2082,10 @@ def _web_ctx(page: str, request: Request) -> dict[str, Any]:
         "base_path": request.scope.get("root_path", "").rstrip("/"),
         "history_ui": settings.history_ui,
         "editor_enabled": settings.editor_enabled,
+        # Whether GET /templates/{name}/source is served (TEMPLATES_LOADABLE). The Print-page pencil
+        # deep-links into /editor?load=<name>, which fetches that route — so with loading disabled the
+        # editor page is reachable but the preload 404s. Gate the per-template edit affordance on both.
+        "templates_loadable": settings.templates_loadable,
         "languages": translator.available(),
         "default_language": settings.default_language,
         "asset_v": _ASSET_VERSION,

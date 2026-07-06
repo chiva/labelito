@@ -1,0 +1,26 @@
+name: two-column
+description: Two side-by-side lists split by a vertical divider — showcases columns, divider & list
+label: "62"
+rotate: 0
+fields:
+  required: [left_title]
+  optional: [left_items, right_title, right_items]
+layout:
+  - {type: spacer, size: 6}
+  # A row of two equal-weight columns with a vertical rule drawn in the gap between them.
+  # Each `*_items` field is newline-separated, e.g. "one\ntwo\nthree".
+  - type: row
+    align_items: top
+    spacing: 16
+    divider: true
+    divider_thickness: 2
+    children:
+      - type: column
+        children:
+          - {type: subtitle, text: "{{left_title}}", align: left, bold: true}
+          - {type: list, text: "{{left_items}}", size: 24, align: left, marker: bullet, max_items: 6}
+      - type: column
+        children:
+          - {type: subtitle, text: "{{right_title}}", align: left, bold: true}
+          - {type: list, text: "{{right_items}}", size: 24, align: left, marker: number, max_items: 6}
+  - {type: spacer, size: 6}

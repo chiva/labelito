@@ -1,0 +1,21 @@
+name: shipping-badge
+description: Handling banner (inverse), a boxed reference field and a QR — showcases badge & boxed text
+label: "62"
+rotate: 0
+fields:
+  required: [handling]
+  optional: [reference, qr]
+layout:
+  - {type: spacer, size: 6}
+  # Badge / inverse text: a solid banner with white lettering (add `color`/`background: red` + a
+  # two-color roll to print it red).
+  - {type: text, text: "{{handling}}", background: black, align: center, size: 44, bold: true}
+  - {type: spacer, size: 6}
+  - type: row
+    align_items: center
+    spacing: 12
+    children:
+      # Boxed / framed text: an outlined field (border only, no fill).
+      - {type: text, text: "REF {{reference}}", border: 3, align: center, size: 30}
+      - {type: qr, data: "{{qr}}", size: 120, width: 132, align: right, valign: center}
+  - {type: spacer, size: 6}

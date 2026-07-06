@@ -166,11 +166,11 @@ def uses_seq(layout: list[dict[str, Any]]) -> bool:
 
 
 def image_field_names(layout: list[dict[str, Any]]) -> set[str]:
-    """Field names read by ``image`` elements (default ``image``), recursing into row children.
+    """Field names read by ``image`` elements (default ``image``), recursing into container children.
 
-    Only a ``row`` renders children, so the walk descends solely into row children — exactly the
-    subtree the renderer builds — keeping image-field discovery, request validation, and history
-    blob-stripping in lockstep with what is actually drawn.
+    Containers (``row``/``column``) render their children, so the walk descends into any ``children``
+    list — exactly the subtree the renderer builds — keeping image-field discovery, request
+    validation, and history blob-stripping in lockstep with what is actually drawn.
     """
     names: set[str] = set()
     for el in layout:
@@ -184,10 +184,9 @@ def image_field_names(layout: list[dict[str, Any]]) -> set[str]:
             field = el.get("field", "image")
             if isinstance(field, str) and field:
                 names.add(field)
-        if el.get("type") == "row":
-            children = el.get("children")
-            if isinstance(children, list):
-                names |= image_field_names(children)
+        children = el.get("children")
+        if isinstance(children, list):
+            names |= image_field_names(children)
     return names
 
 
@@ -198,7 +197,8 @@ def missing_custom_icons(layout: list[dict[str, Any]], icons_dir: Path) -> set[s
     ``<name>.png`` from ``icons_dir`` (see :class:`~app.render.elements.IconElement`). Only STATIC
     names are reported — a ``{{token}}``-driven name is request-controlled and unknowable at boot,
     and collection icons are skipped (their files are baked image content, absent in dev/test by
-    design). Recurses into ``row`` children, mirroring the subtree the renderer actually draws.
+    design). Recurses into container (``row``/``column``) children, mirroring the subtree the renderer
+    actually draws.
 
     Powers the boot warning that surfaces a bind-mounted ``assets/icons`` which omits a file a
     template names — the silently-blank case (see ``app.main.startup``). Loaded templates have
@@ -213,10 +213,9 @@ def missing_custom_icons(layout: list[dict[str, Any]], icons_dir: Path) -> set[s
             if isinstance(name, str) and name and "{{" not in name:
                 if resolve_custom_icon_path(name, icons_dir) is None:
                     missing.add(name)
-        if el.get("type") == "row":
-            children = el.get("children")
-            if isinstance(children, list):
-                missing |= missing_custom_icons(children, icons_dir)
+        children = el.get("children")
+        if isinstance(children, list):
+            missing |= missing_custom_icons(children, icons_dir)
     return missing
 
 

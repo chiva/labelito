@@ -2892,7 +2892,6 @@ async def editor_page(request: Request) -> HTMLResponse:
         {
             **_web_ctx("studio", request),
             "templates_writable": settings.templates_writable,
-            "templates_loadable": settings.templates_loadable,
             "labels": labels,
         },
     )

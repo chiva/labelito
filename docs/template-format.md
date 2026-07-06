@@ -149,12 +149,12 @@ fill/border span the full strip width. See the `shipping-badge` template for a w
 Bold (title) or regular (subtitle) heading text. Fixed font sizes (60 pt / 40 pt) — the author
 cannot change the size, only `max_lines`.
 
-| Attribute | Type | Default |
-|---|---|---|
-| `text` | string (templated) | `""` |
-| `align` | `left`/`center`/`right` | `left` |
-| `max_lines` | int 1–200 | `2` |
-| `bold` | bool | `true` (title) / `false` (subtitle) |
+| Attribute | Type | Default | Notes |
+|---|---|---|---|
+| `text` | string (templated) | `""` | |
+| `align` | `left`/`center`/`right` | `left` | |
+| `max_lines` | int 1–200 | `2` | |
+| `bold` | bool | `true` (title) / `false` (subtitle) | |
 | `background`, `border`, `border_color` | — | — | See [Badge & boxed text](#badge--boxed-text-text-family-decorations). |
 
 ```yaml
@@ -167,13 +167,13 @@ cannot change the size, only `max_lines`.
 
 Body text with an author-controlled font size.
 
-| Attribute | Type | Default |
-|---|---|---|
-| `text` | string (templated) | `""` |
-| `size` | int 1–512 (pt) | `32` |
-| `align` | `left`/`center`/`right` | `left` |
-| `bold` | bool | `false` |
-| `max_lines` | int 1–200 | `10` |
+| Attribute | Type | Default | Notes |
+|---|---|---|---|
+| `text` | string (templated) | `""` | |
+| `size` | int 1–512 (pt) | `32` | |
+| `align` | `left`/`center`/`right` | `left` | |
+| `bold` | bool | `false` | |
+| `max_lines` | int 1–200 | `10` | |
 | `background`, `border`, `border_color` | — | — | See [Badge & boxed text](#badge--boxed-text-text-family-decorations). |
 
 `size × max_lines` is additionally bounded (≤ 4000) so a large font and many lines cannot compose an
@@ -367,9 +367,9 @@ width, so a group of stacked elements (e.g. a title over a subtitle) can sit in 
 another element (e.g. a QR). A `column` may appear at the top level or as a child of a `row`, and
 holds **only leaf elements** — no nested `row` or `column`.
 
-| Attribute | Type | Default |
-|---|---|---|
-| `children` | non-empty list of leaf elements | — (required) |
+| Attribute | Type | Default | Notes |
+|---|---|---|---|
+| `children` | non-empty list of leaf elements | — | required |
 | `spacing` | int 0–10000 (px) | `0` | Extra vertical gap between stacked children (each leaf already has its own padding). |
 
 An empty optional child (a blank field) contributes neither height nor a gap. When a column is a row

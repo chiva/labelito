@@ -59,6 +59,33 @@ ROW_FAILURE_PLACEHOLDER_HEIGHT = 64
 # flexible content (e.g. a title) clips visibly instead of collapsing to a zero-width, silent gap.
 ROW_MIN_FLEX_WIDTH = 24
 
+# Column container: extra vertical gap inserted *between* stacked children. Defaults to 0 because
+# every leaf element already carries its own padding_top/padding_bottom (4 px each) — the same
+# implicit spacing the top-level vertical stack uses — so a column with spacing=0 stacks its
+# children exactly as if they sat at the top level, and a positive spacing only widens the gaps.
+COLUMN_DEFAULT_SPACING = 0
+
+# Row vertical divider: default rule thickness drawn in each inter-column gap when `divider` is set.
+ROW_DIVIDER_DEFAULT_THICKNESS = 2
+
+# List element: split a templated string into per-item lines, each prefixed by a marker.
+LIST_DEFAULT_SEPARATOR = "\n"
+LIST_MARKER_BULLET = "bullet"
+LIST_MARKER_NUMBER = "number"
+LIST_MARKER_NONE = "none"
+LIST_MARKER_CHOICES = frozenset({LIST_MARKER_BULLET, LIST_MARKER_NUMBER, LIST_MARKER_NONE})
+LIST_DEFAULT_MARKER = LIST_MARKER_BULLET
+# Upper bound on rendered items so a huge multi-line field cannot compose an unbounded strip; the
+# loader mirrors this default in its strip-area budget (loader assumes this when max_items is absent).
+LIST_DEFAULT_MAX_ITEMS = 20
+LIST_BULLET_GLYPH = "• "
+
+# Text fill/border (badge & boxed text): `background` fills the whole text strip with the banner ink
+# and draws the glyphs in white (inverse); `border` draws an outline rectangle around the strip. Both
+# honour the two-color layer. "none" is the no-fill default so a plain text element is byte-identical.
+TEXT_BACKGROUND_NONE = "none"
+TEXT_BACKGROUND_CHOICES = frozenset({TEXT_BACKGROUND_NONE, COLOR_DEFAULT, COLOR_RED})
+
 # Bundled icon collections (rasterized from SVG) and the per-collection style variants we expose.
 # Shared with the loader, which validates a template's `collection`/`style` against these.
 KNOWN_COLLECTIONS = frozenset({"fontawesome", "material", "octicons"})
@@ -122,9 +149,19 @@ class ElementBase:
         renderers used, so output is byte-identical. In two-color mode it is an RGB triple — red for
         a ``color: red`` element, black otherwise — drawn on the RGB canvas.
         """
+        return self._color_ink(self.color)
+
+    def _color_ink(self, color: str) -> int | tuple[int, int, int]:
+        """Ink for an arbitrary colour NAME in the active canvas mode.
+
+        Like :attr:`_ink` but for a colour that is not the element's own ``color`` — e.g. a text
+        element's ``background``/``border_color`` or a row's ``divider_color``. Monochrome pipeline
+        (``_red_active`` False): always the integer ``0`` (byte-identical to the original renderers).
+        Two-color mode: pure red for ``"red"``, else black.
+        """
         if not self._red_active:
             return 0
-        return RGB_RED if self.color == COLOR_RED else RGB_BLACK
+        return RGB_RED if color == COLOR_RED else RGB_BLACK
 
     def _new_canvas(self, width: int, height: int) -> Image.Image:
         """A blank white strip in the element's active canvas mode (L or RGB)."""
@@ -373,6 +410,36 @@ def _render_text_block(
     return img
 
 
+def _block_colors(el: ElementBase) -> tuple[Any, Any]:
+    """Resolve the ``(bg, fill)`` a text-family element hands :func:`_render_text_block`.
+
+    Default (no ``background``): ``(_bg, _ink)`` — glyphs in ink on a white strip, byte-identical to
+    the original renderers. With ``background`` set (badge/banner): ``(background-ink, _bg)`` — the
+    whole strip is filled with the banner ink and the glyphs are drawn in white (inverse). The banner
+    ink honours the two-color layer, so ``background: red`` is a red banner in two-color mode.
+    """
+    bg_name = getattr(el, "background", TEXT_BACKGROUND_NONE)
+    if bg_name and bg_name != TEXT_BACKGROUND_NONE:
+        return el._color_ink(bg_name), el._bg
+    return el._bg, el._ink
+
+
+def _apply_border(el: ElementBase, img: Image.Image) -> Image.Image:
+    """Draw a ``border``-px outline around a text strip in place (boxed / framed text).
+
+    No-op when ``border`` is 0/absent (byte-identical to a borderless render). The rectangle frames
+    the full strip — including its padding — so text sits inside the frame with breathing room. The
+    outline ink honours the two-color layer via ``border_color``.
+    """
+    border = el._px(getattr(el, "border", 0) or 0)
+    if border <= 0 or img.width < 1 or img.height < 1:
+        return img
+    draw = ImageDraw.Draw(img)
+    ink = el._color_ink(getattr(el, "border_color", COLOR_DEFAULT))
+    draw.rectangle((0, 0, img.width - 1, img.height - 1), outline=ink, width=border)
+    return img
+
+
 # ── Text element types ─────────────────────────────────────────────────────────
 @dataclass
 class TitleElement(ElementBase):
@@ -381,6 +448,9 @@ class TitleElement(ElementBase):
     align: str = ALIGN_DEFAULT
     max_lines: int | None = 2
     bold: bool = True
+    background: str = TEXT_BACKGROUND_NONE
+    border: int = 0
+    border_color: str = COLOR_DEFAULT
 
     def render(
         self,
@@ -392,7 +462,8 @@ class TitleElement(ElementBase):
     ) -> Image.Image:
         text = str(resolved_fields.get("__text__", self.text))
         font = _load_font(fonts_dir, self._px(FONT_SIZES["title"]), self.bold)
-        return _render_text_block(
+        bg, fill = _block_colors(self)
+        img = _render_text_block(
             text,
             font,
             canvas_width,
@@ -401,9 +472,10 @@ class TitleElement(ElementBase):
             self._px(8),
             self.scale,
             self._canvas_mode,
-            self._bg,
-            self._ink,
+            bg,
+            fill,
         )
+        return _apply_border(self, img)
 
 
 @dataclass
@@ -413,6 +485,9 @@ class SubtitleElement(ElementBase):
     align: str = ALIGN_DEFAULT
     max_lines: int | None = 2
     bold: bool = False
+    background: str = TEXT_BACKGROUND_NONE
+    border: int = 0
+    border_color: str = COLOR_DEFAULT
 
     def render(
         self,
@@ -426,7 +501,8 @@ class SubtitleElement(ElementBase):
         if not text.strip():
             return self._new_canvas(canvas_width, 0)
         font = _load_font(fonts_dir, self._px(FONT_SIZES["subtitle"]), self.bold)
-        return _render_text_block(
+        bg, fill = _block_colors(self)
+        img = _render_text_block(
             text,
             font,
             canvas_width,
@@ -435,9 +511,10 @@ class SubtitleElement(ElementBase):
             self._px(8),
             self.scale,
             self._canvas_mode,
-            self._bg,
-            self._ink,
+            bg,
+            fill,
         )
+        return _apply_border(self, img)
 
 
 @dataclass
@@ -451,6 +528,9 @@ class TextElement(ElementBase):
     # literal into an unbounded strip and OOM. The loader's strip-area guard assumes this same
     # ceiling for text that omits max_lines, so the guard cannot be bypassed by simply leaving it off.
     max_lines: int | None = DEFAULT_TEXT_MAX_LINES
+    background: str = TEXT_BACKGROUND_NONE
+    border: int = 0
+    border_color: str = COLOR_DEFAULT
 
     def render(
         self,
@@ -462,7 +542,8 @@ class TextElement(ElementBase):
     ) -> Image.Image:
         text = str(resolved_fields.get("__text__", self.text))
         font = _load_font(fonts_dir, self._px(self.size), self.bold)
-        return _render_text_block(
+        bg, fill = _block_colors(self)
+        img = _render_text_block(
             text,
             font,
             canvas_width,
@@ -471,9 +552,10 @@ class TextElement(ElementBase):
             self._px(8),
             self.scale,
             self._canvas_mode,
-            self._bg,
-            self._ink,
+            bg,
+            fill,
         )
+        return _apply_border(self, img)
 
 
 # ── QR element ─────────────────────────────────────────────────────────────────
@@ -772,6 +854,9 @@ class BoxElement(ElementBase):
     type: str = "box"
     height: int = 40
     border: int = 2
+    # When true the rectangle is filled solid (a colored bar / background block); otherwise it is
+    # only outlined. The fill honours the two-color layer, so `color: red` + `fill: true` is a red bar.
+    fill: bool = False
 
     def render(
         self,
@@ -789,7 +874,12 @@ class BoxElement(ElementBase):
             # ImageDraw.rectangle would get an inverted range and raise. Return the blank strip.
             return img
         draw = ImageDraw.Draw(img)
-        draw.rectangle((0, 0, canvas_width - 1, height - 1), outline=self._ink, width=border)
+        if self.fill:
+            # A solid bar: fill with the ink and (when a border is also requested) keep the outline so
+            # `fill` + a contrasting scenario still renders a clean edge. The fill alone is the bar.
+            draw.rectangle((0, 0, canvas_width - 1, height - 1), fill=self._ink)
+        else:
+            draw.rectangle((0, 0, canvas_width - 1, height - 1), outline=self._ink, width=border)
         return img
 
 
@@ -835,6 +925,51 @@ def _failure_placeholder(
     return img
 
 
+def _guarded_child_strip(
+    child: ElementBase,
+    width: int,
+    resolved: dict[str, Any],
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> Image.Image:
+    """Render a container child, substituting a visible failure marker when its column is too narrow.
+
+    A data-bearing child (QR/barcode/image) handed a column too narrow to draw its content would
+    otherwise vanish silently — a QR clips, a barcode/image collapses to a blank strip — while the
+    API still reports a successful print (and for image jobs the blob is then stripped from history,
+    so the loss is unrecoverable on reprint). This replaces that silent gap with a crossed box.
+
+    Shared by :class:`RowElement` (direct children) and :class:`ColumnElement` (children nested one
+    level down inside a row column) so the guard fires regardless of nesting: a column drops
+    zero-height strips, so without this a too-narrow image/barcode inside a column would be filtered
+    away with no marker. QR clipping is predicted from its fixed size (it never blanks); barcode and
+    image are detected by the blank strip their own renderers return when the column collapses.
+    """
+    if (
+        isinstance(child, QRElement)
+        and RowElement._child_has_content(child, resolved)
+        and width
+        < child._px(child.size) + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
+    ):
+        return _failure_placeholder(
+            width, child._px(child.size), child._canvas_mode, child._bg, child._ink
+        )
+    strip = child.render(width, resolved, fonts_dir, icons_dir, icon_collections_dir)
+    if (
+        isinstance(child, BarcodeElement | ImageElement)
+        and RowElement._child_has_content(child, resolved)
+        and strip.height == 0
+    ):
+        marker_h = (
+            child._px(child.height)
+            if isinstance(child, BarcodeElement)
+            else child._px(ROW_FAILURE_PLACEHOLDER_HEIGHT)
+        )
+        return _failure_placeholder(width, marker_h, child._canvas_mode, child._bg, child._ink)
+    return strip
+
+
 # ── Row container ────────────────────────────────────────────────────────────────
 @dataclass
 class RowElement(ElementBase):
@@ -855,6 +990,13 @@ class RowElement(ElementBase):
     children: list[ElementBase] = field(default_factory=list)
     align_items: str = ROW_ALIGN_ITEMS_DEFAULT
     spacing: int = ROW_DEFAULT_SPACING
+    # Optional vertical rules drawn in each inter-column gap, full row height. A row-level option (not
+    # a stretchable line element) because a child cannot know the row's final height under the
+    # self-sizing column model; drawing after `row_h` is known sidesteps that. `divider_color` honours
+    # the two-color layer.
+    divider: bool = False
+    divider_thickness: int = ROW_DIVIDER_DEFAULT_THICKNESS
+    divider_color: str = COLOR_DEFAULT
 
     def render(
         self,
@@ -866,41 +1008,10 @@ class RowElement(ElementBase):
     ) -> Image.Image:
         child_res = resolved_fields.get("__children__") or [{} for _ in self.children]
         widths = self._column_widths(canvas_width)
-        strips: list[Image.Image] = []
-        for child, w, res in zip(self.children, widths, child_res, strict=True):
-            # A data-bearing child (QR/barcode/image) given a column too narrow to draw its content
-            # would otherwise vanish silently — a QR clips, a barcode/image collapses to a blank
-            # strip — while the API still reports a successful print (and for image jobs the blob is
-            # then stripped from history, so the loss is unrecoverable). Replace that silent gap with
-            # a visible crossed box so the failure is unmistakable on the printed label. QR clipping
-            # is predicted from its fixed size (it never blanks); barcode/image are detected by the
-            # blank strip their own renderers return when the column collapses.
-            if (
-                isinstance(child, QRElement)
-                and self._child_has_content(child, res)
-                and w
-                < child._px(child.size)
-                + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
-            ):
-                strips.append(
-                    _failure_placeholder(
-                        w, child._px(child.size), child._canvas_mode, child._bg, child._ink
-                    )
-                )
-                continue
-            strip = child.render(w, res, fonts_dir, icons_dir, icon_collections_dir)
-            if (
-                isinstance(child, BarcodeElement | ImageElement)
-                and self._child_has_content(child, res)
-                and strip.height == 0
-            ):
-                marker_h = (
-                    child._px(child.height)
-                    if isinstance(child, BarcodeElement)
-                    else child._px(ROW_FAILURE_PLACEHOLDER_HEIGHT)
-                )
-                strip = _failure_placeholder(w, marker_h, child._canvas_mode, child._bg, child._ink)
-            strips.append(strip)
+        strips: list[Image.Image] = [
+            _guarded_child_strip(child, w, res, fonts_dir, icons_dir, icon_collections_dir)
+            for child, w, res in zip(self.children, widths, child_res, strict=True)
+        ]
         row_h = max((s.height for s in strips), default=0)
         canvas = self._new_canvas(canvas_width, row_h)
         if row_h == 0:
@@ -923,7 +1034,33 @@ class RowElement(ElementBase):
                 y = (row_h - strip.height) // 2
             canvas.paste(strip, (x, y))
             x += w + self._px(self.spacing)
+        if self.divider and len(self.children) > 1:
+            self._draw_dividers(canvas, widths, row_h, canvas_width)
         return canvas
+
+    def _draw_dividers(
+        self, canvas: Image.Image, widths: list[int], row_h: int, canvas_width: int
+    ) -> None:
+        """Draw a vertical rule centered in each inter-column gap, spanning the full row height.
+
+        Called after the columns are placed and ``row_h`` is known. Each rule is centered in the
+        ``spacing`` gap that follows a column (on the seam itself when ``spacing`` is 0). Off-canvas
+        boundaries — reached when over-wide fixed columns pushed later columns past the edge — are
+        skipped so the draw never leaves the canvas.
+        """
+        draw = ImageDraw.Draw(canvas)
+        thickness = max(1, self._px(self.divider_thickness))
+        gap = self._px(self.spacing)
+        ink = self._color_ink(self.divider_color)
+        boundary = 0
+        for w in widths[:-1]:  # one rule per gap → one fewer than the number of columns
+            boundary += w
+            center = boundary + gap // 2
+            x0 = center - thickness // 2
+            x1 = min(x0 + thickness - 1, canvas_width - 1)
+            if 0 <= x0 <= x1:
+                draw.rectangle((x0, 0, x1, row_h - 1), fill=ink)
+            boundary += gap
 
     @staticmethod
     def _child_has_content(child: ElementBase, resolved: dict[str, Any]) -> bool:
@@ -1004,6 +1141,167 @@ class RowElement(ElementBase):
         return widths
 
 
+# ── Column container ─────────────────────────────────────────────────────────────
+@dataclass
+class ColumnElement(ElementBase):
+    """A vertical stack that lays its child elements out top-to-bottom in one column.
+
+    A ``column`` is the vertical mirror of :class:`RowElement`: where a row splits its width into
+    side-by-side columns, a column renders each child into the *full column width* (its own allocated
+    width) and stacks the resulting strips vertically. Each child self-aligns horizontally via its own
+    ``align`` and is drawn by its own renderer, so every per-element behaviour (fonts, padding,
+    two-color, empty-handling) is reused verbatim — a column behaves exactly like a miniature
+    top-level stack confined to its column's width.
+
+    Its purpose is to be a *cell* inside a :class:`RowElement`: a row child that is a column lets a
+    group of elements (e.g. a title above a subtitle) occupy one row column while another element
+    (e.g. a QR code) occupies the next — independent widths per column via the row's
+    :attr:`~ElementBase.width`/:attr:`~ElementBase.weight`, and independent vertical placement of the
+    whole column via its :attr:`~ElementBase.valign`. The layout is a single-level grid: a column
+    holds only leaf elements (no nested ``row``/``column``), enforced by the loader.
+
+    Empty children (an omitted optional field that renders a zero-height strip) contribute neither
+    height nor a gap, mirroring the engine's top-level compose so an absent field leaves no hole.
+    """
+
+    type: str = "column"
+    children: list[ElementBase] = field(default_factory=list)
+    spacing: int = COLUMN_DEFAULT_SPACING
+
+    def render(
+        self,
+        canvas_width: int,
+        resolved_fields: dict[str, Any],
+        fonts_dir: Path,
+        icons_dir: Path,
+        icon_collections_dir: Path,
+    ) -> Image.Image:
+        child_res = resolved_fields.get("__children__") or [{} for _ in self.children]
+        # Each child renders into the FULL column width and self-aligns horizontally; a column never
+        # sub-divides its width the way a row does. The guarded render substitutes a visible failure
+        # marker for a data-bearing child (QR/barcode/image) too wide for this column — otherwise its
+        # zero-height strip would be dropped below and the content would vanish silently even though
+        # the row-level guard only sees the column, not the graphic nested inside it.
+        strips = [
+            _guarded_child_strip(
+                child, canvas_width, res, fonts_dir, icons_dir, icon_collections_dir
+            )
+            for child, res in zip(self.children, child_res, strict=True)
+        ]
+        # Drop zero-height strips (an empty optional field) so they add neither height nor a gap —
+        # identical to the engine's top-level vertical compose, so an absent field leaves no hole.
+        visible = [s for s in strips if s.height > 0]
+        gap = self._px(self.spacing)
+        total_h = sum(s.height for s in visible) + gap * max(0, len(visible) - 1)
+        canvas = self._new_canvas(canvas_width, total_h)
+        if total_h == 0:
+            return canvas
+        y = 0
+        for strip in visible:
+            canvas.paste(strip, (0, y))
+            y += strip.height + gap
+        return canvas
+
+
+# ── List element ─────────────────────────────────────────────────────────────────
+@dataclass
+class ListElement(ElementBase):
+    """Render a templated string as a vertical list of marker-prefixed items.
+
+    A ``list`` splits its resolved :attr:`text` on :attr:`separator` (newline by default), drops
+    blank items, caps the count at :attr:`max_items`, prefixes each surviving item with a marker
+    (``"• "`` for ``bullet``, ``"1. "`` for ``number``, nothing for ``none``), and renders the joined
+    result through the shared :func:`_render_text_block` — so wrapping, alignment, sizing, fonts and
+    two-color all behave exactly as a ``text`` element. It exists because request field values are
+    plain strings: an inventory field like ``"bolts\nnuts\nwashers"`` becomes a real bulleted list
+    without needing array-typed fields.
+
+    v1 limitation: a single item that wraps onto multiple lines has no hanging indent — the marker
+    sits on the item's first line only. A thermal label's list items are short, so this is rarely
+    visible; a hanging indent is deferred.
+    """
+
+    type: str = "list"
+    text: str = ""
+    separator: str = LIST_DEFAULT_SEPARATOR
+    marker: str = LIST_DEFAULT_MARKER
+    size: int = FONT_SIZES["text"]
+    align: str = ALIGN_DEFAULT
+    bold: bool = False
+    max_items: int = LIST_DEFAULT_MAX_ITEMS
+
+    def _item_lines(self, text: str) -> list[str]:
+        """Split *text* into non-blank items (capped at max_items) and prefix each with the marker."""
+        items = [seg.strip() for seg in text.split(self.separator)]
+        items = [seg for seg in items if seg][: max(0, self.max_items)]
+        out: list[str] = []
+        for i, item in enumerate(items):
+            if self.marker == LIST_MARKER_BULLET:
+                out.append(f"{LIST_BULLET_GLYPH}{item}")
+            elif self.marker == LIST_MARKER_NUMBER:
+                out.append(f"{i + 1}. {item}")
+            else:  # LIST_MARKER_NONE
+                out.append(item)
+        return out
+
+    def _format_items(self, text: str) -> str:
+        """The marker-prefixed items joined into one block string (one item per line)."""
+        return "\n".join(self._item_lines(text))
+
+    def _budgeted_lines(self, items: list[str], font: _Font, effective_width: int) -> list[str]:
+        """Wrap each item and allocate the ``max_items`` line budget fairly across items.
+
+        Passing the joined block to :func:`_render_text_block` with a single ``max_lines`` cap slices
+        AFTER wrapping, so one long early item that wraps past the budget would silently swallow every
+        later item — dropping the label's core data. Instead, each item is guaranteed its first line
+        first; only then are leftover budget lines handed out (in order) to items that wrapped. The
+        total stays bounded by ``max_items`` (the bound the loader's strip-area guard assumes), while
+        no item can be omitted entirely.
+        """
+        wrapped = [_wrap_text(item, font, effective_width) or [""] for item in items]
+        kept = [lines[:1] for lines in wrapped]
+        remaining = max(0, self.max_items - len(kept))
+        for i, lines in enumerate(wrapped):
+            if remaining <= 0:
+                break
+            extra = min(len(lines) - 1, remaining)
+            if extra > 0:
+                kept[i] = lines[: 1 + extra]
+                remaining -= extra
+        return [line for group in kept for line in group]
+
+    def render(
+        self,
+        canvas_width: int,
+        resolved_fields: dict[str, Any],
+        fonts_dir: Path,
+        icons_dir: Path,
+        icon_collections_dir: Path,
+    ) -> Image.Image:
+        text = str(resolved_fields.get("__text__", self.text))
+        items = self._item_lines(text)
+        if not items:
+            # An empty/blank field (e.g. an omitted optional list) renders nothing — like an empty
+            # text element — so it adds no strip to the stack and leaves no gap.
+            return self._new_canvas(canvas_width, 0)
+        font = _load_font(fonts_dir, self._px(self.size), self.bold)
+        flat = self._budgeted_lines(items, font, canvas_width - 2 * self._px(8))
+        return _render_text_block(
+            "\n".join(flat),
+            font,
+            canvas_width,
+            self.align,
+            # `flat` is already wrapped to `effective_width` and holds at most max_items lines, so
+            # this cap is a no-op backstop and the pre-wrapped lines are not re-split.
+            self.max_items,
+            self._px(8),
+            self.scale,
+            self._canvas_mode,
+            self._bg,
+            self._ink,
+        )
+
+
 # ── Factory ────────────────────────────────────────────────────────────────────
 ELEMENT_REGISTRY: dict[str, type[ElementBase]] = {
     "title": TitleElement,
@@ -1017,6 +1315,8 @@ ELEMENT_REGISTRY: dict[str, type[ElementBase]] = {
     "box": BoxElement,
     "spacer": SpacerElement,
     "row": RowElement,
+    "column": ColumnElement,
+    "list": ListElement,
 }
 
 
@@ -1055,8 +1355,8 @@ def build_element(spec: dict[str, Any], scale: int = 1, red_active: bool = False
     filtered.pop("_red_active", None)
     if scale != 1:
         filtered["scale"] = scale
-    # Container elements (row) carry a list of child specs; build them recursively at the same scale
-    # AND the same two-color mode so children share the row's canvas mode/ink semantics.
+    # Container elements (row/column) carry a list of child specs; build them recursively at the same
+    # scale AND the same two-color mode so children share the container's canvas mode/ink semantics.
     if isinstance(filtered.get("children"), list):
         filtered["children"] = [
             build_element(c, scale=scale, red_active=red_active)

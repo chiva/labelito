@@ -7,9 +7,19 @@ fields:
   optional: [contents, qr]
 layout:
   - {type: spacer, size: 8}
-  - {type: title, text: "{{title}}", max_lines: 1, align: left, bold: true}
-  - {type: line}
-  - {type: text, text: "{{contents}}", size: 28, align: left, max_lines: 4}
-  - {type: text, text: "[[stored]]: {{date}}", size: 18, align: left}
-  - {type: qr, data: "{{qr}}", size: 140, align: right}
+  # Left column: bold title, rule, a bulleted contents list, then the stored date.
+  # Right column: the inventory QR, pinned to the top so it aligns with the title.
+  # `contents` is a semicolon-separated field, e.g. "bolts; nuts; washers" — a `;` (not the list
+  # element's default newline) keeps the items enterable from the web UI's single-line field inputs.
+  - type: row
+    align_items: top
+    spacing: 12
+    children:
+      - type: column
+        children:
+          - {type: title, text: "{{title}}", max_lines: 1, align: left, bold: true}
+          - {type: line}
+          - {type: list, text: "{{contents}}", separator: ";", size: 26, align: left, marker: bullet, max_items: 5}
+          - {type: text, text: "[[stored]]: {{date}}", size: 18, align: left}
+      - {type: qr, data: "{{qr}}", size: 130, width: 146, align: right, valign: top}
   - {type: spacer, size: 8}

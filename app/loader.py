@@ -16,6 +16,9 @@ from app.render.elements import (
     FA_STYLES,
     FONT_SIZES,
     KNOWN_COLLECTIONS,
+    LIST_DEFAULT_MAX_ITEMS,
+    LIST_MARKER_CHOICES,
+    TEXT_BACKGROUND_CHOICES,
     VALIGN_CHOICES,
     _safe_icon_name,
 )
@@ -126,7 +129,18 @@ VALID_ELEMENT_TYPES = {
     "box",
     "spacer",
     "row",
+    "column",
+    "list",
 }
+# Container elements — the only types that carry a ``children`` list. The layout is a single-level
+# grid: a ``row`` lays children side-by-side and may contain ``column``s; a ``column`` stacks
+# children vertically and may contain only leaf elements. No deeper nesting (row-in-row,
+# column-in-column, row-in-column) is permitted — see :func:`_validate_element`.
+CONTAINER_TYPES = frozenset({"row", "column"})
+# Text-family elements that accept the shared `background`/`border`/`border_color` decorations.
+TEXT_FAMILY_TYPES = frozenset({"title", "subtitle", "text"})
+# Upper bound on a list `separator` string length — a delimiter is one or a few chars, never a blob.
+MAX_LIST_SEPARATOR_LEN = 8
 
 
 class TemplateLoadError(ValueError):
@@ -240,11 +254,18 @@ def _require_int(
 # (int, not "32") and bounded so a tiny YAML cannot drive an unbounded allocation. Cosmetic enums
 # (align/valign/color/symbology/style) are validated elsewhere and intentionally omitted.
 _ELEMENT_NUMERIC_BOUNDS: dict[str, tuple[tuple[str, int, int], ...]] = {
-    "title": (("max_lines", 1, MAX_TEXT_LINES),),
-    "subtitle": (("max_lines", 1, MAX_TEXT_LINES),),
+    "title": (("max_lines", 1, MAX_TEXT_LINES), ("border", 0, MAX_ELEMENT_DIMENSION)),
+    "subtitle": (("max_lines", 1, MAX_TEXT_LINES), ("border", 0, MAX_ELEMENT_DIMENSION)),
     # `text` size is a font point size (MAX_FONT_SIZE), additionally area-guarded against max_lines
     # in _validate_element_numerics; qr/icon size render as a sizexsize square (MAX_SQUARE_DIMENSION).
-    "text": (("size", 1, MAX_FONT_SIZE), ("max_lines", 1, MAX_TEXT_LINES)),
+    "text": (
+        ("size", 1, MAX_FONT_SIZE),
+        ("max_lines", 1, MAX_TEXT_LINES),
+        ("border", 0, MAX_ELEMENT_DIMENSION),
+    ),
+    # `list` mirrors `text`: a font point size plus a max item count (the wrapped-line ceiling), with
+    # the size x max_items product area-guarded in _validate_element_numerics.
+    "list": (("size", 1, MAX_FONT_SIZE), ("max_items", 1, MAX_TEXT_LINES)),
     "qr": (("size", 1, MAX_SQUARE_DIMENSION),),
     "barcode": (("height", 1, MAX_ELEMENT_DIMENSION),),
     "image": (("max_height", 1, MAX_ELEMENT_DIMENSION),),
@@ -321,6 +342,32 @@ def _validate_element_numerics(file_name: str, label: str, el: dict[str, Any]) -
                 f"the font size or set a smaller max_lines so the rendered text strip stays bounded"
             )
 
+    # `list` has the same quadratic exposure as `text`: font `size` x the item count drives the strip
+    # height (one line per item, plus wrapping). Bound the product the same way. Both scalars are, by
+    # the absent-vs-null check above, either ABSENT (dataclass default applies) or a finite in-range
+    # int, so the effective value is the present int else the default (FONT_SIZES["text"] /
+    # LIST_DEFAULT_MAX_ITEMS).
+    if str(el_type) == "list":
+        size = el.get("size")
+        max_items = el.get("max_items")
+        effective_size = (
+            size if isinstance(size, int) and not isinstance(size, bool) else FONT_SIZES["text"]
+        )
+        effective_items = (
+            max_items
+            if isinstance(max_items, int) and not isinstance(max_items, bool)
+            else LIST_DEFAULT_MAX_ITEMS
+        )
+        if effective_size * effective_items > MAX_TEXT_STRIP_PRODUCT:
+            shown_items = (
+                max_items if isinstance(max_items, int) else f"{LIST_DEFAULT_MAX_ITEMS} (default)"
+            )
+            raise TemplateLoadError(
+                f"{file_name}: {label} list 'size' x 'max_items' ({effective_size} x {shown_items} "
+                f"= {effective_size * effective_items}) must be <= {MAX_TEXT_STRIP_PRODUCT}; reduce "
+                f"the font size or set a smaller max_items so the rendered list strip stays bounded"
+            )
+
 
 def _require_choice(
     file_name: str, label: str, key: str, value: Any, choices: frozenset[str]
@@ -332,6 +379,18 @@ def _require_choice(
     if str(value) not in choices:
         raise TemplateLoadError(
             f"{file_name}: {label} '{key}' must be one of {sorted(choices)}, got {value!r}"
+        )
+
+
+def _require_bool(file_name: str, label: str, key: str, value: Any) -> None:
+    """Reject a toggle control that is not a real YAML boolean.
+
+    The renderer gates on plain truthiness (``if self.divider``/``if self.fill``), so the common
+    quoting typo ``divider: "false"`` would load as a non-empty *string* — truthy — and print the
+    feature the author meant to disable. A wrong-label failure, so reject any non-bool up front."""
+    if not isinstance(value, bool):
+        raise TemplateLoadError(
+            f"{file_name}: {label} '{key}' must be a boolean (true/false), got {value!r}"
         )
 
 
@@ -358,11 +417,20 @@ def _validate_row_child_sizing(file_name: str, label: str, child: dict[str, Any]
         _require_choice(file_name, label, "valign", valign, VALIGN_CHOICES)
 
 
-def _validate_element(file_name: str, label: str, el: Any, *, allow_row: bool = True) -> None:
-    """Validate one layout element's type (and icon/row specifics), recursing into row children.
+def _validate_element(
+    file_name: str,
+    label: str,
+    el: Any,
+    *,
+    allowed_containers: frozenset[str] = CONTAINER_TYPES,
+) -> None:
+    """Validate one layout element's type (and icon/container/decoration specifics), recursing.
 
-    ``allow_row`` is cleared for a row's children so a nested ``row`` is rejected loudly rather
-    than silently mis-rendering — v1 supports a single level of columns.
+    ``allowed_containers`` is the set of container types permitted at THIS position; it shrinks as
+    the walk descends so the layout stays a single-level grid: the top level allows both ``row`` and
+    ``column``; a row's children allow only ``column`` (a row may hold columns, not another row); a
+    column's children allow no container at all (columns hold only leaf elements). A container found
+    where it isn't allowed is rejected loudly rather than silently mis-rendering.
     """
     if not isinstance(el, dict):
         raise TemplateLoadError(f"{file_name}: {label} must be a mapping")
@@ -372,6 +440,12 @@ def _validate_element(file_name: str, label: str, el: Any, *, allow_row: bool = 
             f"{file_name}: {label} unknown element type {el_type!r}; "
             f"valid: {sorted(VALID_ELEMENT_TYPES)}"
         )
+    if el_type in CONTAINER_TYPES and el_type not in allowed_containers:
+        raise TemplateLoadError(
+            f"{file_name}: {label} a {el_type!r} cannot be nested here — the layout is a "
+            f"single-level grid: a 'row' may contain 'column's, and a 'column' may contain only "
+            f"leaf elements (no row-in-row, column-in-column, or row-in-column)"
+        )
     # Bound every render-affecting numeric attribute (sizes, heights, paddings, line counts) BEFORE
     # render/save so a tiny YAML cannot drive an unbounded PIL allocation or an OverflowError.
     _validate_element_numerics(file_name, label, el)
@@ -380,6 +454,16 @@ def _validate_element(file_name: str, label: str, el: Any, *, allow_row: bool = 
     # ignored value. Only honoured when a print resolves red=true; otherwise the element draws black.
     if "color" in el:
         _require_choice(file_name, label, "color", el["color"], COLOR_CHOICES)
+    # Text-family decorations: `background` (badge/banner fill) and `border`+`border_color` (boxed
+    # text). Validate the enums up front like `color`; `border` (a pixel count) is bounded by the
+    # numeric guard above. Only meaningful on text/title/subtitle — a stray value elsewhere is a typo.
+    if el_type in TEXT_FAMILY_TYPES:
+        if "background" in el:
+            _require_choice(
+                file_name, label, "background", el["background"], TEXT_BACKGROUND_CHOICES
+            )
+        if "border_color" in el:
+            _require_choice(file_name, label, "border_color", el["border_color"], COLOR_CHOICES)
     if el_type == "icon":
         _validate_icon(file_name, label, el)
     if el_type == "image" and "field" in el:
@@ -391,17 +475,41 @@ def _validate_element(file_name: str, label: str, el: Any, *, allow_row: bool = 
             raise TemplateLoadError(
                 f"{file_name}: {label} image 'field' must be a non-empty string, got {image_field!r}"
             )
+    if el_type == "box" and "fill" in el:
+        _require_bool(file_name, label, "fill", el["fill"])
+    if el_type == "list":
+        if "bold" in el:
+            _require_bool(file_name, label, "bold", el["bold"])
+        if "marker" in el:
+            _require_choice(file_name, label, "marker", el["marker"], LIST_MARKER_CHOICES)
+        if "separator" in el:
+            sep = el["separator"]
+            if not isinstance(sep, str) or not 1 <= len(sep) <= MAX_LIST_SEPARATOR_LEN:
+                raise TemplateLoadError(
+                    f"{file_name}: {label} list 'separator' must be a string of 1.."
+                    f"{MAX_LIST_SEPARATOR_LEN} chars, got {sep!r}"
+                )
     if el_type == "row":
-        if not allow_row:
-            raise TemplateLoadError(
-                f"{file_name}: {label} a 'row' may not contain another 'row' (nesting unsupported)"
-            )
         if "spacing" in el:
             _require_int(
                 file_name, label, "spacing", el["spacing"], minimum=0, maximum=MAX_ELEMENT_DIMENSION
             )
         if "align_items" in el:
             _require_choice(file_name, label, "align_items", el["align_items"], VALIGN_CHOICES)
+        # Optional vertical dividers between columns.
+        if "divider" in el:
+            _require_bool(file_name, label, "divider", el["divider"])
+        if "divider_thickness" in el:
+            _require_int(
+                file_name,
+                label,
+                "divider_thickness",
+                el["divider_thickness"],
+                minimum=1,
+                maximum=MAX_ELEMENT_DIMENSION,
+            )
+        if "divider_color" in el:
+            _require_choice(file_name, label, "divider_color", el["divider_color"], COLOR_CHOICES)
         children = el.get("children")
         if not isinstance(children, list) or not children:
             raise TemplateLoadError(
@@ -409,15 +517,34 @@ def _validate_element(file_name: str, label: str, el: Any, *, allow_row: bool = 
             )
         for j, child in enumerate(children):
             child_label = f"{label}.children[{j}]"
-            _validate_element(file_name, child_label, child, allow_row=False)
+            # A row may hold columns but not another row (single-level grid).
+            _validate_element(
+                file_name, child_label, child, allowed_containers=frozenset({"column"})
+            )
             _validate_row_child_sizing(file_name, child_label, child)
+    elif el_type == "column":
+        if "spacing" in el:
+            _require_int(
+                file_name, label, "spacing", el["spacing"], minimum=0, maximum=MAX_ELEMENT_DIMENSION
+            )
+        children = el.get("children")
+        if not isinstance(children, list) or not children:
+            raise TemplateLoadError(
+                f"{file_name}: {label} 'column' requires a non-empty 'children' list"
+            )
+        for j, child in enumerate(children):
+            child_label = f"{label}.children[{j}]"
+            # A column holds only leaf elements — no container may nest inside it.
+            _validate_element(file_name, child_label, child, allowed_containers=frozenset())
     elif "children" in el:
-        # Only a 'row' renders children (it is the sole element with that dataclass field). A
-        # 'children' list on any other element is silently ignored at render time, yet the recursive
-        # image/token walkers would still descend into it — so an ignored child could mark a text
-        # field as an image, bypassing the text-size cap and corrupting history. Reject it so
+        # Only a container ('row'/'column') renders children (the sole elements with that dataclass
+        # field). A 'children' list on any other element is silently ignored at render time, yet the
+        # recursive image/token walkers would still descend into it — so an ignored child could mark
+        # a text field as an image, bypassing the text-size cap and corrupting history. Reject it so
         # validation, rendering, and history all traverse exactly the same element tree.
-        raise TemplateLoadError(f"{file_name}: {label} only a 'row' element may have 'children'")
+        raise TemplateLoadError(
+            f"{file_name}: {label} only a 'row' or 'column' element may have 'children'"
+        )
 
 
 # Conservative per-type fallback defaults for the cumulative height estimate. These mirror the
@@ -459,8 +586,9 @@ def _estimate_element_height(el: dict[str, Any]) -> int:
 
     Maps each element type to its height-driving attribute (reusing the dataclass defaults when the
     attribute is absent) and adds the common vertical padding. For a ``row`` the children render
-    side-by-side, so the row's height is the TALLEST child, not the sum. Used only by the cumulative
-    budget guard (:data:`MAX_TOTAL_STRIP_HEIGHT`); it is intentionally an upper bound, not exact.
+    side-by-side, so the row's height is the TALLEST child; for a ``column`` they stack, so its
+    height is the SUM (plus inter-child spacing). Used only by the cumulative budget guard
+    (:data:`MAX_TOTAL_STRIP_HEIGHT`); it is intentionally an upper bound, not exact.
     """
     el_type = str(el.get("type"))
     padding = _int_attr(el, "padding_top", _DEFAULT_PADDING) + _int_attr(
@@ -475,6 +603,23 @@ def _estimate_element_height(el: dict[str, Any]) -> int:
                 (_estimate_element_height(c) for c in children if isinstance(c, dict)), default=0
             )
         return padding + child_max
+
+    if el_type == "column":
+        # Children stack vertically, so the column's height is their SUM plus the spacing gaps.
+        children = el.get("children")
+        child_dicts = (
+            [c for c in children if isinstance(c, dict)] if isinstance(children, list) else []
+        )
+        child_sum = sum(_estimate_element_height(c) for c in child_dicts)
+        spacing = _int_attr(el, "spacing", 0) * max(0, len(child_dicts) - 1)
+        return padding + child_sum + spacing
+
+    if el_type == "list":
+        # size x max_items (the finite default when omitted) x the line-height factor — the same
+        # product the strip-area guard bounds, turned into pixels.
+        size = _int_attr(el, "size", FONT_SIZES["text"])
+        max_items = _int_attr(el, "max_items", LIST_DEFAULT_MAX_ITEMS)
+        return padding + size * max_items * _TEXT_LINE_HEIGHT_FACTOR
 
     if el_type == "text":
         # size x effective max_lines (the finite default when omitted) x the line-height
@@ -525,27 +670,34 @@ def _validate_layout_budget(file_name: str, layout: list[Any]) -> None:
 
     Per-element caps don't bound the WHOLE layout: hundreds of individually valid elements compose
     into hundreds of MB of strips before the engine's final raster clamp. Two cheap guards — an
-    element-count cap (:data:`MAX_LAYOUT_ELEMENTS`, counting row children) and a summed conservative
+    element-count cap (:data:`MAX_LAYOUT_ELEMENTS`, counting container children) and a summed conservative
     height budget (:data:`MAX_TOTAL_STRIP_HEIGHT`) — bound the worst-case allocation without a
     compose refactor. Called after per-element validation, so every numeric value is already an
     in-range int.
     """
+
+    def count_elements(el: Any) -> int:
+        """The element plus every (transitively) nested container child — a row/column of N leaves
+        is N+1 elements, and a row holding a column of M leaves is 1 + 1 + M."""
+        if not isinstance(el, dict):  # already rejected by _validate_element; defensive
+            return 0
+        n = 1
+        children = el.get("children")
+        if isinstance(children, list):
+            n += sum(count_elements(c) for c in children)
+        return n
+
     total_count = 0
     total_height = 0
     for el in layout:
         if not isinstance(el, dict):  # already rejected by _validate_element; defensive
             continue
-        children = el.get("children")
-        # Count the row itself plus each child individually — a row of N children is N+1 elements.
-        if str(el.get("type")) == "row" and isinstance(children, list):
-            total_count += 1 + len(children)
-        else:
-            total_count += 1
+        total_count += count_elements(el)
         total_height += _estimate_element_height(el)
 
     if total_count > MAX_LAYOUT_ELEMENTS:
         raise TemplateLoadError(
-            f"{file_name}: layout has {total_count} elements (counting row children); the maximum is "
+            f"{file_name}: layout has {total_count} elements (counting container children); the maximum is "
             f"{MAX_LAYOUT_ELEMENTS}. A real label needs far fewer — split into multiple templates"
         )
     if total_height > MAX_TOTAL_STRIP_HEIGHT:

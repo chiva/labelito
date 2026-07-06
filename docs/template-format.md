@@ -126,7 +126,21 @@ into a single vertical stack at the label's printable width.
 | `color` | enum | `black` | `red` draws this element in the red layer — honoured only on two-color models when the print resolves `red=true`; otherwise it draws black (output is byte-identical to a plain label). |
 | `width`, `weight`, `valign` | — | — | Column hints honoured **only** inside a [`row`](#row); inert on a stand-alone element. |
 
-Unknown attributes on an element are ignored (except `children`, which is allowed only on a `row`).
+Unknown attributes on an element are ignored (except `children`, which is allowed only on a
+[`row`](#row) or [`column`](#column)).
+
+### Badge & boxed text (text-family decorations)
+
+`title`, `subtitle`, and `text` accept two optional decorations, freely combined:
+
+| Attribute | Type | Default | Effect |
+|---|---|---|---|
+| `background` | `none`/`black`/`red` | `none` | **Badge / inverse text.** Fills the whole strip with the given ink and draws the glyphs in white — a solid banner (e.g. `FRAGILE`). `red` prints red on a two-color model, black otherwise. |
+| `border` | int 0–10000 (px) | `0` | **Boxed / framed text.** Draws an outline of this thickness around the strip. `0` ⇒ no frame. |
+| `border_color` | `black`/`red` | `black` | Colour of the `border` outline (red honoured only in two-color mode). |
+
+`background` alone ⇒ a filled banner; `border` alone ⇒ a boxed field; both ⇒ a framed banner. The
+fill/border span the full strip width. See the `shipping-badge` template for a worked example.
 
 ### Element types
 
@@ -141,10 +155,12 @@ cannot change the size, only `max_lines`.
 | `align` | `left`/`center`/`right` | `left` |
 | `max_lines` | int 1–200 | `2` |
 | `bold` | bool | `true` (title) / `false` (subtitle) |
+| `background`, `border`, `border_color` | — | — | See [Badge & boxed text](#badge--boxed-text-text-family-decorations). |
 
 ```yaml
 - {type: title, text: "{{title}}", max_lines: 2, align: center}
 - {type: subtitle, text: "{{subtitle}}", max_lines: 2, align: center}
+- {type: title, text: "FRAGILE", background: black, align: center}   # inverse banner
 ```
 
 #### `text`
@@ -158,12 +174,14 @@ Body text with an author-controlled font size.
 | `align` | `left`/`center`/`right` | `left` |
 | `bold` | bool | `false` |
 | `max_lines` | int 1–200 | `10` |
+| `background`, `border`, `border_color` | — | — | See [Badge & boxed text](#badge--boxed-text-text-family-decorations). |
 
 `size × max_lines` is additionally bounded (≤ 4000) so a large font and many lines cannot compose an
 unbounded strip.
 
 ```yaml
 - {type: text, text: "{{line1}}", size: 26, align: left}
+- {type: text, text: "REF {{ref}}", border: 3, align: center}   # boxed field
 ```
 
 #### `qr`
@@ -244,39 +262,85 @@ A horizontal rule.
 - {type: line}
 ```
 
+#### `list`
+
+A vertical list built from a single templated string, split into marker-prefixed items. It reuses
+the `text` renderer, so wrapping/alignment/fonts behave the same. Because request fields are plain
+strings, a field like `"bolts\nnuts\nwashers"` becomes a real bulleted list without array-typed
+fields.
+
+| Attribute | Type | Default |
+|---|---|---|
+| `text` | string (templated) | `""` |
+| `separator` | string 1–8 chars | `"\n"` (newline) |
+| `marker` | `bullet`/`number`/`none` | `bullet` |
+| `size` | int 1–512 (pt) | `32` |
+| `align` | `left`/`center`/`right` | `left` |
+| `bold` | bool | `false` |
+| `max_items` | int 1–200 | `20` |
+
+Blank items are dropped; the list is capped at `max_items`. `size × max_items` is bounded (≤ 4000)
+like `text`. A single item that wraps has no hanging indent (the marker sits on its first line only).
+
+The default `\n` separator suits API/programmatic callers (send `"a\nb\nc"`), but the web UI renders
+each field as a single-line input that can't accept newlines. For a list a person fills in from the
+browser, pick an enterable separator such as `;` (`"a; b; c"`) — the shipped `storage-box-qr` and
+`two-column` examples do this. Items are stripped, so spaces around the separator don't matter.
+
+```yaml
+- {type: list, text: "{{contents}}", marker: bullet, size: 26}
+- {type: list, text: "{{steps}}", separator: ";", marker: number}
+```
+
 #### `box`
 
-A rectangular outline.
+A rectangle — outlined by default, or a solid bar with `fill`.
 
 | Attribute | Type | Default |
 |---|---|---|
 | `height` | int 1–10000 (px) | `40` |
 | `border` | int 0–10000 (px) | `2` |
+| `fill` | bool | `false` |
+
+With `fill: true` the rectangle is filled solid (a colored bar / background block); combine with
+`color: red` on a two-color model for a red bar. Without `fill` only the `border` outline is drawn.
 
 #### `spacer`
 
-Vertical whitespace.
+Whitespace. `size` is always the strip **height** (a vertical gap). To create a **horizontal** gap,
+put a spacer inside a [`row`](#row) and give it a `width` (fixed) or `weight` (flexible push) — the
+row controls its width, `size` does not. The row's own `spacing` already gaps every column.
 
 | Attribute | Type | Default |
 |---|---|---|
 | `size` | int 0–10000 (px) | `16` |
 
 ```yaml
-- {type: spacer, size: 12}
+- {type: spacer, size: 12}                    # vertical gap
+- type: row
+  children:
+    - {type: title, text: "{{a}}"}
+    - {type: spacer, weight: 1}               # flexible push (like margin:auto)
+    - {type: title, text: "{{b}}", align: right}
 ```
 
 #### `row`
 
-A horizontal band that lays its children out side-by-side in columns. One level of nesting only — a
-`row` may not contain another `row`.
+A horizontal band that lays its children out side-by-side in columns. A row's child may be a
+[`column`](#column) but **not** another `row` — the layout is a single-level grid.
 
 | Attribute | Type | Default |
 |---|---|---|
 | `children` | non-empty list of elements | — (required) |
 | `align_items` | `top`/`center`/`bottom` | `center` |
 | `spacing` | int 0–10000 (px) | `8` |
+| `divider` | bool | `false` |
+| `divider_thickness` | int 1–10000 (px) | `2` |
+| `divider_color` | `black`/`red` | `black` |
 
-Each child may carry column hints (inert outside a row):
+With `divider: true` a vertical rule is drawn in each inter-column gap, spanning the full row height
+(a row-level option because a child element cannot know the row's final height). Each child may carry
+column hints (inert outside a row):
 
 | Child attribute | Type | Default | Notes |
 |---|---|---|---|
@@ -292,13 +356,44 @@ Each child may carry column hints (inert outside a row):
     - {type: icon, name: check, collection: fontawesome, size: 64, width: 80, align: right}
 ```
 
+> Note: the too-narrow-column failure marker (a crossed box drawn when a QR/barcode/image column is
+> too small to render) applies only to a **direct** row child, not to one nested inside a `column`.
+> Keep data-bearing graphics as direct row children where possible.
+
+#### `column`
+
+A vertical stack — the mirror of `row`. It renders its children top-to-bottom into its own column
+width, so a group of stacked elements (e.g. a title over a subtitle) can sit in one row column beside
+another element (e.g. a QR). A `column` may appear at the top level or as a child of a `row`, and
+holds **only leaf elements** — no nested `row` or `column`.
+
+| Attribute | Type | Default |
+|---|---|---|
+| `children` | non-empty list of leaf elements | — (required) |
+| `spacing` | int 0–10000 (px) | `0` | Extra vertical gap between stacked children (each leaf already has its own padding). |
+
+An empty optional child (a blank field) contributes neither height nor a gap. When a column is a row
+child, its width and vertical placement come from the row (`width`/`weight`/`valign`).
+
+```yaml
+- type: row
+  align_items: center
+  spacing: 12
+  children:
+    - type: column                              # text stack (flexible width)
+      children:
+        - {type: title, text: "{{title}}", align: left}
+        - {type: subtitle, text: "{{subtitle}}", align: left}
+    - {type: qr, data: "{{qr}}", size: 160, width: 176, align: right}
+```
+
 ---
 
 ## Layout-wide limits
 
 | Limit | Value | Why |
 |---|---|---|
-| Max elements per layout | 64 (counting row children) | Bounds a "thousand tiny elements" allocation. |
+| Max elements per layout | 64 (counting container children) | Bounds a "thousand tiny elements" allocation. |
 | Max combined declared height | ~40000 px | A label taller than the printer's maximum raster cannot print anyway. |
 | Max single pixel dimension | 10000 px | Bounds any one element's allocation. |
 | Max QR/icon square dimension | 2000 px | Square allocation is quadratic. |

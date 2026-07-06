@@ -925,6 +925,51 @@ def _failure_placeholder(
     return img
 
 
+def _guarded_child_strip(
+    child: ElementBase,
+    width: int,
+    resolved: dict[str, Any],
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> Image.Image:
+    """Render a container child, substituting a visible failure marker when its column is too narrow.
+
+    A data-bearing child (QR/barcode/image) handed a column too narrow to draw its content would
+    otherwise vanish silently — a QR clips, a barcode/image collapses to a blank strip — while the
+    API still reports a successful print (and for image jobs the blob is then stripped from history,
+    so the loss is unrecoverable on reprint). This replaces that silent gap with a crossed box.
+
+    Shared by :class:`RowElement` (direct children) and :class:`ColumnElement` (children nested one
+    level down inside a row column) so the guard fires regardless of nesting: a column drops
+    zero-height strips, so without this a too-narrow image/barcode inside a column would be filtered
+    away with no marker. QR clipping is predicted from its fixed size (it never blanks); barcode and
+    image are detected by the blank strip their own renderers return when the column collapses.
+    """
+    if (
+        isinstance(child, QRElement)
+        and RowElement._child_has_content(child, resolved)
+        and width
+        < child._px(child.size) + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
+    ):
+        return _failure_placeholder(
+            width, child._px(child.size), child._canvas_mode, child._bg, child._ink
+        )
+    strip = child.render(width, resolved, fonts_dir, icons_dir, icon_collections_dir)
+    if (
+        isinstance(child, BarcodeElement | ImageElement)
+        and RowElement._child_has_content(child, resolved)
+        and strip.height == 0
+    ):
+        marker_h = (
+            child._px(child.height)
+            if isinstance(child, BarcodeElement)
+            else child._px(ROW_FAILURE_PLACEHOLDER_HEIGHT)
+        )
+        return _failure_placeholder(width, marker_h, child._canvas_mode, child._bg, child._ink)
+    return strip
+
+
 # ── Row container ────────────────────────────────────────────────────────────────
 @dataclass
 class RowElement(ElementBase):
@@ -963,41 +1008,10 @@ class RowElement(ElementBase):
     ) -> Image.Image:
         child_res = resolved_fields.get("__children__") or [{} for _ in self.children]
         widths = self._column_widths(canvas_width)
-        strips: list[Image.Image] = []
-        for child, w, res in zip(self.children, widths, child_res, strict=True):
-            # A data-bearing child (QR/barcode/image) given a column too narrow to draw its content
-            # would otherwise vanish silently — a QR clips, a barcode/image collapses to a blank
-            # strip — while the API still reports a successful print (and for image jobs the blob is
-            # then stripped from history, so the loss is unrecoverable). Replace that silent gap with
-            # a visible crossed box so the failure is unmistakable on the printed label. QR clipping
-            # is predicted from its fixed size (it never blanks); barcode/image are detected by the
-            # blank strip their own renderers return when the column collapses.
-            if (
-                isinstance(child, QRElement)
-                and self._child_has_content(child, res)
-                and w
-                < child._px(child.size)
-                + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
-            ):
-                strips.append(
-                    _failure_placeholder(
-                        w, child._px(child.size), child._canvas_mode, child._bg, child._ink
-                    )
-                )
-                continue
-            strip = child.render(w, res, fonts_dir, icons_dir, icon_collections_dir)
-            if (
-                isinstance(child, BarcodeElement | ImageElement)
-                and self._child_has_content(child, res)
-                and strip.height == 0
-            ):
-                marker_h = (
-                    child._px(child.height)
-                    if isinstance(child, BarcodeElement)
-                    else child._px(ROW_FAILURE_PLACEHOLDER_HEIGHT)
-                )
-                strip = _failure_placeholder(w, marker_h, child._canvas_mode, child._bg, child._ink)
-            strips.append(strip)
+        strips: list[Image.Image] = [
+            _guarded_child_strip(child, w, res, fonts_dir, icons_dir, icon_collections_dir)
+            for child, w, res in zip(self.children, widths, child_res, strict=True)
+        ]
         row_h = max((s.height for s in strips), default=0)
         canvas = self._new_canvas(canvas_width, row_h)
         if row_h == 0:
@@ -1164,9 +1178,14 @@ class ColumnElement(ElementBase):
     ) -> Image.Image:
         child_res = resolved_fields.get("__children__") or [{} for _ in self.children]
         # Each child renders into the FULL column width and self-aligns horizontally; a column never
-        # sub-divides its width the way a row does.
+        # sub-divides its width the way a row does. The guarded render substitutes a visible failure
+        # marker for a data-bearing child (QR/barcode/image) too wide for this column — otherwise its
+        # zero-height strip would be dropped below and the content would vanish silently even though
+        # the row-level guard only sees the column, not the graphic nested inside it.
         strips = [
-            child.render(canvas_width, res, fonts_dir, icons_dir, icon_collections_dir)
+            _guarded_child_strip(
+                child, canvas_width, res, fonts_dir, icons_dir, icon_collections_dir
+            )
             for child, res in zip(self.children, child_res, strict=True)
         ]
         # Drop zero-height strips (an empty optional field) so they add neither height nor a gap —
@@ -1211,7 +1230,7 @@ class ListElement(ElementBase):
     bold: bool = False
     max_items: int = LIST_DEFAULT_MAX_ITEMS
 
-    def _format_items(self, text: str) -> str:
+    def _item_lines(self, text: str) -> list[str]:
         """Split *text* into non-blank items (capped at max_items) and prefix each with the marker."""
         items = [seg.strip() for seg in text.split(self.separator)]
         items = [seg for seg in items if seg][: max(0, self.max_items)]
@@ -1223,7 +1242,33 @@ class ListElement(ElementBase):
                 out.append(f"{i + 1}. {item}")
             else:  # LIST_MARKER_NONE
                 out.append(item)
-        return "\n".join(out)
+        return out
+
+    def _format_items(self, text: str) -> str:
+        """The marker-prefixed items joined into one block string (one item per line)."""
+        return "\n".join(self._item_lines(text))
+
+    def _budgeted_lines(self, items: list[str], font: _Font, effective_width: int) -> list[str]:
+        """Wrap each item and allocate the ``max_items`` line budget fairly across items.
+
+        Passing the joined block to :func:`_render_text_block` with a single ``max_lines`` cap slices
+        AFTER wrapping, so one long early item that wraps past the budget would silently swallow every
+        later item — dropping the label's core data. Instead, each item is guaranteed its first line
+        first; only then are leftover budget lines handed out (in order) to items that wrapped. The
+        total stays bounded by ``max_items`` (the bound the loader's strip-area guard assumes), while
+        no item can be omitted entirely.
+        """
+        wrapped = [_wrap_text(item, font, effective_width) or [""] for item in items]
+        kept = [lines[:1] for lines in wrapped]
+        remaining = max(0, self.max_items - len(kept))
+        for i, lines in enumerate(wrapped):
+            if remaining <= 0:
+                break
+            extra = min(len(lines) - 1, remaining)
+            if extra > 0:
+                kept[i] = lines[: 1 + extra]
+                remaining -= extra
+        return [line for group in kept for line in group]
 
     def render(
         self,
@@ -1234,19 +1279,20 @@ class ListElement(ElementBase):
         icon_collections_dir: Path,
     ) -> Image.Image:
         text = str(resolved_fields.get("__text__", self.text))
-        formatted = self._format_items(text)
-        if not formatted:
+        items = self._item_lines(text)
+        if not items:
             # An empty/blank field (e.g. an omitted optional list) renders nothing — like an empty
             # text element — so it adds no strip to the stack and leaves no gap.
             return self._new_canvas(canvas_width, 0)
         font = _load_font(fonts_dir, self._px(self.size), self.bold)
+        flat = self._budgeted_lines(items, font, canvas_width - 2 * self._px(8))
         return _render_text_block(
-            formatted,
+            "\n".join(flat),
             font,
             canvas_width,
             self.align,
-            # One marker line per item is the ceiling; a wrapped item may exceed it, but the loader's
-            # strip-area budget bounds size x max_items so the strip stays bounded either way.
+            # `flat` is already wrapped to `effective_width` and holds at most max_items lines, so
+            # this cap is a no-op backstop and the pre-wrapped lines are not re-split.
             self.max_items,
             self._px(8),
             self.scale,

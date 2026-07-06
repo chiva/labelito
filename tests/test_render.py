@@ -965,6 +965,43 @@ def test_column_inside_row_renders_at_allocated_width(
     assert _has_ink(img)
 
 
+def test_column_nested_narrow_qr_draws_failure_placeholder(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A QR nested in a too-narrow row column shows the crossed box, not a silently dropped strip."""
+    qr = QRElement(data="https://example.com", size=120)
+    col = ColumnElement(children=[qr])
+    col.width = 40  # column narrower than the QR's fixed size ⇒ QR would clip/vanish
+    row = RowElement(children=[TextElement(text="x"), col])
+    res = {
+        "__children__": [
+            {"__text__": "x"},
+            {"__children__": [{"__data__": "https://example.com"}]},
+        ]
+    }
+    img = row.render(CANVAS_W, res, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.width == CANVAS_W
+    assert img.height >= 120  # the failure marker (QR-height) is present, not filtered away
+    assert _has_ink(img)  # crossed box drawn inside the column
+
+
+def test_column_nested_empty_qr_stays_blank(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """An empty (optional) QR field nested in a narrow column must NOT draw a false failure marker."""
+    qr = QRElement(data="", size=120)
+    col = ColumnElement(children=[qr])
+    col.width = 40
+    row = RowElement(children=[TextElement(text="x"), col])
+    res = {"__children__": [{"__text__": "x"}, {"__children__": [{"__data__": ""}]}]}
+    img = row.render(CANVAS_W, res, fonts_dir, icons_dir, icon_collections_dir)
+    # Only the text sibling contributes height; the empty QR column adds no crossed box.
+    text_only = TextElement(text="x").render(
+        CANVAS_W, {"__text__": "x"}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert img.height == text_only.height
+
+
 def test_missing_custom_icons_recurses_into_columns(icons_dir: Path) -> None:
     """Image/icon discovery must descend into a column (nested inside a row), like it does for rows."""
     from app.render.engine import missing_custom_icons
@@ -1063,6 +1100,33 @@ def test_list_custom_separator() -> None:
     """A non-newline `separator` splits items too."""
     lst = ListElement(text="", separator=";", marker="none")
     assert lst._format_items("a;b;c").split("\n") == ["a", "b", "c"]
+
+
+def test_list_long_first_item_does_not_starve_later_items(fonts_dir: Path) -> None:
+    """A long wrapping first item must not push later items out of the max_items line budget."""
+    from app.render.elements import _load_font
+
+    lst = ListElement(text="", size=24, marker="number", max_items=3)
+    font = _load_font(fonts_dir, 24, False)
+    items = lst._item_lines("word " * 20 + "\nSECOND\nTHIRD")  # first item wraps past 3 lines
+    lines = lst._budgeted_lines(
+        items, font, 300
+    )  # first item wraps; short later items fit one line
+    assert len(lines) == 3  # total stays within the max_items budget
+    assert lines[0].startswith("1. ")  # the long first item keeps exactly its first line
+    assert lines[1] == "2. SECOND"  # later items survive instead of being swallowed by the wrap
+    assert lines[2] == "3. THIRD"
+
+
+def test_list_budget_extends_wrapped_item_when_room(fonts_dir: Path) -> None:
+    """Leftover budget (fewer items than max_items) extends a wrapped item's continuation lines."""
+    from app.render.elements import _load_font
+
+    lst = ListElement(text="", size=24, marker="none", max_items=5)
+    font = _load_font(fonts_dir, 24, False)
+    items = lst._item_lines("word " * 20)  # single item that wraps to many lines
+    lines = lst._budgeted_lines(items, font, 120)
+    assert 1 < len(lines) <= 5  # the sole item spreads across the spare budget, still bounded
 
 
 # ── Row vertical divider ─────────────────────────────────────────────────────────

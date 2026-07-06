@@ -282,6 +282,11 @@ fields.
 Blank items are dropped; the list is capped at `max_items`. `size × max_items` is bounded (≤ 4000)
 like `text`. A single item that wraps has no hanging indent (the marker sits on its first line only).
 
+The default `\n` separator suits API/programmatic callers (send `"a\nb\nc"`), but the web UI renders
+each field as a single-line input that can't accept newlines. For a list a person fills in from the
+browser, pick an enterable separator such as `;` (`"a; b; c"`) — the shipped `storage-box-qr` and
+`two-column` examples do this. Items are stripped, so spaces around the separator don't matter.
+
 ```yaml
 - {type: list, text: "{{contents}}", marker: bullet, size: 26}
 - {type: list, text: "{{steps}}", separator: ";", marker: number}

@@ -236,8 +236,6 @@
   flex-direction: column;
   gap: 4px;
   padding: calc(11px * var(--gap)) 13px;
-  /* Reserve bottom-right room so the description never runs under the pinned .tpl-edit button. */
-  padding-bottom: calc(11px * var(--gap) + 22px);
   border-radius: 11px;
   cursor: pointer;
   border: 1px solid var(--line);
@@ -249,6 +247,12 @@
   position: absolute;
   opacity: 0;
   pointer-events: none;
+}
+
+/* Reserve room on the right of the title row for the top-right edit pencil, so a long name or the
+   red pill never runs under it. */
+.tpl-card-title {
+  padding-right: 20px;
 }
 
 .tpl-card .tpl-name {
@@ -306,20 +310,20 @@
   color: var(--blue);
 }
 
-/* Pencil "Edit in Studio" deep-link, pinned to the bottom-right corner of every template card.
-   Sized via font-size (the shared .icon is 1em) and coloured via currentColor. */
+/* Pencil "Edit in Studio" deep-link, pinned to the top-right corner of every template card,
+   alongside the title. Sized via font-size (the shared .icon is 1em) and coloured via currentColor. */
 .tpl-edit {
   position: absolute;
-  right: 6px;
-  bottom: 6px;
+  right: 5px;
+  top: 5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
   color: var(--blue);
-  font-size: 12px;
+  font-size: 10.5px;
   text-decoration: none;
   opacity: 0.85;
 }

@@ -205,15 +205,34 @@ def _entry(tmpl: Template, image_rel: str, fields: dict[str, Any]) -> dict[str, 
     }
 
 
+class GalleryBuildError(RuntimeError):
+    """A shipped template or translation catalog failed to load — the build must fail closed.
+
+    ``TemplateRegistry``/``Translator`` skip malformed files and record the reason in ``.errors``
+    rather than raising, so an unchecked build would deploy a gallery that silently omits the broken
+    template (or renders raw ``[[token]]`` chrome) while the Pages job still reports success — hiding
+    exactly the breakage this generated showcase exists to surface.
+    """
+
+
 def build(out_dir: Path) -> list[dict[str, Any]]:
     """Render every registered template into ``out_dir/assets/samples`` and write ``manifest.json``.
 
     Returns the manifest (list of per-template records), sorted by media size then name for a stable
-    gallery order. Raises if a template fails to render — a broken template should fail the build,
-    not silently vanish from the showcase.
+    gallery order. Raises :class:`GalleryBuildError` if any shipped template or translation catalog
+    fails to load (fail closed, so a broken template fails the deploy instead of vanishing from the
+    showcase), and propagates any render exception for the same reason.
     """
     names = sorted(app_main.registry.load_all())
+    if app_main.registry.errors:
+        raise GalleryBuildError(
+            "template(s) failed to load:\n  " + "\n  ".join(app_main.registry.errors)
+        )
     app_main.translator.load_all()
+    if app_main.translator.errors:
+        raise GalleryBuildError(
+            "translation catalog(s) failed to load:\n  " + "\n  ".join(app_main.translator.errors)
+        )
 
     samples_dir = out_dir / SAMPLES_SUBDIR
     samples_dir.mkdir(parents=True, exist_ok=True)

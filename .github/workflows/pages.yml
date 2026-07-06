@@ -11,13 +11,25 @@ name: Pages
 on:
   push:
     branches: [main]
-    # Templates and the render/build code feed the generated gallery, so a change to any of them must
-    # redeploy the site even when nothing under site/ changed.
+    # The generated gallery depends on far more than site/: the templates, the whole render stack
+    # (app/**), the build script, the translation catalogs rendered into dated-label chrome, the
+    # bundled sample image + icon collections (and the script/manifests that fetch/pin them), and the
+    # Python deps. A change to ANY of these must redeploy or the public previews/curl examples go
+    # stale. Listed explicitly rather than dropping the filter, so unrelated pushes still no-op.
     paths:
       - "site/**"
       - "templates/**"
-      - "scripts/build_gallery.py"
       - "app/**"
+      - "scripts/build_gallery.py"
+      - "scripts/fetch-icons.sh"
+      - "translations/**"
+      - "assets/icons/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".npmrc"
+      - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 

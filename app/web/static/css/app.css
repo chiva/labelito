@@ -230,11 +230,14 @@
 }
 
 .tpl-card {
+  position: relative;
   text-align: left;
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: calc(11px * var(--gap)) 13px;
+  /* Reserve bottom-right room so the description never runs under the pinned .tpl-edit button. */
+  padding-bottom: calc(11px * var(--gap) + 22px);
   border-radius: 11px;
   cursor: pointer;
   border: 1px solid var(--line);
@@ -303,23 +306,38 @@
   color: var(--blue);
 }
 
-/* "Customize" deep-link on an example card. Self-aligned so it doesn't stretch, and full-strength
-   even while the card is muted so the call-to-action stays legible. */
-.tpl-card-example .tpl-customize {
-  align-self: flex-start;
-  margin-top: 2px;
-  font-size: 11px;
-  font-weight: 600;
+/* Pencil "Edit in Studio" deep-link, pinned to the bottom-right corner of every template card.
+   Sized via font-size (the shared .icon is 1em) and coloured via currentColor. */
+.tpl-edit {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
   color: var(--blue);
+  font-size: 12px;
   text-decoration: none;
+  opacity: 0.85;
 }
 
-.tpl-card-example .tpl-customize:hover {
-  text-decoration: underline;
+.tpl-edit:hover,
+.tpl-edit:focus-visible {
+  opacity: 1;
+  background: color-mix(in srgb, var(--blue) 18%, transparent);
 }
 
-.tpl-card.selected .tpl-customize {
+.tpl-card.selected .tpl-edit {
   color: #fff;
+  opacity: 1;
+}
+
+.tpl-card.selected .tpl-edit:hover,
+.tpl-card.selected .tpl-edit:focus-visible {
+  background: rgba(255, 255, 255, 0.22);
 }
 
 /* ── Pills / badges / dots ──────────────────────────────────────────────────── */

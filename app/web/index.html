@@ -797,16 +797,19 @@
           descEl.className = 'tpl-desc';
           descEl.textContent = t.description || '';
           card.appendChild(descEl);
-          // Customize: deep-link a bundled example into the studio, preloaded, so the user can edit it
-          // and Copy/Download it into their own templates dir. Only when the editor is reachable.
-          // A plain <a> inside the <label> card: clicking it must NOT toggle the card's radio, so stop
-          // the event from bubbling to the label.
-          if (t.is_example && EDITOR_ENABLED) {
+          // Edit-in-Studio: deep-link this template into the editor, preloaded, so the user can edit it
+          // and Copy/Download/Save it into their own templates dir. Shown on EVERY card (examples and
+          // the user's own templates alike) whenever the editor is reachable. A pencil <a> inside the
+          // <label> card: clicking it must NOT toggle the card's radio, so stop the event from bubbling.
+          if (EDITOR_ENABLED) {
             const base = (window.LABELITO_BASE || '');
             const edit = document.createElement('a');
-            edit.className = 'tpl-customize';
+            edit.className = 'tpl-edit';
             edit.href = `${base}/editor?load=${encodeURIComponent(t.name)}`;
-            edit.textContent = 'Customize';
+            edit.title = 'Edit in Studio';
+            edit.setAttribute('aria-label', `Edit ${t.name} in Studio`);
+            const ic = iconNode('pen');
+            if (ic) edit.appendChild(ic);
             edit.addEventListener('click', (e) => { e.stopPropagation(); });
             card.appendChild(edit);
           }
@@ -863,7 +866,7 @@
       if (!anyExample) { el.style.display = 'none'; return; }
       el.style.display = '';
       el.append('Dimmed = bundled example');
-      if (EDITOR_ENABLED) el.append(' — Customize to make it your own.');
+      if (EDITOR_ENABLED) el.append(' — use the pencil to edit any template in the studio.');
     }
 
     // The "Show all sizes" / "Show only matching size" toggle + hidden-count hint in the Template

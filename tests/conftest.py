@@ -323,18 +323,24 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     main_mod._history.close()
     main_mod._history = build_history_store(main_mod.settings)
 
-    # Reload registry
-    main_mod.registry = TemplateRegistry(templates_d)
+    # Reload registry — via monkeypatch so the pristine module global is restored at teardown.
+    # tests/test_gallery_build.py reads app.main.registry/translator/engine against the REAL
+    # templates dir; a bare assignment here would leak the temp-dir registry into that module.
+    monkeypatch.setattr(main_mod, "registry", TemplateRegistry(templates_d))
     main_mod.registry.load_all()
 
     # Rebuild the translator + engine against the temp dirs (engine holds the translator)
-    main_mod.translator = Translator(translations_d, "en")
+    monkeypatch.setattr(main_mod, "translator", Translator(translations_d, "en"))
     main_mod.translator.load_all()
-    main_mod.engine = RenderEngine(
-        fonts_dir=fonts_d,
-        icons_dir=icons_d,
-        icon_collections_dir=icon_collections_d,
-        translator=main_mod.translator,
+    monkeypatch.setattr(
+        main_mod,
+        "engine",
+        RenderEngine(
+            fonts_dir=fonts_d,
+            icons_dir=icons_d,
+            icon_collections_dir=icon_collections_d,
+            translator=main_mod.translator,
+        ),
     )
 
     # Patch driver to avoid actual QL raster generation

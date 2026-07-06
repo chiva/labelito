@@ -50,3 +50,4 @@ docker-compose.override.yml
 
 # OS / editor
 .DS_Store
+commit-zips/

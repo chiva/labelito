@@ -14,8 +14,10 @@ from PIL import Image
 from app.render.elements import (
     ROW_MIN_FLEX_WIDTH,
     BoxElement,
+    ColumnElement,
     IconElement,
     LineElement,
+    ListElement,
     QRElement,
     RowElement,
     SpacerElement,
@@ -883,6 +885,221 @@ def test_engine_row_child_translation(engine: RenderEngine) -> None:
     png_en = engine.render_to_png(layout, {}, CANVAS_W, None, language="en")
     png_es = engine.render_to_png(layout, {}, CANVAS_W, None, language="es")
     assert png_en != png_es  # "Frozen" vs "Congelado" inside the row child
+
+
+# ── Column container ─────────────────────────────────────────────────────────────
+def test_column_stacks_children_height_is_sum(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A column's height is the sum of its children's strip heights (they stack top-to-bottom)."""
+    children = [TitleElement(text="A"), SubtitleElement(text="b"), TextElement(text="c")]
+    col = ColumnElement(children=children)
+    res = {"__children__": [{"__text__": "A"}, {"__text__": "b"}, {"__text__": "c"}]}
+    heights = [
+        c.render(300, r, fonts_dir, icons_dir, icon_collections_dir).height
+        for c, r in zip(children, res["__children__"], strict=True)
+    ]
+    img = col.render(300, res, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.width == 300
+    assert img.height == sum(heights)
+
+
+def test_column_drops_empty_optional_child(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """An empty optional child (blank subtitle) adds neither height nor a gap."""
+    col_full = ColumnElement(children=[TitleElement(text="A"), SubtitleElement(text="sub")])
+    col_empty = ColumnElement(children=[TitleElement(text="A"), SubtitleElement(text="")])
+    full = col_full.render(
+        300,
+        {"__children__": [{"__text__": "A"}, {"__text__": "sub"}]},
+        fonts_dir,
+        icons_dir,
+        icon_collections_dir,
+    )
+    empty = col_empty.render(
+        300,
+        {"__children__": [{"__text__": "A"}, {"__text__": ""}]},
+        fonts_dir,
+        icons_dir,
+        icon_collections_dir,
+    )
+    title_only = TitleElement(text="A").render(
+        300, {"__text__": "A"}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert empty.height == title_only.height  # the blank subtitle contributed nothing
+    assert full.height > empty.height
+
+
+def test_column_spacing_adds_gap(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A positive `spacing` widens the gap between stacked children by (n-1) x spacing."""
+    children = [TextElement(text="a"), TextElement(text="b")]
+    res = {"__children__": [{"__text__": "a"}, {"__text__": "b"}]}
+    tight = ColumnElement(children=children, spacing=0).render(
+        300, res, fonts_dir, icons_dir, icon_collections_dir
+    )
+    loose = ColumnElement(children=children, spacing=10).render(
+        300, res, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert loose.height == tight.height + 10  # one gap between two children
+
+
+def test_column_inside_row_renders_at_allocated_width(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A column that is a row child is laid out in the row's allocated column width, beside a QR."""
+    col = ColumnElement(children=[TitleElement(text="t"), SubtitleElement(text="s")])
+    qr = QRElement(data="https://example.com", size=120, align="right")
+    qr.width = 140
+    row = RowElement(children=[col, qr], spacing=10)
+    res = {
+        "__children__": [
+            {"__children__": [{"__text__": "t"}, {"__text__": "s"}]},
+            {"__data__": "https://example.com"},
+        ]
+    }
+    img = row.render(CANVAS_W, res, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.width == CANVAS_W
+    assert _has_ink(img)
+
+
+def test_missing_custom_icons_recurses_into_columns(icons_dir: Path) -> None:
+    """Image/icon discovery must descend into a column (nested inside a row), like it does for rows."""
+    from app.render.engine import missing_custom_icons
+
+    layout = [
+        {
+            "type": "row",
+            "children": [{"type": "column", "children": [{"type": "icon", "name": "ghost"}]}],
+        }
+    ]
+    assert missing_custom_icons(layout, icons_dir) == {"ghost"}
+
+
+# ── Badge / inverse text & boxed text ────────────────────────────────────────────
+def test_text_background_fills_strip_inverse(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A `background` fills the whole strip with ink (a corner is dark) and glyphs draw white."""
+    plain = TextElement(text="X", size=30, align="center")
+    badge = TextElement(text="X", size=30, align="center", background="black")
+    p = plain.render(300, {"__text__": "FRAGILE"}, fonts_dir, icons_dir, icon_collections_dir)
+    b = badge.render(300, {"__text__": "FRAGILE"}, fonts_dir, icons_dir, icon_collections_dir)
+    assert p.load()[2, 2] == 255  # plain text: white background corner
+    assert b.load()[2, 2] == 0  # badge: filled (ink) background corner
+
+
+def test_text_border_draws_frame(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A `border` draws an ink outline at the strip edge while the interior stays white."""
+    boxed = TextElement(text="X", size=24, align="center", border=3)
+    img = boxed.render(300, {"__text__": "SN-1"}, fonts_dir, icons_dir, icon_collections_dir)
+    px = img.load()
+    assert px[0, 0] == 0  # top-left corner is on the border
+    assert px[0, img.height // 2] == 0  # left edge is inked
+    # A mid-strip band clear of the border and glyphs stays white.
+    assert px[img.width // 2, 6] == 255
+
+
+def test_text_background_red_uses_red_layer(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """In two-color mode a `background: red` badge fills pure red on an RGB canvas."""
+    badge = TextElement(text="X", size=30, align="center", background="red")
+    badge._red_active = True
+    img = badge.render(300, {"__text__": "HOT"}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.mode == "RGB"
+    assert img.load()[2, 2] == (255, 0, 0)  # red banner background
+
+
+def test_box_fill_is_solid(fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path) -> None:
+    """A filled box is solid ink at its center; an outlined box is white there."""
+    filled = BoxElement(height=30, fill=True)
+    outlined = BoxElement(height=30, fill=False)
+    f = filled.render(300, {}, fonts_dir, icons_dir, icon_collections_dir)
+    o = outlined.render(300, {}, fonts_dir, icons_dir, icon_collections_dir)
+    assert f.load()[150, 15] == 0  # center filled
+    assert o.load()[150, 15] == 255  # center hollow
+
+
+# ── List element ─────────────────────────────────────────────────────────────────
+def test_list_renders_bulleted_items(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A newline-separated field renders one strip taller than a single line, with ink drawn."""
+    lst = ListElement(text="{{c}}", size=24, marker="bullet")
+    one = lst.render(400, {"__text__": "only"}, fonts_dir, icons_dir, icon_collections_dir)
+    three = lst.render(400, {"__text__": "a\nb\nc"}, fonts_dir, icons_dir, icon_collections_dir)
+    assert three.height > one.height  # three items stack taller than one
+    assert _has_ink(three)
+
+
+def test_list_empty_field_is_blank(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A blank/absent list field renders a zero-height strip (like an empty text element)."""
+    lst = ListElement(text="{{c}}")
+    img = lst.render(400, {"__text__": "   "}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.height == 0
+
+
+def test_list_caps_at_max_items() -> None:
+    """`max_items` bounds the item count and drops blank items."""
+    lst = ListElement(text="", marker="none", max_items=2)
+    formatted = lst._format_items("a\n\nb\nc\nd")  # blank line dropped, capped to 2
+    assert formatted.split("\n") == ["a", "b"]
+
+
+def test_list_number_marker() -> None:
+    """The `number` marker prefixes 1./2./3. in order."""
+    lst = ListElement(text="", marker="number")
+    assert lst._format_items("x\ny\nz").split("\n") == ["1. x", "2. y", "3. z"]
+
+
+def test_list_custom_separator() -> None:
+    """A non-newline `separator` splits items too."""
+    lst = ListElement(text="", separator=";", marker="none")
+    assert lst._format_items("a;b;c").split("\n") == ["a", "b", "c"]
+
+
+# ── Row vertical divider ─────────────────────────────────────────────────────────
+def test_row_divider_draws_rule_in_gap(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """`divider` paints an ink rule centered in the gap between columns; without it the gap is white."""
+    children = [TextElement(text="L"), TextElement(text="R")]
+    res = {"__children__": [{"__text__": "L"}, {"__text__": "R"}]}
+    plain = RowElement(children=children, spacing=20).render(
+        400, res, fonts_dir, icons_dir, icon_collections_dir
+    )
+    ruled = RowElement(children=children, spacing=20, divider=True, divider_thickness=3).render(
+        400, res, fonts_dir, icons_dir, icon_collections_dir
+    )
+    widths = RowElement(children=children, spacing=20)._column_widths(400)
+    gap_center = widths[0] + 20 // 2  # first boundary + half the gap
+    y = ruled.height // 2
+    assert ruled.load()[gap_center, y] == 0  # divider ink in the gap
+    assert plain.load()[gap_center, y] == 255  # no divider ⇒ blank gap
+
+
+def test_row_divider_red_layer(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A red divider paints pure red in two-color mode."""
+    children = [TextElement(text="L"), TextElement(text="R")]
+    res = {"__children__": [{"__text__": "L"}, {"__text__": "R"}]}
+    row = RowElement(
+        children=children, spacing=20, divider=True, divider_thickness=3, divider_color="red"
+    )
+    row._red_active = True
+    img = row.render(400, res, fonts_dir, icons_dir, icon_collections_dir)
+    widths = RowElement(children=children, spacing=20)._column_widths(400)
+    gap_center = widths[0] + 20 // 2
+    assert img.mode == "RGB"
+    assert img.load()[gap_center, img.height // 2] == (255, 0, 0)
 
 
 # ── Date arithmetic — calendar math (deterministic, no clock dependency) ─────────

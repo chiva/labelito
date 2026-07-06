@@ -2642,3 +2642,26 @@ def test_edit_pencil_deep_link_preloads_editor(authed_page_examples: Page) -> No
     authed_page_examples.goto("/editor?load=shipped-example")
     yaml_box = authed_page_examples.locator("#yaml")
     expect(yaml_box).to_have_value(re.compile(r"name:\s*shipped-example"))
+
+
+def test_edit_pencil_hidden_when_templates_not_loadable(authed_page_examples_no_load: Page) -> None:
+    """With TEMPLATES_LOADABLE=false the /templates/{name}/source route 404s, so the editor cannot
+    preload a template — the print page must therefore hide the per-card `.tpl-edit` pencil on every
+    card and drop the legend's "use the pencil" hint. The dimmed-example legend itself still renders
+    (bundled examples are still present); only the pencil affordance is gated off."""
+    authed_page_examples_no_load.goto("/")
+
+    # The cards still render (this is only the loadability gate, not a template-listing failure), so
+    # wait for the example card before asserting the pencil's absence — the negative check must not
+    # race an unrendered grid.
+    example_card = authed_page_examples_no_load.locator('.tpl-card[data-name="shipped-example"]')
+    expect(example_card).to_have_count(1)
+
+    # No card — example or user's own — carries the edit pencil.
+    expect(authed_page_examples_no_load.locator("a.tpl-edit")).to_have_count(0)
+
+    # The legend still explains the dimming but omits the pencil hint.
+    legend = authed_page_examples_no_load.locator("#tpl-legend")
+    expect(legend).to_be_visible()
+    expect(legend).to_contain_text("Dimmed = bundled example")
+    expect(legend).not_to_contain_text("pencil")

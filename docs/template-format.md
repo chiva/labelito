@@ -369,7 +369,7 @@ holds **only leaf elements** — no nested `row` or `column`.
 
 | Attribute | Type | Default | Notes |
 |---|---|---|---|
-| `children` | non-empty list of leaf elements | — (required) | |
+| `children` | non-empty list of leaf elements | — | required |
 | `spacing` | int 0–10000 (px) | `0` | Extra vertical gap between stacked children (each leaf already has its own padding). |
 
 An empty optional child (a blank field) contributes neither height nor a gap. When a column is a row

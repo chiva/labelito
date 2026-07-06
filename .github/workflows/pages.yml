@@ -1,12 +1,36 @@
 name: Pages
 
-# Publishes the static site (landing + brand guidelines) from site/ to GitHub Pages.
+# Publishes the static site (landing + brand guidelines + label gallery) from site/ to GitHub Pages.
 # One-time repo setup: Settings → Pages → Source: "GitHub Actions".
+#
+# The gallery's per-template preview PNGs + manifest.json are NOT committed — they are rendered here
+# by scripts/build_gallery.py (the same render path the live /preview endpoint uses) so the gallery
+# can never drift from templates/. That render needs the DejaVu fonts and the icon collections, so
+# this job provisions them the same way the CI "icons" job does before building the site artifact.
 
 on:
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/pages.yml"]
+    # The generated gallery depends on far more than site/: the templates, the whole render stack
+    # (app/**), the build script, the translation catalogs rendered into dated-label chrome, the
+    # bundled sample image + icon collections (and the script/manifests that fetch/pin them), and the
+    # Python deps. A change to ANY of these must redeploy or the public previews/curl examples go
+    # stale. Listed explicitly rather than dropping the filter, so unrelated pushes still no-op.
+    paths:
+      - "site/**"
+      - "templates/**"
+      - "app/**"
+      - "scripts/build_gallery.py"
+      - "scripts/fetch-icons.sh"
+      - "translations/**"
+      - "assets/icons/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".npmrc"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -31,6 +55,22 @@ jobs:
           # Deploy-only job: it never pushes with git, so don't leave GITHUB_TOKEN in
           # .git/config where it could ride along into an uploaded artifact (zizmor: artipacked).
           persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      # Node + corepack pnpm mirror the Dockerfile `icons` build stage so the fetched layout matches.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+      - run: corepack enable
+      # cairosvg icon rasterization and the label text share the render stack, which needs DejaVu.
+      - name: Install system fonts
+        run: sudo apt-get install -y fonts-dejavu-core
+      - name: Fetch icon collections
+        run: bash scripts/fetch-icons.sh
+      - run: uv sync
+      - name: Render label gallery previews
+        run: uv run python scripts/build_gallery.py
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:

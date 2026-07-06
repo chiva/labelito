@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="https://chiva.github.io/labelito/">Website</a> ·
+  <a href="https://chiva.github.io/labelito/gallery.html">Label gallery</a> ·
   <a href="https://chiva.github.io/labelito/brand.html">Brand guidelines</a>
 </p>
 

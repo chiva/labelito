@@ -254,16 +254,16 @@ def test_image_field_replace_uses_last_pick(authed_page: Page) -> None:
     )
 
 
-def test_print_waits_for_pending_image_read(authed_page: Page) -> None:
-    """Print must not fire until an in-flight image read has committed.
+def test_print_disabled_while_image_reading(authed_page: Page) -> None:
+    """Print is disabled while an image read is in flight, then re-enabled once it commits.
 
-    Defers FileReader.readAsDataURL so the read is controllable: after choosing an image and clicking
-    Print, NO /print request may go out until the read is flushed — otherwise the label would print
-    without the just-chosen image (the server accepts an absent optional image).
+    Disabling the button (rather than awaiting inside doPrint) keeps the print snapshot synchronous:
+    the payload is exactly the click-time state, and a print can never be built from a half-loaded
+    image cache (which would submit the label without the just-chosen image). Uses a deferred
+    FileReader so the read is controllable.
     """
     import json as _json
 
-    # Queue readAsDataURL calls instead of running them; __flushFR() releases them.
     authed_page.add_init_script(
         """
         window.__frQueue = [];
@@ -274,12 +274,6 @@ def test_print_waits_for_pending_image_read(authed_page: Page) -> None:
         };
         """
     )
-    print_requests: list[str] = []
-    authed_page.on(
-        "request",
-        lambda r: print_requests.append(r.url) if r.url.endswith("/print") else None,
-    )
-
     authed_page.goto("/")
     _select_template(authed_page, IMAGE_TEMPLATE)
     authed_page.locator("#field-image").set_input_files(
@@ -287,60 +281,18 @@ def test_print_waits_for_pending_image_read(authed_page: Page) -> None:
     )
     authed_page.check("#dry-run")
 
-    # doPrint awaits the pending read — the click suspends there, so no request goes out yet.
-    authed_page.click("button.btn-print")
-    authed_page.wait_for_timeout(300)
-    assert not print_requests, "print must not be sent while an image read is pending"
+    # Read pending → Print disabled.
+    expect(authed_page.locator("button.btn-print")).to_be_disabled()
 
-    # Release the read; the awaited print now proceeds and carries the image.
+    # Release the read → Print re-enabled, and printing now carries the committed image.
+    authed_page.evaluate("window.__flushFR()")
+    expect(authed_page.locator("button.btn-print")).to_be_enabled()
     with authed_page.expect_response(
         lambda r: r.url.endswith("/print") and r.request.method == "POST"
     ) as resp_info:
-        authed_page.evaluate("window.__flushFR()")
-    response = resp_info.value
-    assert response.status == 200
-    payload = _json.loads(response.request.post_data)
-    assert payload["fields"].get("image"), "print sent after the read must carry the image"
-
-
-def test_print_aborts_if_template_switched_during_image_read(authed_page: Page) -> None:
-    """Switching templates while an image read is pending aborts the in-flight print click.
-
-    doPrint snapshots the template at click time and waits for the read; if the user navigates to a
-    different template before the read settles, the click must abort (no /print) rather than print the
-    later template's form — a different layout/geometry entirely.
-    """
-    authed_page.add_init_script(
-        """
-        window.__frQueue = [];
-        window.__flushFR = () => { const q = window.__frQueue.splice(0); q.forEach(fn => fn()); };
-        const orig = FileReader.prototype.readAsDataURL;
-        FileReader.prototype.readAsDataURL = function (blob) {
-          window.__frQueue.push(() => orig.call(this, blob));
-        };
-        """
-    )
-    print_requests: list[str] = []
-    authed_page.on(
-        "request",
-        lambda r: print_requests.append(r.url) if r.url.endswith("/print") else None,
-    )
-
-    authed_page.goto("/")
-    _select_template(authed_page, IMAGE_TEMPLATE)
-    authed_page.locator("#field-image").set_input_files(
-        files=[{"name": "logo.png", "mimeType": "image/png", "buffer": PNG_1PX}]
-    )
-    authed_page.check("#dry-run")
-
-    # Click Print (doPrint suspends awaiting the deferred read), then switch templates, then release.
-    authed_page.click("button.btn-print")
-    _select_template(authed_page, SAMPLE_TEMPLATE)
-    authed_page.evaluate("window.__flushFR()")
-    authed_page.wait_for_timeout(300)
-
-    assert not print_requests, "a template switch during the read must abort the print click"
-    expect(authed_page.locator(".status.info")).to_be_visible()
+        authed_page.click("button.btn-print")
+    payload = _json.loads(resp_info.value.request.post_data)
+    assert payload["fields"].get("image"), "print after the read must carry the image"
 
 
 def test_invalid_replacement_cancels_pending_image_read(authed_page: Page) -> None:

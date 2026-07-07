@@ -1210,29 +1210,16 @@
     });
 
     async function doPrint() {
-      // Snapshot the user's intent at CLICK time — template, text fields, copies, options — BEFORE the
-      // async wait for image reads below. The form stays editable during that wait, so building the
-      // payload after it could capture a later state (a different field value) than the one printed.
-      const payload = buildPayload();
-      const clickTemplate = selectedTemplateName;
-      // Wait for any in-flight image read to commit: clicking Print right after choosing a (large)
-      // image would otherwise submit it WITHOUT the image, and the server accepts an absent optional
-      // image — printing a blank/old label.
-      await awaitImageReads();
-      // If the user switched templates while the image loaded, the click-time snapshot no longer
-      // matches the visible form (different layout/geometry/fields) — abort rather than print a
-      // mismatched label. A same-template field edit keeps the click-time value (intent at click).
-      if (selectedTemplateName !== clickTemplate) {
-        showStatus('Template changed while the image loaded — press Print again.', 'info');
+      // A print must never be built from a half-loaded image. The Print button is disabled while any
+      // image read is in flight (syncImageReadState), so this is normally unreachable — but guard
+      // anyway rather than submit a label missing the just-chosen image. Keeping the snapshot below
+      // synchronous (no await) is what makes the payload the exact state at click time: fields,
+      // template, options and image can't change between the click and the send.
+      if (imageReadsPending()) {
+        showStatus('Still reading the selected image — try again in a moment.', 'info');
         return;
       }
-      // Merge the now-committed image for the click-time template (a pending read had not populated
-      // the cache when buildPayload ran above).
-      const clickTpl = templateMap[clickTemplate];
-      payload.fields = {
-        ...payload.fields,
-        ...collectImageFields(clickTpl ? clickTpl.image_fields : []),
-      };
+      const payload = buildPayload();
       // Snapshot the form revision at send time. On completion we only clear userOverride if it is
       // unchanged — so if the user starts editing the next label while this request is in flight, the
       // stale reply won't clear a guard their newer input has re-raised (and won't let the post-print
@@ -1395,6 +1382,16 @@
     document.getElementById('high-res').addEventListener('change', () => { saveOptions(); schedulePreview(); });
     const redToggle = document.getElementById('red');
     if (redToggle) redToggle.addEventListener('change', () => { saveOptions(); schedulePreview(); });  // absent on non-two-color models
+
+    // Disable Print while an image read is in flight (fired by the shared image widget), so doPrint —
+    // which snapshots the payload synchronously — can never run before the chosen image is committed
+    // to the cache. Re-enabled the moment all reads settle.
+    function syncImageReadState() {
+      const btn = document.querySelector('.btn-print');
+      if (btn) btn.disabled = imageReadsPending();
+    }
+    document.addEventListener('labelito:image-reads-changed', syncImageReadState);
+    syncImageReadState();
 
     // Re-render the preview when the nav's label language changes.
     onLanguageChange(() => doPreview());

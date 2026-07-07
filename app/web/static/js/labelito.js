@@ -412,16 +412,23 @@ const imageFieldData = new Map();
 const imageFieldGen = new Map();
 let _imageReadSeq = 0;
 
-// In-flight FileReader promises. A print must await these: buildPayload only sees the cache a read
-// populates on completion, so clicking Print before a (large) read settles would submit the label
-// WITHOUT the just-chosen image — and the server accepts an absent optional image, printing blank.
+// In-flight FileReader reads. While any is pending the print page disables its Print button (see
+// syncImageReadState), so a print is only ever built once the chosen image is committed to the
+// cache — never from a half-loaded state that would submit the label WITHOUT the just-chosen image
+// (the server accepts an absent optional image and prints blank). Keeping the print snapshot fully
+// synchronous (no await) also means fields/template can't change between click and send.
 const _pendingImageReads = new Set();
 
-// Resolve once every image read in flight has settled (success or failure). Loops so reads started
-// while awaiting are also awaited. A print/preview calls this before snapshotting the payload.
-async function awaitImageReads() {
-  while (_pendingImageReads.size) {
-    await Promise.allSettled(Array.from(_pendingImageReads));
+// Whether any image read is still in flight.
+function imageReadsPending() {
+  return _pendingImageReads.size > 0;
+}
+
+// Announce a change in pending-read state so a page can reflect it (e.g. toggle the Print button).
+// Guarded for the (test/headless) case where document is momentarily unavailable.
+function _notifyImageReadState() {
+  if (typeof document !== 'undefined' && document.dispatchEvent) {
+    document.dispatchEvent(new CustomEvent('labelito:image-reads-changed'));
   }
 }
 
@@ -454,7 +461,7 @@ function _acceptImageFile(name, file, wrap, onChange) {
     return;
   }
   const reader = new FileReader();
-  // A print/preview awaits this via awaitImageReads() so it can't submit before the read commits.
+  // Tracked in _pendingImageReads so the page can disable Print until this read commits.
   const done = new Promise((resolve) => {
     reader.onload = () => {
       try {
@@ -480,7 +487,11 @@ function _acceptImageFile(name, file, wrap, onChange) {
     };
   });
   _pendingImageReads.add(done);
-  done.finally(() => _pendingImageReads.delete(done));
+  _notifyImageReadState();
+  done.finally(() => {
+    _pendingImageReads.delete(done);
+    _notifyImageReadState();
+  });
   reader.readAsDataURL(file);
 }
 

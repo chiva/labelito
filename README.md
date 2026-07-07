@@ -166,7 +166,7 @@ layout:
 
 The repo ships **17 ready-to-use templates** — kitchen (`freezer-dated`, `fridge-dated`, `pantry`, …),
 generic (`simple-text`, `title-subtitle-qr`, …), and homelab/logistics (`cable-label`, `asset-tag`,
-`address`). These examples are **baked into the image** (at `/app/examples/templates`, outside the
+`address-62x29`). These examples are **baked into the image** (at `/app/examples/templates`, outside the
 `templates/` volume), so bind-mounting your own `templates/` directory — even an empty one — never
 hides them, and image upgrades ship new examples automatically. Your own files are loaded alongside
 and win over a bundled example of the same name. The eight shipped translation catalogs work the same

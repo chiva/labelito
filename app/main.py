@@ -967,6 +967,7 @@ def _render_template_preview(
         preview_rotate,
         language,
         now=now,
+        valign=tmpl.valign,
     )
     img = _preview_bw_convert(
         img,
@@ -1186,6 +1187,7 @@ def _execute_print(
             high_res=effective_high_res,
             red=effective_red,
             seq=seq,
+            valign=tmpl.valign,
         )
 
     # Convert a rendered PNG to QL raster bytes. copies=1 for the sequence path (one printer job per
@@ -1237,6 +1239,7 @@ def _execute_print(
                     now=now,
                     high_res=effective_high_res,
                     red=effective_red,
+                    valign=tmpl.valign,
                 ):
                     pass
             else:
@@ -1250,6 +1253,7 @@ def _execute_print(
                     now=now,
                     high_res=effective_high_res,
                     red=effective_red,
+                    valign=tmpl.valign,
                 )
         except Exception as exc:
             LABEL_ERRORS.labels(reason="render_error").inc()
@@ -1753,6 +1757,7 @@ def list_templates() -> list[TemplateInfo]:
             description=t.description,
             label=t.label,
             rotate=t.rotate,
+            valign=t.valign,
             fields=TemplateFieldContract(
                 required=t.required_fields,
                 optional=t.optional_fields,
@@ -2373,6 +2378,7 @@ async def parse_template(request: TemplateParseRequest) -> TemplateParseResponse
         description=tmpl.description,
         label=tmpl.label,
         rotate=tmpl.rotate,
+        valign=tmpl.valign,
         fields=TemplateFieldContract(
             required=tmpl.required_fields,
             optional=tmpl.optional_fields,

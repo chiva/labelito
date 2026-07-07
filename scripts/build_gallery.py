@@ -117,7 +117,7 @@ SAMPLES: dict[str, dict[str, Any]] = {
         "right_title": "Errands",
         "right_items": "Call bank; Renew pass; Book flight",
     },
-    "address": {
+    "address-62x29": {
         "name": "Alan Turing",
         "line1": "Bletchley Park",
         "line2": "Milton Keynes",
@@ -247,9 +247,13 @@ def build(out_dir: Path) -> list[dict[str, Any]]:
         image_rel = f"{SAMPLES_SUBDIR.as_posix()}/{name}.png"
         entries.append(_entry(tmpl, image_rel, fields))
 
-    # height_px is None for continuous labels (no fixed length); treat as 0 so those sort ahead of
-    # die-cut labels of the same width, keeping the order total and deterministic.
-    entries.sort(key=lambda e: (e["width_px"], e["height_px"] or 0, e["name"]))
+    # Die-cut labels (fixed height) lead the gallery, grouped by width then height; continuous tape
+    # (height_px is None) forms the bulk at the end. ``height_px is None`` is False (0) for die-cut and
+    # True (1) for continuous, so the boolean is the primary key. ``height_px or 0`` keeps the
+    # secondary size ordering total and deterministic within each group.
+    entries.sort(
+        key=lambda e: (e["height_px"] is None, e["width_px"], e["height_px"] or 0, e["name"])
+    )
     manifest_path = samples_dir / MANIFEST_NAME
     manifest_path.write_text(json.dumps(entries, indent=2, ensure_ascii=False) + "\n")
     return entries

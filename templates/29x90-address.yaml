@@ -2,11 +2,12 @@ name: address-29x90
 description: Address or file-folder label on 29×90 mm die-cut (DK-11201 family)
 label: "29x90"
 rotate: 90
+valign: center
 fields:
   required: [name]
   optional: [line1, line2, line3]
 layout:
-  - {type: title, text: "{{name}}", max_lines: 1, align: left, bold: true}
-  - {type: text, text: "{{line1}}", size: 28, align: left, max_lines: 1}
-  - {type: text, text: "{{line2}}", size: 28, align: left, max_lines: 1}
-  - {type: text, text: "{{line3}}", size: 28, align: left, max_lines: 1}
+  - {type: text, text: "{{name}}", size: 72, align: left, bold: true, max_lines: 1}
+  - {type: text, text: "{{line1}}", size: 50, align: left, max_lines: 1}
+  - {type: text, text: "{{line2}}", size: 50, align: left, max_lines: 1}
+  - {type: text, text: "{{line3}}", size: 50, align: left, max_lines: 1}

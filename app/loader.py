@@ -160,6 +160,7 @@ class Template:
         "required_fields",
         "rotate",
         "source_path",
+        "valign",
     )
 
     def __init__(
@@ -173,11 +174,13 @@ class Template:
         layout: list[dict[str, Any]],
         source_path: Path,
         is_example: bool = False,
+        valign: str = "top",
     ) -> None:
         self.name = name
         self.description = description
         self.label = label
         self.rotate = rotate
+        self.valign = valign
         self.required_fields = required_fields
         self.optional_fields = optional_fields
         self.layout = layout
@@ -755,6 +758,13 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
             f"{source_name}: 'rotate' must be one of {sorted(VALID_ROTATIONS)}, got {rotate}"
         )
 
+    # Top-level vertical placement of the whole composed block within a fixed die-cut canvas.
+    # Defaults to "top" (the historical top-anchored stack); "center"/"bottom" only take effect on
+    # die-cut media with leftover height. Validated against the same VALIGN_CHOICES the row/column
+    # cross-axis alignment uses, so an out-of-range value is a load error, not a silent fallback.
+    valign = str(raw.get("valign", "top"))
+    _require_choice(source_name, "template", "valign", valign, VALIGN_CHOICES)
+
     fields_spec = raw.get("fields", {})
     if not isinstance(fields_spec, dict):
         raise TemplateLoadError(f"{source_name}: 'fields' must be a mapping")
@@ -848,6 +858,7 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
         optional_fields=optional_fields,
         layout=layout,
         source_path=source_path,
+        valign=valign,
     )
 
 

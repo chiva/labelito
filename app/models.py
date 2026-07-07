@@ -268,6 +268,7 @@ class TemplateParseResponse(BaseModel):
     description: str
     label: str
     rotate: int
+    valign: str = "top"
     fields: TemplateFieldContract
 
 
@@ -314,6 +315,7 @@ class TemplateInfo(BaseModel):
                     "description": "Simple title + subtitle label",
                     "label": "62",
                     "rotate": 0,
+                    "valign": "top",
                     "fields": {"required": ["title"], "optional": ["subtitle"]},
                     "media": {"width_mm": 62.0, "media_type": "continuous"},
                 }
@@ -325,6 +327,7 @@ class TemplateInfo(BaseModel):
     description: str
     label: str
     rotate: int
+    valign: str = "top"
     fields: TemplateFieldContract
     # The media this template's label requires. None when the label is not a known brother_ql label
     # (the template still lists and prints; it just carries no compatibility badge).

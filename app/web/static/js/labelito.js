@@ -443,8 +443,13 @@ function _dataUrlToBase64(dataUrl) {
 // Read + validate a chosen/dropped File into imageFieldData[name], then refresh the widget preview
 // and notify the caller. Rejects a non-image type or an over-cap file with a toast; a rejected pick
 // leaves any already-COMMITTED image intact but still supersedes an older in-flight read.
-function _acceptImageFile(name, file, wrap, onChange) {
+//
+// `onSelect` fires SYNCHRONOUSLY here on any real selection/drop, before the async FileReader — the
+// print page uses it to mark the form user-edited immediately, so a background /printer/status poll
+// that lands during the read can't refocus the picker and discard the just-chosen image.
+function _acceptImageFile(name, file, wrap, onChange, onSelect) {
   if (!file) return;
+  if (onSelect) onSelect();
   // Claim a new generation on EVERY real selection/drop, BEFORE validation: picking (even an invalid)
   // file supersedes an older read still in flight, so that read is discarded instead of committing a
   // stale image that Print would then wait for and submit. A rejected pick does not touch
@@ -534,9 +539,11 @@ function _renderImagePreview(wrap, name, fileName, dataUrl) {
 }
 
 // Build a file-picker + drag-drop widget for an image field. `onChange` fires after a file is
-// accepted OR cleared (the page uses it to re-preview). The hidden <input> keeps the shared
+// accepted OR cleared (the page uses it to re-preview). `onSelect` (optional) fires SYNCHRONOUSLY
+// the instant a file is selected/dropped/cleared — before the async read — so the page can mark the
+// form user-edited before any background poll can interleave. The hidden <input> keeps the shared
 // id="field-<name>" convention so existing focus/e2e selectors keep working.
-function buildImageField(name, onChange) {
+function buildImageField(name, onChange, onSelect) {
   const wrap = document.createElement('div');
   wrap.className = 'image-field';
 
@@ -548,7 +555,7 @@ function buildImageField(name, onChange) {
   input.className = 'image-file-input';
   input.hidden = true;
   input.addEventListener('change', () =>
-    _acceptImageFile(name, input.files && input.files[0], wrap, onChange),
+    _acceptImageFile(name, input.files && input.files[0], wrap, onChange, onSelect),
   );
 
   const zone = document.createElement('div');
@@ -573,12 +580,13 @@ function buildImageField(name, onChange) {
     e.preventDefault();
     zone.classList.remove('dragover');
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    _acceptImageFile(name, file, wrap, onChange);
+    _acceptImageFile(name, file, wrap, onChange, onSelect);
   });
 
-  // Clearing (the × button, dispatched from _renderImagePreview) re-previews too, so the label
-  // updates to reflect the now-removed image — same onChange path as an accept.
+  // Clearing (the × button, dispatched from _renderImagePreview) marks the form user-edited (onSelect)
+  // and re-previews (onChange) so the label reflects the now-removed image — same paths as an accept.
   wrap.addEventListener('image-cleared', () => {
+    if (onSelect) onSelect();
     if (onChange) onChange();
   });
 

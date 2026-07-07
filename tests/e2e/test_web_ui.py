@@ -295,6 +295,62 @@ def test_print_disabled_while_image_reading(authed_page: Page) -> None:
     assert payload["fields"].get("image"), "print after the read must carry the image"
 
 
+def test_image_pick_survives_late_status_refocus(authed_page_snmp: Page) -> None:
+    """Choosing an image marks the form user-edited synchronously, so a background /printer/status
+    poll landing DURING the (async) read cannot refocus the picker and discard the just-chosen image.
+
+    Setup: pre-seed sessionStorage so the image template is restored as the selection with
+    userOverride still false (a submitted-choice restore skips the guard), and defer the FileReader so
+    the read is in flight when the roll becomes known.
+    """
+    # Restore the image template as an already-submitted choice → selected but userOverride stays
+    # false; and defer readAsDataURL so the read is controllable.
+    authed_page_snmp.add_init_script(
+        """
+        sessionStorage.setItem('labelito_template', 'image');
+        sessionStorage.setItem('labelito_choice_submitted', '1');
+        window.__frQueue = [];
+        window.__flushFR = () => { const q = window.__frQueue.splice(0); q.forEach(fn => fn()); };
+        const orig = FileReader.prototype.readAsDataURL;
+        FileReader.prototype.readAsDataURL = function (blob) {
+          window.__frQueue.push(() => orig.call(this, blob));
+        };
+        """
+    )
+    phase = {"reachable": False}
+
+    def handle(route: object) -> None:
+        if phase["reachable"]:
+            # A DIFFERENT roll (29mm) than the image template's 62mm — would refocus if unguarded.
+            body = _status_body(media_width_mm=29, media_type="continuous", media_length_mm=None)
+        else:
+            body = '{"state": "off", "uri": "tcp://192.0.2.10:9100", "reachable": false, "errors": []}'
+        route.fulfill(status=200, content_type="application/json", body=body)  # type: ignore[attr-defined]
+
+    authed_page_snmp.route("**/printer/status", handle)
+    authed_page_snmp.goto("/")
+
+    assert _selected_template(authed_page_snmp) == IMAGE_TEMPLATE
+    # Pick an image (read stays queued) — onSelect marks the form user-edited synchronously.
+    authed_page_snmp.locator("#field-image").set_input_files(
+        files=[{"name": "logo.png", "mimeType": "image/png", "buffer": PNG_1PX}]
+    )
+
+    # Roll becomes known mid-read; force the refresh the background poll would do.
+    phase["reachable"] = True
+    authed_page_snmp.evaluate("async () => { await refreshPrinterStatus(); }")
+
+    # The guard held: template unchanged and the image survives once the read is released.
+    assert _selected_template(authed_page_snmp) == IMAGE_TEMPLATE, (
+        "a late status refocus must not switch away from the image template after a pick"
+    )
+    authed_page_snmp.evaluate("window.__flushFR()")
+    committed = authed_page_snmp.evaluate(
+        "() => collectImageFields((currentTemplate().image_fields) || [])"
+    )
+    assert committed.get("image"), "the chosen image must survive a mid-read status refocus"
+
+
 def test_invalid_replacement_cancels_pending_image_read(authed_page: Page) -> None:
     """A rejected replacement pick cancels an older in-flight read.
 

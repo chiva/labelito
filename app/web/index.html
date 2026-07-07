@@ -940,13 +940,15 @@
         wrap.appendChild(lbl);
         if (isImage) {
           // A file-picker + drag-drop widget; the accepted image is base64-cached and merged into
-          // the payload's `fields` by buildPayload(). A pick/clear reprises the text-input wiring
-          // (mark override, bump revision, debounced preview) but never persists the blob.
-          wrap.appendChild(buildImageField(name, () => {
-            userOverride = true;
-            formRevision++;
-            doPreview();  // a pick/clear is a discrete event — preview immediately, no debounce
-          }));
+          // the payload's `fields` by buildPayload(). onSelect runs SYNCHRONOUSLY on pick/clear —
+          // marking the form user-edited before the async read, so a background /printer/status poll
+          // landing mid-read can't refocus the picker and discard the just-chosen image. onChange
+          // fires after the read commits to re-preview. The blob is never persisted.
+          wrap.appendChild(buildImageField(
+            name,
+            doPreview,  // onChange: re-preview once the read commits (discrete event, no debounce)
+            () => { userOverride = true; formRevision++; },  // onSelect: synchronous, pre-read
+          ));
         } else {
           const inp = document.createElement('input');
           inp.type = 'text';

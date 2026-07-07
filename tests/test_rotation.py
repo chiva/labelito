@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parent.parent
 _LABELS = {lbl.identifier: lbl for lbl in ALL_LABELS}
 
 _ADDRESS_FIELDS = {
-    "name": "Santiago Fernandez",
+    "name": "Ada Lovelace",
     "line1": "1234 Example Avenue, Apt 5B",
     "line2": "Brooklyn, NY 11201",
     "line3": "United States",

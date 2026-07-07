@@ -434,10 +434,16 @@ function _dataUrlToBase64(dataUrl) {
 }
 
 // Read + validate a chosen/dropped File into imageFieldData[name], then refresh the widget preview
-// and notify the caller. Rejects a non-image type or an over-cap file with a toast and no state
-// change, so an invalid pick leaves any previously-accepted image intact.
+// and notify the caller. Rejects a non-image type or an over-cap file with a toast; a rejected pick
+// leaves any already-COMMITTED image intact but still supersedes an older in-flight read.
 function _acceptImageFile(name, file, wrap, onChange) {
   if (!file) return;
+  // Claim a new generation on EVERY real selection/drop, BEFORE validation: picking (even an invalid)
+  // file supersedes an older read still in flight, so that read is discarded instead of committing a
+  // stale image that Print would then wait for and submit. A rejected pick does not touch
+  // already-committed data below, so a prior valid image is preserved.
+  const gen = ++_imageReadSeq;
+  imageFieldGen.set(name, gen);
   if (file.type && !file.type.startsWith('image/')) {
     showStatus(`"${file.name}" is not an image file.`, 'err');
     return;
@@ -447,10 +453,6 @@ function _acceptImageFile(name, file, wrap, onChange) {
     showStatus(`"${file.name}" is too large (max ${mb} MB).`, 'err');
     return;
   }
-  // Claim this read's generation only now (after validation): a rejected pick must leave a
-  // previously-accepted image — and its in-flight read — untouched.
-  const gen = ++_imageReadSeq;
-  imageFieldGen.set(name, gen);
   const reader = new FileReader();
   // A print/preview awaits this via awaitImageReads() so it can't submit before the read commits.
   const done = new Promise((resolve) => {

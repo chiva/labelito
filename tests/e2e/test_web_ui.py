@@ -303,6 +303,41 @@ def test_print_waits_for_pending_image_read(authed_page: Page) -> None:
     assert payload["fields"].get("image"), "print sent after the read must carry the image"
 
 
+def test_invalid_replacement_cancels_pending_image_read(authed_page: Page) -> None:
+    """A rejected replacement pick cancels an older in-flight read.
+
+    Pick valid image A (read deferred), then pick invalid B (rejected). When A's deferred read is
+    finally released it must NOT commit — the invalid pick superseded it — so no stale image A can
+    ride into a later print.
+    """
+    authed_page.add_init_script(
+        """
+        window.__frQueue = [];
+        window.__flushFR = () => { const q = window.__frQueue.splice(0); q.forEach(fn => fn()); };
+        const orig = FileReader.prototype.readAsDataURL;
+        FileReader.prototype.readAsDataURL = function (blob) {
+          window.__frQueue.push(() => orig.call(this, blob));
+        };
+        """
+    )
+    authed_page.goto("/")
+    _select_template(authed_page, IMAGE_TEMPLATE)
+
+    fi = authed_page.locator("#field-image")
+    # Valid A — its read is queued (deferred), not yet committed.
+    fi.set_input_files(files=[{"name": "A.png", "mimeType": "image/png", "buffer": _png_bytes(0, (16, 16))}])
+    # Invalid B (wrong type) — rejected synchronously, but must supersede A's pending read.
+    fi.set_input_files(files=[{"name": "B.txt", "mimeType": "text/plain", "buffer": b"not an image"}])
+    expect(authed_page.locator(".status.err")).to_be_visible()
+
+    # Release A's read; the generation bumped by B must cause it to be discarded.
+    authed_page.evaluate("window.__flushFR()")
+    committed = authed_page.evaluate(
+        "() => collectImageFields((currentTemplate().image_fields) || [])"
+    )
+    assert committed == {}, f"a superseded image must not commit, got fields {list(committed)}"
+
+
 def test_studio_undeclared_image_field_renders_picker(authed_page: Page) -> None:
     """An image element whose field is NOT in fields.required/optional is still fillable in the Studio.
 

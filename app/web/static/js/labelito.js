@@ -412,6 +412,19 @@ const imageFieldData = new Map();
 const imageFieldGen = new Map();
 let _imageReadSeq = 0;
 
+// In-flight FileReader promises. A print must await these: buildPayload only sees the cache a read
+// populates on completion, so clicking Print before a (large) read settles would submit the label
+// WITHOUT the just-chosen image — and the server accepts an absent optional image, printing blank.
+const _pendingImageReads = new Set();
+
+// Resolve once every image read in flight has settled (success or failure). Loops so reads started
+// while awaiting are also awaited. A print/preview calls this before snapshotting the payload.
+async function awaitImageReads() {
+  while (_pendingImageReads.size) {
+    await Promise.allSettled(Array.from(_pendingImageReads));
+  }
+}
+
 // Strip a FileReader data URL ("data:image/png;base64,AAAA…") down to the base64 payload the render
 // element decodes. Returns "" for an unexpected shape so a broken read can't smuggle a data: prefix
 // into the field (the server would then fail to decode it).
@@ -439,21 +452,33 @@ function _acceptImageFile(name, file, wrap, onChange) {
   const gen = ++_imageReadSeq;
   imageFieldGen.set(name, gen);
   const reader = new FileReader();
-  reader.onload = () => {
-    if (imageFieldGen.get(name) !== gen) return; // superseded by a newer pick / clear / reset
-    const b64 = _dataUrlToBase64(reader.result);
-    if (!b64) {
-      showStatus(`Could not read "${file.name}".`, 'err');
-      return;
-    }
-    imageFieldData.set(name, { dataUrl: reader.result, filename: file.name });
-    _renderImagePreview(wrap, name, file.name, reader.result);
-    if (onChange) onChange();
-  };
-  reader.onerror = () => {
-    if (imageFieldGen.get(name) !== gen) return;
-    showStatus(`Could not read "${file.name}".`, 'err');
-  };
+  // A print/preview awaits this via awaitImageReads() so it can't submit before the read commits.
+  const done = new Promise((resolve) => {
+    reader.onload = () => {
+      try {
+        if (imageFieldGen.get(name) !== gen) return; // superseded by a newer pick / clear / reset
+        const b64 = _dataUrlToBase64(reader.result);
+        if (!b64) {
+          showStatus(`Could not read "${file.name}".`, 'err');
+          return;
+        }
+        imageFieldData.set(name, { dataUrl: reader.result, filename: file.name });
+        _renderImagePreview(wrap, name, file.name, reader.result);
+        if (onChange) onChange();
+      } finally {
+        resolve();
+      }
+    };
+    reader.onerror = () => {
+      try {
+        if (imageFieldGen.get(name) === gen) showStatus(`Could not read "${file.name}".`, 'err');
+      } finally {
+        resolve();
+      }
+    };
+  });
+  _pendingImageReads.add(done);
+  done.finally(() => _pendingImageReads.delete(done));
   reader.readAsDataURL(file);
 }
 

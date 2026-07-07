@@ -254,6 +254,55 @@ def test_image_field_replace_uses_last_pick(authed_page: Page) -> None:
     )
 
 
+def test_print_waits_for_pending_image_read(authed_page: Page) -> None:
+    """Print must not fire until an in-flight image read has committed.
+
+    Defers FileReader.readAsDataURL so the read is controllable: after choosing an image and clicking
+    Print, NO /print request may go out until the read is flushed — otherwise the label would print
+    without the just-chosen image (the server accepts an absent optional image).
+    """
+    import json as _json
+
+    # Queue readAsDataURL calls instead of running them; __flushFR() releases them.
+    authed_page.add_init_script(
+        """
+        window.__frQueue = [];
+        window.__flushFR = () => { const q = window.__frQueue.splice(0); q.forEach(fn => fn()); };
+        const orig = FileReader.prototype.readAsDataURL;
+        FileReader.prototype.readAsDataURL = function (blob) {
+          window.__frQueue.push(() => orig.call(this, blob));
+        };
+        """
+    )
+    print_requests: list[str] = []
+    authed_page.on(
+        "request",
+        lambda r: print_requests.append(r.url) if r.url.endswith("/print") else None,
+    )
+
+    authed_page.goto("/")
+    _select_template(authed_page, IMAGE_TEMPLATE)
+    authed_page.locator("#field-image").set_input_files(
+        files=[{"name": "logo.png", "mimeType": "image/png", "buffer": PNG_1PX}]
+    )
+    authed_page.check("#dry-run")
+
+    # doPrint awaits the pending read — the click suspends there, so no request goes out yet.
+    authed_page.click("button.btn-print")
+    authed_page.wait_for_timeout(300)
+    assert not print_requests, "print must not be sent while an image read is pending"
+
+    # Release the read; the awaited print now proceeds and carries the image.
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/print") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.evaluate("window.__flushFR()")
+    response = resp_info.value
+    assert response.status == 200
+    payload = _json.loads(response.request.post_data)
+    assert payload["fields"].get("image"), "print sent after the read must carry the image"
+
+
 def test_studio_undeclared_image_field_renders_picker(authed_page: Page) -> None:
     """An image element whose field is NOT in fields.required/optional is still fillable in the Studio.
 

@@ -305,6 +305,35 @@ def test_image_element_base64(fonts_dir: Path, icons_dir: Path, icon_collections
     assert img.height > 0
 
 
+def test_image_element_preserves_grayscale_in_mono(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A monochrome image element keeps grey values instead of pre-thresholding to 1-bit.
+
+    Regression: the renderer used to hard-split every pixel at 128 (``0 if p < 128 else 255``)
+    BEFORE the pipeline's black/white conversion. That flattened all greys to pure black/white, so
+    the dither/threshold controls became no-ops and a mostly-dark photo printed as a solid block.
+    The mono strip must therefore retain intermediate greys for the later convert() to dither/threshold.
+    """
+    import base64
+    import io as _io
+
+    from app.render.elements import ImageElement
+
+    # A horizontal 0..255 gradient → many intermediate greys.
+    grad = Image.new("L", (256, 16))
+    grad.putdata([x for _ in range(16) for x in range(256)])
+    buf = _io.BytesIO()
+    grad.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+
+    el = ImageElement(field="image", max_height=100)
+    img = el.render(CANVAS_W, {"image": b64}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.mode == "L"
+    mids = [v for v in set(img.getdata()) if 0 < v < 255]
+    assert mids, "monochrome image must retain grey values, not be pre-thresholded to 0/255"
+
+
 def test_image_element_missing_field_returns_zero(
     fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
 ) -> None:

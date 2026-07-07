@@ -152,6 +152,20 @@ def test_list_templates(client: TestClient) -> None:
     assert "required" in t["fields"]
 
 
+def test_list_templates_reports_image_fields(client: TestClient) -> None:
+    """Each template's field contract names its image-backed fields so the web UI can render a file
+    picker instead of a text input; a text-only template reports an empty list."""
+    resp = client.get("/templates")
+    assert resp.status_code == 200
+    by_name = {t["name"]: t for t in resp.json()}
+    # image-test binds an `image` element to the `image` field; custom-image uses `photo`.
+    assert by_name["image-test"]["fields"]["image_fields"] == ["image"]
+    assert by_name["custom-image"]["fields"]["image_fields"] == ["photo"]
+    assert by_name["row-image"]["fields"]["image_fields"] == ["photo"]
+    # A template with no image element carries an empty list, not a missing key.
+    assert by_name["simple"]["fields"]["image_fields"] == []
+
+
 def test_list_templates_includes_continuous_media(client: TestClient) -> None:
     """Each template carries its required media (Step 6) so the UI can badge compatibility.
 
@@ -1255,6 +1269,76 @@ def _png_b64(size: tuple[int, int] = (80, 80)) -> str:
     buf = io.BytesIO()
     src.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
+
+
+def _gradient_png_b64(size: tuple[int, int] = (256, 64)) -> str:
+    """A horizontal 0..255 grayscale gradient — has mid-greys so dither vs threshold differ."""
+    w, h = size
+    grad = Image.new("L", size)
+    grad.putdata([int(x * 255 / (w - 1)) for _ in range(h) for x in range(w)])
+    buf = io.BytesIO()
+    grad.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _truncated_png_b64() -> str:
+    """A PNG valid at the header (IHDR/size parse) but with its pixel data truncated, so a full decode
+    raises OSError. Exercises the validate-time decode guard."""
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), (120, 120, 120)).save(buf, format="PNG")
+    full = buf.getvalue()
+    return base64.b64encode(full[: len(full) // 2]).decode()
+
+
+def _chunk_corrupt_png_b64() -> str:
+    """A header-valid PNG with a corrupted chunk (byte 36 zeroed), so a full decode raises PIL's
+    SyntaxError ("broken PNG file") — a different decode-failure type than truncation."""
+    buf = io.BytesIO()
+    Image.new("RGB", (10, 10), (120, 120, 120)).save(buf, format="PNG")
+    raw = bytearray(buf.getvalue())
+    raw[36] = 0
+    return base64.b64encode(bytes(raw)).decode()
+
+
+@pytest.mark.parametrize("bad_image", [_truncated_png_b64(), _chunk_corrupt_png_b64()])
+def test_preview_corrupt_image_is_422_not_500(client: TestClient, bad_image: str) -> None:
+    """A header-valid but undecodable image (truncated OR chunk-corrupt) is rejected as a clean 422 at
+    validation, not surfaced as a 500 when the renderer later fails to decode it."""
+    resp = client.post("/preview", json={"template": "image-test", "fields": {"image": bad_image}})
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize("bad_image", [_truncated_png_b64(), _chunk_corrupt_png_b64()])
+def test_print_corrupt_image_is_422_not_500(client: TestClient, bad_image: str) -> None:
+    """/print rejects an undecodable image up front (422) rather than reaching the print path and
+    failing with a 500."""
+    resp = client.post(
+        "/print",
+        json={"template": "image-test", "fields": {"image": bad_image}, "dry_run": True},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_preview_image_honours_dither_and_threshold(client: TestClient) -> None:
+    """dither and threshold materially change an image preview.
+
+    Regression: the image element pre-thresholded to 1-bit before the pipeline's black/white
+    conversion, so dither/threshold were no-ops on images (a grey gradient printed the same — a solid
+    block — regardless of the controls). With the element kept grayscale, the conversion now acts on
+    it: dithered output differs from hard-thresholded, and two thresholds differ from each other.
+    """
+    b64 = _gradient_png_b64()
+    fields = {"template": "image-test", "fields": {"image": b64}}
+
+    dithered = client.post("/preview", json={**fields, "options": {"dither": True}})
+    hard = client.post("/preview", json={**fields, "options": {"dither": False, "threshold": 50}})
+    assert dithered.status_code == 200 and hard.status_code == 200
+    assert dithered.content != hard.content, "dither must change a grayscale image preview"
+
+    low = client.post("/preview", json={**fields, "options": {"dither": False, "threshold": 20}})
+    high = client.post("/preview", json={**fields, "options": {"dither": False, "threshold": 80}})
+    assert low.status_code == 200 and high.status_code == 200
+    assert low.content != high.content, "threshold must change a grayscale image preview"
 
 
 def test_row_nested_image_renders(client: TestClient) -> None:
@@ -3447,6 +3531,41 @@ def test_templates_parse_detects_real_user_fields(client: TestClient) -> None:
     assert data["name"] == "draft-simple"
     assert data["fields"]["required"] == ["title"]
     assert data["fields"]["optional"] == ["subtitle"]
+
+
+def test_templates_parse_reports_image_fields(client: TestClient) -> None:
+    """The Studio's parse endpoint reports image-backed fields so the sample-field panel renders a
+    file picker; a text-only draft reports an empty list."""
+    image_yaml = """\
+name: draft-image
+description: An image element bound to a photo field
+label: "62"
+rotate: 0
+fields:
+  required: [photo]
+  optional: [caption]
+layout:
+  - {type: image, field: photo}
+  - {type: subtitle, text: "{{caption}}"}
+"""
+    resp = client.post("/templates/parse", json={"yaml": image_yaml})
+    assert resp.status_code == 200
+    assert resp.json()["fields"]["image_fields"] == ["photo"]
+
+    # A text-only draft reports no image fields (empty list, not a missing key).
+    resp = client.post("/templates/parse", json={"yaml": _DRAFT_YAML})
+    assert resp.status_code == 200
+    assert resp.json()["fields"]["image_fields"] == []
+
+
+def test_template_field_contract_image_fields_defaults_empty() -> None:
+    """image_fields defaults to [] so pre-existing constructors and serialized payloads that omit it
+    stay backward-compatible."""
+    from app.models import TemplateFieldContract
+
+    contract = TemplateFieldContract(required=["title"], optional=[])
+    assert contract.image_fields == []
+    assert contract.model_dump()["image_fields"] == []
 
 
 def test_templates_parse_excludes_computed_and_i18n_tokens(client: TestClient) -> None:

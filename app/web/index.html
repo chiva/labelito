@@ -902,14 +902,26 @@
       const t = currentTemplate();
       const container = document.getElementById('fields-container');
       container.replaceChildren();
+      // The form is being rebuilt for a (possibly new) template — drop any image cached under the
+      // previous one so it can't leak into this form. Image data is never persisted, so there is
+      // nothing to restore (restoreSavedFields only refills text inputs).
+      resetImageFields();
       if (!t) return;
+      const imageFields = t.image_fields || [];
+      // An image element's `field` need not be declared in required/optional (it isn't a {{token}},
+      // so the loader doesn't force it). Render a picker for any such field too — otherwise it would
+      // be unfillable and the label would silently preview/print blank. Treat it as optional (an
+      // absent image renders a zero-height strip, which is valid).
+      const declared = new Set([...t.required, ...t.optional]);
       const allFields = [
         ...t.required.map(f => ({name: f, optional: false})),
         ...t.optional.map(f => ({name: f, optional: true})),
+        ...imageFields.filter(f => !declared.has(f)).map(f => ({name: f, optional: true})),
       ];
       for (const {name, optional} of allFields) {
         const wrap = document.createElement('div');
         wrap.className = 'field';
+        const isImage = imageFields.includes(name);
         const lbl = document.createElement('label');
         lbl.className = 'field-label';
         lbl.htmlFor = `field-${name}`;
@@ -925,16 +937,29 @@
           req.textContent = ' *';
           lbl.appendChild(req);
         }
-        const inp = document.createElement('input');
-        inp.type = 'text';
-        inp.className = 'input';
-        inp.id = `field-${name}`;
-        inp.name = name;
-        inp.placeholder = name;
-        inp.addEventListener('input', () => { userOverride = true; formRevision++; saveFields(); });
-        inp.addEventListener('input', debounce(doPreview, 600));
         wrap.appendChild(lbl);
-        wrap.appendChild(inp);
+        if (isImage) {
+          // A file-picker + drag-drop widget; the accepted image is base64-cached and merged into
+          // the payload's `fields` by buildPayload(). onSelect runs SYNCHRONOUSLY on pick/clear —
+          // marking the form user-edited before the async read, so a background /printer/status poll
+          // landing mid-read can't refocus the picker and discard the just-chosen image. onChange
+          // fires after the read commits to re-preview. The blob is never persisted.
+          wrap.appendChild(buildImageField(
+            name,
+            doPreview,  // onChange: re-preview once the read commits (discrete event, no debounce)
+            () => { userOverride = true; formRevision++; },  // onSelect: synchronous, pre-read
+          ));
+        } else {
+          const inp = document.createElement('input');
+          inp.type = 'text';
+          inp.className = 'input';
+          inp.id = `field-${name}`;
+          inp.name = name;
+          inp.placeholder = name;
+          inp.addEventListener('input', () => { userOverride = true; formRevision++; saveFields(); });
+          inp.addEventListener('input', debounce(doPreview, 600));
+          wrap.appendChild(inp);
+        }
         container.appendChild(wrap);
       }
     }
@@ -942,7 +967,13 @@
     function gatherFields() {
       const t = currentTemplate();
       const fields = {};
+      const imageFields = t.image_fields || [];
       for (const name of [...t.required, ...t.optional]) {
+        // Image fields are file inputs whose .value is a browser fake path ("C:\fakepath\…"), not the
+        // image data — skip them here (the base64 is merged separately by buildPayload via
+        // collectImageFields). Reading .value would persist that fake path via saveFields and then
+        // throw InvalidStateError when restoreSavedFields assigns it back to a file input.
+        if (imageFields.includes(name)) continue;
         const el = document.getElementById(`field-${name}`);
         if (el && el.value.trim()) fields[name] = el.value.trim();
       }
@@ -982,7 +1013,10 @@
       let restoredAny = false;
       for (const [name, value] of Object.entries(entry.values)) {
         const el = document.getElementById(`field-${name}`);
-        if (el && typeof value === 'string') {
+        // Never assign to a file input: gatherFields no longer snapshots image fields, but a snapshot
+        // from an older build could still hold a fake path, and `el.value = <non-empty>` on a file
+        // input throws InvalidStateError — which would abort init before options/picker/preview.
+        if (el && el.type !== 'file' && typeof value === 'string') {
           el.value = value;
           restoredAny = true;
         }
@@ -995,9 +1029,12 @@
     }
 
     function buildPayload(extra = {}) {
+      const t = currentTemplate();
       return {
         template: selectedTemplateName,
-        fields: gatherFields(),
+        // gatherFields() is text-only (so image blobs are never persisted to localStorage); merge
+        // the base64 for any image fields here so both /preview and /print carry it.
+        fields: { ...gatherFields(), ...collectImageFields(t ? t.image_fields : []) },
         copies: parseInt(document.getElementById('copies').value, 10) || 1,
         dry_run: document.getElementById('dry-run').checked,
         language: currentLanguage(),
@@ -1175,6 +1212,15 @@
     });
 
     async function doPrint() {
+      // A print must never be built from a half-loaded image. The Print button is disabled while any
+      // image read is in flight (syncImageReadState), so this is normally unreachable — but guard
+      // anyway rather than submit a label missing the just-chosen image. Keeping the snapshot below
+      // synchronous (no await) is what makes the payload the exact state at click time: fields,
+      // template, options and image can't change between the click and the send.
+      if (imageReadsPending()) {
+        showStatus('Still reading the selected image — try again in a moment.', 'info');
+        return;
+      }
       const payload = buildPayload();
       // Snapshot the form revision at send time. On completion we only clear userOverride if it is
       // unchanged — so if the user starts editing the next label while this request is in flight, the
@@ -1338,6 +1384,16 @@
     document.getElementById('high-res').addEventListener('change', () => { saveOptions(); schedulePreview(); });
     const redToggle = document.getElementById('red');
     if (redToggle) redToggle.addEventListener('change', () => { saveOptions(); schedulePreview(); });  // absent on non-two-color models
+
+    // Disable Print while an image read is in flight (fired by the shared image widget), so doPrint —
+    // which snapshots the payload synchronously — can never run before the chosen image is committed
+    // to the cache. Re-enabled the moment all reads settle.
+    function syncImageReadState() {
+      const btn = document.querySelector('.btn-print');
+      if (btn) btn.disabled = imageReadsPending();
+    }
+    document.addEventListener('labelito:image-reads-changed', syncImageReadState);
+    syncImageReadState();
 
     // Re-render the preview when the nav's label language changes.
     onLanguageChange(() => doPreview());

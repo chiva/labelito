@@ -1756,6 +1756,7 @@ def list_templates() -> list[TemplateInfo]:
             fields=TemplateFieldContract(
                 required=t.required_fields,
                 optional=t.optional_fields,
+                image_fields=sorted(_image_field_names(t.layout)),
             ),
             media=_template_media(t.label),
             is_example=t.is_example,
@@ -2375,6 +2376,7 @@ async def parse_template(request: TemplateParseRequest) -> TemplateParseResponse
         fields=TemplateFieldContract(
             required=tmpl.required_fields,
             optional=tmpl.optional_fields,
+            image_fields=sorted(_image_field_names(tmpl.layout)),
         ),
     )
 
@@ -2625,14 +2627,24 @@ def _validate_upload_image(raw: bytes) -> None:
     try:
         with Image.open(io.BytesIO(raw)) as im:
             width, height = im.size
+            if width * height > MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    413, f"Image too large: {width}x{height} px (max {MAX_IMAGE_PIXELS} px)"
+                )
+            # ``Image.open`` and ``.size`` only parse the header. Force a full pixel decode so a
+            # header-valid but pixel-corrupt upload (truncated/garbled image data) is rejected as a
+            # clean 422 HERE rather than raising OSError deep in the renderer — which would surface as
+            # a 500 and, for /print, only after reaching the print path. Decode AFTER the pixel-count
+            # check so a decompression bomb is bounded out before we allocate its pixels.
+            im.load()
+    except HTTPException:
+        raise  # our own 413 (pixel-count) — not a decode failure
     except Image.DecompressionBombError as exc:
         raise HTTPException(413, f"Image has too many pixels: {exc}") from exc
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    # SyntaxError: PIL raises it (not OSError) for some malformed chunks (e.g. a corrupt PNG chunk)
+    # during decode — catch it here too so a bad upload is a clean 422, never a 500.
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
         raise HTTPException(422, f"Invalid image upload: {exc}") from exc
-    if width * height > MAX_IMAGE_PIXELS:
-        raise HTTPException(
-            413, f"Image too large: {width}x{height} px (max {MAX_IMAGE_PIXELS} px)"
-        )
 
 
 def _image_field_names(layout: list[dict[str, Any]]) -> set[str]:
@@ -2961,6 +2973,9 @@ async def web_ui(request: Request) -> HTMLResponse:
             "description": t.description,
             "required": t.required_fields,
             "optional": t.optional_fields,
+            # Fields backed by an `image` layout element — the Print page renders a file picker for
+            # these instead of a text input (source of truth: engine.image_field_names).
+            "image_fields": sorted(_image_field_names(t.layout)),
             # Raw brother_ql label id (e.g. "62", "62x29"). Drives the client-side size grouping of
             # the template picker and is the human-readable denomination fallback for the "Other"
             # bucket when `media` is None (label unknown to brother_ql).

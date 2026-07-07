@@ -943,18 +943,22 @@ def _render_template_preview(
     applied here regardless of request/template — those remain print-only.
 
     Rotation display parity: for a die-cut right-angle rotation the compose canvas is already swapped
-    to the readable landscape orientation, so PIL rotation is skipped (``rotate=0``) — the driver would
-    otherwise turn it back to portrait/sideways for print. For continuous media (or 0°/180°) the whole
-    image is rotated in PIL exactly as before, matching what the driver produces.
+    to the readable landscape orientation. The driver still rotates the raster by the full
+    ``tmpl.rotate`` for print, so 90° and 270° print rasters differ by a 180° turn; the preview mirrors
+    that with a *net* display rotation of ``tmpl.rotate - 90`` (90° → upright, 270° → 180° flip) so a
+    270° preview matches its flipped print and is never confused with the 90° preview. For continuous
+    media (or 0°/180°) the whole image is rotated in PIL by ``tmpl.rotate`` exactly as before, matching
+    what the driver produces.
     """
     width_px, height_px = _get_geometry(tmpl.label)
     canvas_width, canvas_height, swapped = _compose_canvas(width_px, height_px, tmpl.rotate)
+    preview_rotate = (tmpl.rotate - 90) if swapped else tmpl.rotate
     img = engine.render(
         tmpl.layout,
         fields,
         canvas_width,
         canvas_height,
-        0 if swapped else tmpl.rotate,
+        preview_rotate,
         language,
         now=now,
     )

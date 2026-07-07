@@ -132,12 +132,42 @@ def test_preview_die_cut_rotate90_is_landscape(engine: RenderEngine) -> None:
     assert height_px is not None and height_px > width_px  # 29x90 is portrait as printable
 
     canvas_w, canvas_h, swapped = main_mod._compose_canvas(width_px, height_px, tmpl.rotate)
-    img = engine.render(
-        tmpl.layout,
-        _ADDRESS_FIELDS,
-        canvas_w,
-        canvas_h,
-        0 if swapped else tmpl.rotate,
-    )
+    preview_rotate = (tmpl.rotate - 90) if swapped else tmpl.rotate
+    img = engine.render(tmpl.layout, _ADDRESS_FIELDS, canvas_w, canvas_h, preview_rotate)
     assert img.width > img.height  # readable landscape
     assert img.size == (height_px, width_px)
+
+
+_ASYMMETRIC_DIE_CUT_YAML = """\
+name: rotate-parity-probe
+description: Asymmetric die-cut layout to distinguish 90 from 270 previews
+label: "29x90"
+rotate: {rotate}
+fields:
+  required: [name]
+layout:
+  - {{type: title, text: "{{{{name}}}}", align: left, max_lines: 1}}
+"""
+
+
+def test_preview_die_cut_90_and_270_differ() -> None:
+    """Regression (Codex): a die-cut 270° preview must NOT be byte-identical to the 90° preview —
+    the driver rotates 90° and 270° into rasters that differ by 180°, so their previews must too,
+    or a 270° label prints upside-down relative to an approved preview."""
+    from app.loader import validate_template_from_string
+
+    fields = {"name": "TOP-LEFT-EDGE"}
+    tmpl90 = validate_template_from_string(_ASYMMETRIC_DIE_CUT_YAML.format(rotate=90))
+    tmpl270 = validate_template_from_string(_ASYMMETRIC_DIE_CUT_YAML.format(rotate=270))
+    assert tmpl90.rotate == 90 and tmpl270.rotate == 270
+
+    png90 = main_mod._render_template_preview(tmpl90, fields, "en")
+    png270 = main_mod._render_template_preview(tmpl270, fields, "en")
+    assert png90 != png270, "90° and 270° die-cut previews must be distinguishable"
+
+    img90 = Image.open(io.BytesIO(png90))
+    img270 = Image.open(io.BytesIO(png270))
+    assert img90.size == img270.size  # same landscape canvas, opposite orientation
+    assert img90.width > img90.height  # both readable landscape
+    # 270 preview is the 90 preview turned 180° (net display rotation tmpl.rotate - 90).
+    assert img270.rotate(180).tobytes() == img90.tobytes()

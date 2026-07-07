@@ -2641,7 +2641,9 @@ def _validate_upload_image(raw: bytes) -> None:
         raise  # our own 413 (pixel-count) — not a decode failure
     except Image.DecompressionBombError as exc:
         raise HTTPException(413, f"Image has too many pixels: {exc}") from exc
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    # SyntaxError: PIL raises it (not OSError) for some malformed chunks (e.g. a corrupt PNG chunk)
+    # during decode — catch it here too so a bad upload is a clean 422, never a 500.
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
         raise HTTPException(422, f"Invalid image upload: {exc}") from exc
 
 

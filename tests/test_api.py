@@ -1281,30 +1281,42 @@ def _gradient_png_b64(size: tuple[int, int] = (256, 64)) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def _corrupt_png_b64() -> str:
-    """A PNG that parses at the header (valid IHDR/size) but whose pixel data is truncated, so a full
-    decode fails. Exercises the validate-time decode guard."""
+def _truncated_png_b64() -> str:
+    """A PNG valid at the header (IHDR/size parse) but with its pixel data truncated, so a full decode
+    raises OSError. Exercises the validate-time decode guard."""
     buf = io.BytesIO()
     Image.new("RGB", (64, 64), (120, 120, 120)).save(buf, format="PNG")
     full = buf.getvalue()
     return base64.b64encode(full[: len(full) // 2]).decode()
 
 
-def test_preview_corrupt_image_is_422_not_500(client: TestClient) -> None:
-    """A header-valid but pixel-corrupt image is rejected as a clean 422 at validation, not surfaced
-    as a 500 when the renderer later fails to decode it."""
+def _chunk_corrupt_png_b64() -> str:
+    """A header-valid PNG with a corrupted chunk (byte 36 zeroed), so a full decode raises PIL's
+    SyntaxError ("broken PNG file") — a different decode-failure type than truncation."""
+    buf = io.BytesIO()
+    Image.new("RGB", (10, 10), (120, 120, 120)).save(buf, format="PNG")
+    raw = bytearray(buf.getvalue())
+    raw[36] = 0
+    return base64.b64encode(bytes(raw)).decode()
+
+
+@pytest.mark.parametrize("bad_image", [_truncated_png_b64(), _chunk_corrupt_png_b64()])
+def test_preview_corrupt_image_is_422_not_500(client: TestClient, bad_image: str) -> None:
+    """A header-valid but undecodable image (truncated OR chunk-corrupt) is rejected as a clean 422 at
+    validation, not surfaced as a 500 when the renderer later fails to decode it."""
     resp = client.post(
-        "/preview", json={"template": "image-test", "fields": {"image": _corrupt_png_b64()}}
+        "/preview", json={"template": "image-test", "fields": {"image": bad_image}}
     )
     assert resp.status_code == 422, resp.text
 
 
-def test_print_corrupt_image_is_422_not_500(client: TestClient) -> None:
-    """/print rejects a pixel-corrupt image up front (422) rather than reaching the print path and
+@pytest.mark.parametrize("bad_image", [_truncated_png_b64(), _chunk_corrupt_png_b64()])
+def test_print_corrupt_image_is_422_not_500(client: TestClient, bad_image: str) -> None:
+    """/print rejects an undecodable image up front (422) rather than reaching the print path and
     failing with a 500."""
     resp = client.post(
         "/print",
-        json={"template": "image-test", "fields": {"image": _corrupt_png_b64()}, "dry_run": True},
+        json={"template": "image-test", "fields": {"image": bad_image}, "dry_run": True},
     )
     assert resp.status_code == 422, resp.text
 

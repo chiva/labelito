@@ -1304,9 +1304,7 @@ def _chunk_corrupt_png_b64() -> str:
 def test_preview_corrupt_image_is_422_not_500(client: TestClient, bad_image: str) -> None:
     """A header-valid but undecodable image (truncated OR chunk-corrupt) is rejected as a clean 422 at
     validation, not surfaced as a 500 when the renderer later fails to decode it."""
-    resp = client.post(
-        "/preview", json={"template": "image-test", "fields": {"image": bad_image}}
-    )
+    resp = client.post("/preview", json={"template": "image-test", "fields": {"image": bad_image}})
     assert resp.status_code == 422, resp.text
 
 

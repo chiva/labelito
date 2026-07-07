@@ -40,6 +40,7 @@ def _png_bytes(color: int, size: tuple[int, int] = (4, 4)) -> bytes:
     Image.new("L", size, color).save(buf, format="PNG")
     return buf.getvalue()
 
+
 # A valid 1x1 white PNG, for fulfilling held /preview routes with a real (but recognizable —
 # naturalWidth 1) image body.
 PNG_1PX = base64.b64decode(
@@ -324,7 +325,9 @@ def test_image_pick_survives_late_status_refocus(authed_page_snmp: Page) -> None
             # A DIFFERENT roll (29mm) than the image template's 62mm — would refocus if unguarded.
             body = _status_body(media_width_mm=29, media_type="continuous", media_length_mm=None)
         else:
-            body = '{"state": "off", "uri": "tcp://192.0.2.10:9100", "reachable": false, "errors": []}'
+            body = (
+                '{"state": "off", "uri": "tcp://192.0.2.10:9100", "reachable": false, "errors": []}'
+            )
         route.fulfill(status=200, content_type="application/json", body=body)  # type: ignore[attr-defined]
 
     authed_page_snmp.route("**/printer/status", handle)
@@ -373,9 +376,13 @@ def test_invalid_replacement_cancels_pending_image_read(authed_page: Page) -> No
 
     fi = authed_page.locator("#field-image")
     # Valid A — its read is queued (deferred), not yet committed.
-    fi.set_input_files(files=[{"name": "A.png", "mimeType": "image/png", "buffer": _png_bytes(0, (16, 16))}])
+    fi.set_input_files(
+        files=[{"name": "A.png", "mimeType": "image/png", "buffer": _png_bytes(0, (16, 16))}]
+    )
     # Invalid B (wrong type) — rejected synchronously, but must supersede A's pending read.
-    fi.set_input_files(files=[{"name": "B.txt", "mimeType": "text/plain", "buffer": b"not an image"}])
+    fi.set_input_files(
+        files=[{"name": "B.txt", "mimeType": "text/plain", "buffer": b"not an image"}]
+    )
     expect(authed_page.locator(".status.err")).to_be_visible()
 
     # Release A's read; the generation bumped by B must cause it to be discarded.

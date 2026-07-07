@@ -657,7 +657,15 @@ class RenderEngine:
             # to 0, so a label with no padding renders byte-identically (content_width == canvas_width,
             # no wrapping band added). Padding is additive on top of any per-element internal spacing.
             left, right = el._px(el.padding_left), el._px(el.padding_right)
-            content_width = max(1, canvas_width - left - right)
+            content_width = canvas_width - left - right
+            # Horizontal padding wider than the label leaves no room to draw. Fail loudly (the print
+            # path surfaces this as a Render error) instead of clamping to a 1px sliver, which would
+            # print a silently blank/unreadable label from a schema-valid template.
+            if content_width < 1:
+                raise ValueError(
+                    f"padding_left ({el.padding_left}) + padding_right ({el.padding_right}) leaves "
+                    f"no content width on a {canvas_width}px canvas; reduce the horizontal padding"
+                )
             strip = el.render(
                 content_width, res, self.fonts_dir, self.icons_dir, self.icon_collections_dir
             )

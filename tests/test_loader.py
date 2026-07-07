@@ -319,6 +319,44 @@ def test_padding_shorthand_non_int_raises(tmp_path: Path) -> None:
         load_template(path)
 
 
+def test_padding_on_row_child_rejected(tmp_path: Path) -> None:
+    """Padding is honoured only on top-level elements; a row child carrying padding is rejected at
+    load rather than silently ignored."""
+    path = write_yaml(
+        tmp_path / "pad-row-child.yaml",
+        """\
+        name: pad-row-child
+        description: padding on a row child
+        label: "62"
+        layout:
+          - type: row
+            children:
+              - {type: text, text: a, padding_left: 20}
+              - {type: text, text: b}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="row/column child"):
+        load_template(path)
+
+
+def test_padding_shorthand_on_column_child_rejected(tmp_path: Path) -> None:
+    """The `padding` shorthand is rejected on a column child too (not just the longhand keys)."""
+    path = write_yaml(
+        tmp_path / "pad-col-child.yaml",
+        """\
+        name: pad-col-child
+        description: padding shorthand on a column child
+        label: "62"
+        layout:
+          - type: column
+            children:
+              - {type: text, text: a, padding: 8}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="row/column child"):
+        load_template(path)
+
+
 def test_padding_left_out_of_range_raises(tmp_path: Path) -> None:
     path = write_yaml(
         tmp_path / "pad-big.yaml",

@@ -181,6 +181,14 @@ def test_padding_left_shifts_content_right(engine: RenderEngine) -> None:
     assert sp.width == CANVAS_W  # strip stays full width; only the content is inset
 
 
+def test_padding_horizontal_exceeds_width_raises(engine: RenderEngine) -> None:
+    """Horizontal padding wider than the canvas leaves no content — fail loudly, don't silently render
+    a blank sliver from a schema-valid template."""
+    el = build_element({"type": "text", "text": "x", "padding_left": 350, "padding_right": 350})
+    with pytest.raises(ValueError, match="no content width"):
+        engine._render_elements([el], [{}], CANVAS_W)  # CANVAS_W is 696; 350+350 > 696
+
+
 def test_padding_scales_with_high_res(engine: RenderEngine) -> None:
     """Padding is a template-px inset, so it doubles under high_res (scale=2) like every dimension."""
     base = build_element({"type": "text", "text": "Hi"}, scale=2)

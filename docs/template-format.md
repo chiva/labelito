@@ -134,8 +134,9 @@ into a single vertical stack at the label's printable width.
 content (the element re-lays-out into the narrower width, so wrapping and alignment respect the
 inset), while `padding_top`/`padding_bottom` add blank bands above/below. It is **additive** on top of
 any spacing an element already carries, and every side defaults to `0`, so a template that sets no
-padding renders exactly as before. Padding applies to top-level layout elements (a `row`/`column`
-container is padded as a whole; its individual children are not).
+padding renders exactly as before. Padding applies to top-level layout elements: a `row`/`column`
+container is padded as a whole, and padding on its individual **children is rejected** at load time
+(it would have no effect there) — pad the container instead.
 
 The `padding` shorthand mirrors CSS's 1–4-value clockwise expansion (a longhand key overrides the
 shorthand for its side):
@@ -398,7 +399,7 @@ holds **only leaf elements** — no nested `row` or `column`.
 | Attribute | Type | Default | Notes |
 |---|---|---|---|
 | `children` | non-empty list of leaf elements | — | required |
-| `spacing` | int 0–10000 (px) | `0` | Extra vertical gap between stacked children (each leaf already has its own padding). |
+| `spacing` | int 0–10000 (px) | `0` | Extra vertical gap between stacked children (text leaves already carry their own baked-in vertical spacing). |
 
 An empty optional child (a blank field) contributes neither height nor a gap. When a column is a row
 child, its width and vertical placement come from the row (`width`/`weight`/`valign`).

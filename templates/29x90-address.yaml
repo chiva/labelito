@@ -1,7 +1,7 @@
 name: address-29x90
 description: Address or file-folder label on 29×90 mm die-cut (DK-11201 family)
 label: "29x90"
-rotate: 0
+rotate: 90
 fields:
   required: [name]
   optional: [line1, line2, line3]

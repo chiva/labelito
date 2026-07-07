@@ -186,6 +186,38 @@ def test_text_fit_width_long_stays_single_line(
     assert fitted_img.height < plain_img.height
 
 
+def test_text_fit_width_newline_content_not_dropped(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A newline in the value is flattened to a space and kept on one line — it must NOT be wrapped
+    and sliced to max_lines=1, which would silently drop the second paragraph."""
+    val = "AAAA\nBBBB"
+    el = TextElement(text=val, fit_width=True, size=120, min_size=10)
+    img = el.render(CANVAS_W, {"__text__": val}, fonts_dir, icons_dir, icon_collections_dir)
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    got_w = bbox[2] - bbox[0]
+    # The whole normalized string is drawn, so ink width matches "AAAA BBBB" at the fitted size —
+    # dropping "BBBB" would make it roughly half as wide.
+    fitted = _fit_font_size(fonts_dir, val, False, 10, 120, _FIT_EFF_W)
+    expected_w = _load_font(fonts_dir, fitted).getbbox("AAAA BBBB")[2]
+    assert abs(got_w - expected_w) <= 6
+
+
+def test_text_fit_width_floor_overflow_clips_not_drops(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A value too wide even at min_size renders as ONE line clipped at the canvas edge, not as a
+    fitted first wrapped segment. The clipped full line reaches the canvas edge, so its ink spans
+    wider than the padded effective width — a truncated wrapped segment would fit inside it."""
+    long = "This is a very long label value that cannot possibly fit even at the floor size"
+    el = TextElement(text=long, fit_width=True, size=120, min_size=40, align="center")
+    img = el.render(CANVAS_W, {"__text__": long}, fonts_dir, icons_dir, icon_collections_dir)
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    assert (bbox[2] - bbox[0]) > _FIT_EFF_W
+
+
 def test_text_fit_width_off_is_byte_identical(
     fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
 ) -> None:

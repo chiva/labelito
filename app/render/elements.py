@@ -414,6 +414,7 @@ def _render_text_block(
     mode: str = "L",
     bg: int | tuple[int, int, int] = 255,
     fill: int | tuple[int, int, int] = 0,
+    wrap: bool = True,
 ) -> Image.Image:
     """Render wrapped text into a new image of the correct height.
 
@@ -424,14 +425,25 @@ def _render_text_block(
     ``mode``/``bg``/``fill`` carry the two-color canvas mode and ink: in the monochrome
     pipeline they default to the original ``"L"``/255/0 so output is byte-identical; in two-color
     mode the caller passes ``"RGB"`` with a white-tuple background and a red/black ink tuple.
+
+    ``wrap`` (default True) is the normal word-wrapping path. When False the text is drawn as a
+    SINGLE line with newlines flattened to spaces and NO wrapping — the ``fit_width`` path, which has
+    already sized the font to this exact one-line string. Wrapping it here and then slicing to
+    ``max_lines=1`` would keep only the first wrapped segment and silently drop the rest of the value
+    (a wrong-label failure); drawing the whole line keeps every character, and if it still overflows
+    (font already at its floor) it clips horizontally at the canvas edge — the documented floor
+    behaviour — instead of losing whole words.
     """
     line_gap = 8 * scale
     block_pad = 8 * scale
     top_pad = 4 * scale
     effective_width = canvas_width - 2 * padding_h
-    lines = _wrap_text(text, font, effective_width)
-    if max_lines:
-        lines = lines[:max_lines]
+    if wrap:
+        lines = _wrap_text(text, font, effective_width)
+        if max_lines:
+            lines = lines[:max_lines]
+    else:
+        lines = [text.replace("\n", " ")]
 
     sample_bbox = font.getbbox("Ay")
     line_height = (sample_bbox[3] - sample_bbox[1]) + line_gap
@@ -603,10 +615,15 @@ class TextElement(ElementBase):
                 canvas_width - 2 * padding_h,
             )
             font = _load_font(fonts_dir, fitted_px, self.bold)
+            # Single-line, no-wrap: _fit_font_size sized the font to the whole one-line string, so the
+            # renderer must draw that same string without wrapping — otherwise trailing words (or a
+            # second paragraph) would be silently dropped by max_lines=1.
             max_lines: int | None = 1
+            wrap = False
         else:
             font = _load_font(fonts_dir, self._px(self.size), self.bold)
             max_lines = self.max_lines
+            wrap = True
         bg, fill = _block_colors(self)
         img = _render_text_block(
             text,
@@ -619,6 +636,7 @@ class TextElement(ElementBase):
             self._canvas_mode,
             bg,
             fill,
+            wrap,
         )
         return _apply_border(self, img)
 

@@ -271,6 +271,56 @@ def test_text_strip_product_cap_raises(tmp_path: Path) -> None:
         load_template(path)
 
 
+def test_fit_width_non_bool_raises(tmp_path: Path) -> None:
+    """`fit_width` gates on truthiness in the renderer, so a quoted `"false"` (a truthy string) is
+    rejected up front rather than silently enabling the feature."""
+    path = write_yaml(
+        tmp_path / "fit-bad.yaml",
+        """\
+        name: fit-bad
+        description: fit_width not a bool
+        label: "62"
+        layout:
+          - {type: text, text: hi, fit_width: "false"}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="fit_width"):
+        load_template(path)
+
+
+def test_fit_width_min_size_above_size_raises(tmp_path: Path) -> None:
+    """With fit_width on, `min_size` (floor) above `size` (ceiling) is an impossible range."""
+    path = write_yaml(
+        tmp_path / "fit-range.yaml",
+        """\
+        name: fit-range
+        description: min_size above ceiling
+        label: "62"
+        layout:
+          - {type: text, text: hi, fit_width: true, size: 40, min_size: 80}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="min_size"):
+        load_template(path)
+
+
+def test_fit_width_large_ceiling_loads_single_line(tmp_path: Path) -> None:
+    """With fit_width on, the strip is single-line, so a large `size` ceiling that would exceed the
+    size x max_lines product cap for multi-line text is accepted (size x 1 stays bounded)."""
+    path = write_yaml(
+        tmp_path / "fit-ok.yaml",
+        """\
+        name: fit-ok
+        description: fit_width large ceiling
+        label: "62"
+        layout:
+          - {type: text, text: WIDGET, fit_width: true, size: 200, min_size: 16, align: center}
+    """,
+    )
+    t = load_template(path)
+    assert len(t.layout) == 1
+
+
 def test_in_bounds_render_dimensions_load(tmp_path: Path) -> None:
     """Ordinary in-bounds qr/text/rotate values still load (the tightened caps reject nothing real:
     qr.size 600, text size 48 with max_lines 4, rotate 90)."""

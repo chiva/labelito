@@ -171,18 +171,27 @@ Body text with an author-controlled font size.
 | Attribute | Type | Default | Notes |
 |---|---|---|---|
 | `text` | string (templated) | `""` | |
-| `size` | int 1–512 (pt) | `32` | |
+| `size` | int 1–512 (pt) | `32` | With `fit_width`, this is the fit **ceiling**. |
 | `align` | `left`/`center`/`right` | `left` | |
 | `bold` | bool | `false` | |
-| `max_lines` | int 1–200 | `10` | |
+| `max_lines` | int 1–200 | `10` | Ignored when `fit_width` is on (forced to a single line). |
+| `fit_width` | bool | `false` | Auto-fit the font to the tape width on one line. See below. |
+| `min_size` | int 1–512 (pt) | `12` | Fit **floor**; only used when `fit_width` is on. Must be ≤ `size`. |
 | `background`, `border`, `border_color` | — | — | See [Badge & boxed text](#badge--boxed-text-text-family-decorations). |
 
 `size × max_lines` is additionally bounded (≤ 4000) so a large font and many lines cannot compose an
 unbounded strip.
 
+With `fit_width: true` the font is grown or shrunk within `[min_size, size]` so a single line nearly
+fills the tape width: short values scale **up**, long values scale **down** to stay on one line. If a
+value is still too wide at `min_size`, it renders at that floor (and may clip). This is ideal for
+variable-length fields (name, asset id, address line) on continuous tape, where the width is the fixed
+axis. It applies to `text` only — `title`/`subtitle` have fixed sizes by design.
+
 ```yaml
 - {type: text, text: "{{line1}}", size: 26, align: left}
 - {type: text, text: "REF {{ref}}", border: 3, align: center}   # boxed field
+- {type: text, text: "{{name}}", fit_width: true, size: 120, min_size: 16, align: center}
 ```
 
 #### `qr`

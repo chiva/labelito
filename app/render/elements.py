@@ -25,6 +25,10 @@ FONT_SIZES = {"title": 60, "subtitle": 40, "text": 32}
 # shipped template while keeping the strip bounded. The loader's strip-area guard assumes this same
 # default for an uncapped text element (loader.DEFAULT_TEXT_MAX_LINES re-exports this value).
 DEFAULT_TEXT_MAX_LINES = 10
+# Default floor for a `text` element with `fit_width` on: the smallest font the bidirectional
+# width-fit shrinks to before it stops and lets an over-long line clip at this size. Only consulted
+# when fit_width is enabled; a comfortably readable minimum well below the typical author ceiling.
+FIT_MIN_DEFAULT = 12
 ALIGN_DEFAULT = "left"
 QR_DEFAULT_SIZE = 160
 # Horizontal inset a left/right-aligned QR is pasted at; a column must hold the QR *plus* this inset
@@ -357,6 +361,48 @@ def _wrap_text(text: str, font: _Font, max_width: int) -> list[str]:
     return lines
 
 
+def _fit_font_size(
+    fonts_dir: Path,
+    text: str,
+    bold: bool,
+    min_px: int,
+    max_px: int,
+    effective_width: int,
+) -> int:
+    """Largest font size in ``[min_px, max_px]`` whose single-line width fits ``effective_width``.
+
+    Binary-searches the font size so ``fit_width`` text grows to nearly fill the tape (short values)
+    or shrinks to stay on one line (long values). The whole string is measured as ONE line with
+    ``font.getbbox`` — the same metric ``_render_text_block`` uses for wrapping and x-alignment — so
+    the fitted size is consistent with the strip it will be drawn into. Sizes are already-scaled px,
+    matching ``_render_text_block``'s scaled ``effective_width``.
+
+    Returns ``min_px`` when even the floor overflows (the caller then renders one line at the floor,
+    which may clip) and ``max_px`` when the ceiling already fits — never a size outside the range.
+    Empty/blank text fits at any size, so it collapses to ``min_px`` rather than a tall blank strip.
+    """
+    stripped = text.replace("\n", " ")
+    if max_px <= min_px or not stripped.strip():
+        return min_px
+
+    def _fits(px: int) -> bool:
+        bbox = _load_font(fonts_dir, px, bold).getbbox(stripped)
+        return (bbox[2] - bbox[0]) <= effective_width
+
+    if not _fits(min_px):
+        return min_px
+    if _fits(max_px):
+        return max_px
+    lo, hi = min_px, max_px  # invariant: lo always fits, hi never fits
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if _fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def _render_text_block(
     text: str,
     font: _Font,
@@ -531,6 +577,11 @@ class TextElement(ElementBase):
     background: str = TEXT_BACKGROUND_NONE
     border: int = 0
     border_color: str = COLOR_DEFAULT
+    # Opt-in bidirectional single-line width-fit: when True, `size` is the ceiling and `min_size` the
+    # floor; the font is grown/shrunk within that range so the text stays on ONE line and nearly fills
+    # the tape width (see _fit_font_size). Off ⇒ fixed `size` at `max_lines`, byte-identical output.
+    fit_width: bool = False
+    min_size: int = FIT_MIN_DEFAULT
 
     def render(
         self,
@@ -541,15 +592,29 @@ class TextElement(ElementBase):
         icon_collections_dir: Path,
     ) -> Image.Image:
         text = str(resolved_fields.get("__text__", self.text))
-        font = _load_font(fonts_dir, self._px(self.size), self.bold)
+        padding_h = self._px(8)
+        if self.fit_width:
+            fitted_px = _fit_font_size(
+                fonts_dir,
+                text,
+                self.bold,
+                self._px(self.min_size),
+                self._px(self.size),
+                canvas_width - 2 * padding_h,
+            )
+            font = _load_font(fonts_dir, fitted_px, self.bold)
+            max_lines: int | None = 1
+        else:
+            font = _load_font(fonts_dir, self._px(self.size), self.bold)
+            max_lines = self.max_lines
         bg, fill = _block_colors(self)
         img = _render_text_block(
             text,
             font,
             canvas_width,
             self.align,
-            self.max_lines,
-            self._px(8),
+            max_lines,
+            padding_h,
             self.scale,
             self._canvas_mode,
             bg,

@@ -14,6 +14,7 @@ from app.render.elements import (
     COLOR_CHOICES,
     DEFAULT_TEXT_MAX_LINES,
     FA_STYLES,
+    FIT_MIN_DEFAULT,
     FONT_SIZES,
     KNOWN_COLLECTIONS,
     LIST_DEFAULT_MAX_ITEMS,
@@ -263,6 +264,7 @@ _ELEMENT_NUMERIC_BOUNDS: dict[str, tuple[tuple[str, int, int], ...]] = {
     # in _validate_element_numerics; qr/icon size render as a sizexsize square (MAX_SQUARE_DIMENSION).
     "text": (
         ("size", 1, MAX_FONT_SIZE),
+        ("min_size", 1, MAX_FONT_SIZE),
         ("max_lines", 1, MAX_TEXT_LINES),
         ("border", 0, MAX_ELEMENT_DIMENSION),
     ),
@@ -330,8 +332,13 @@ def _validate_element_numerics(file_name: str, label: str, el: dict[str, Any]) -
         effective_size = (
             size if isinstance(size, int) and not isinstance(size, bool) else FONT_SIZES["text"]
         )
+        # `fit_width` forces a single line (the renderer passes max_lines=1 and grows the font only up
+        # to `size`, the ceiling). So the worst-case strip is size x 1, never size x max_lines — count
+        # one line here so a large ceiling isn't rejected for a product it can never actually compose.
         effective_lines = (
-            max_lines
+            1
+            if el.get("fit_width") is True
+            else max_lines
             if isinstance(max_lines, int) and not isinstance(max_lines, bool)
             else DEFAULT_TEXT_MAX_LINES
         )
@@ -467,6 +474,22 @@ def _validate_element(
             )
         if "border_color" in el:
             _require_choice(file_name, label, "border_color", el["border_color"], COLOR_CHOICES)
+    if el_type == "text":
+        # Opt-in bidirectional width-fit. `fit_width` gates truthiness in the renderer, so reject a
+        # non-bool (the `"false"` quoting typo would print the feature the author meant to disable).
+        # When enabled, `size` is the fit CEILING and `min_size` the floor, so a floor above the
+        # ceiling is an impossible range — reject it with both effective values (defaults when omitted).
+        if "fit_width" in el:
+            _require_bool(file_name, label, "fit_width", el["fit_width"])
+        if el.get("fit_width") is True:
+            effective_size = el.get("size", FONT_SIZES["text"])
+            effective_min = el.get("min_size", FIT_MIN_DEFAULT)
+            if effective_min > effective_size:
+                raise TemplateLoadError(
+                    f"{file_name}: {label} text 'min_size' ({effective_min}) must be <= 'size' "
+                    f"({effective_size}); with fit_width, 'size' is the fit ceiling and 'min_size' "
+                    f"the floor"
+                )
     if el_type == "icon":
         _validate_icon(file_name, label, el)
     if el_type == "image" and "field" in el:
@@ -627,8 +650,12 @@ def _estimate_element_height(el: dict[str, Any]) -> int:
     if el_type == "text":
         # size x effective max_lines (the finite default when omitted) x the line-height
         # factor. This is the same product the strip-area guard bounds, here turned into pixels.
+        # `fit_width` renders a single line capped at `size` (the ceiling), so its worst case is one
+        # line at that ceiling — count 1 line to match the strip-area guard and the actual render.
         size = _int_attr(el, "size", FONT_SIZES["text"])
-        max_lines = _int_attr(el, "max_lines", DEFAULT_TEXT_MAX_LINES)
+        max_lines = (
+            1 if el.get("fit_width") is True else _int_attr(el, "max_lines", DEFAULT_TEXT_MAX_LINES)
+        )
         return padding + size * max_lines * _TEXT_LINE_HEIGHT_FACTOR
 
     if el_type in ("title", "subtitle"):

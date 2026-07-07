@@ -24,6 +24,7 @@ from app.render.elements import (
     SubtitleElement,
     TextElement,
     TitleElement,
+    _fit_font_size,
     _load_font,
     _wrap_text,
 )
@@ -117,6 +118,88 @@ def test_text_element_custom_size(
     img = el.render(CANVAS_W, {"__text__": "test"}, fonts_dir, icons_dir, icon_collections_dir)
     assert img.width == CANVAS_W
     assert img.height > 0
+
+
+# ── fit_width (auto-fit single-line text to tape width) ──────────────────────────
+_FIT_EFF_W = CANVAS_W - 2 * 8  # _render_text_block insets padding_h=8 on each side
+
+
+def test_fit_font_size_short_text_grows(fonts_dir: Path) -> None:
+    """A short value grows to (nearly) fill the width: the returned size is the LARGEST that fits, so
+    the next size up must overflow (unless it saturates the ceiling)."""
+    size = _fit_font_size(fonts_dir, "AB", False, 12, 400, _FIT_EFF_W)
+    assert 12 <= size <= 400
+    assert _load_font(fonts_dir, size).getbbox("AB")[2] <= _FIT_EFF_W
+    assert size > 100  # short text has plenty of room, so it grows well past the floor
+    if size < 400:
+        assert _load_font(fonts_dir, size + 1).getbbox("AB")[2] > _FIT_EFF_W
+
+
+def test_fit_font_size_long_text_shrinks(fonts_dir: Path) -> None:
+    """A long value shrinks BELOW the ceiling so it still fits on one line."""
+    long = "A Very Long Product Name That Overflows"
+    size = _fit_font_size(fonts_dir, long, False, 12, 200, _FIT_EFF_W)
+    assert 12 <= size < 200
+    assert _load_font(fonts_dir, size).getbbox(long)[2] <= _FIT_EFF_W
+
+
+def test_fit_font_size_clamps_at_floor(fonts_dir: Path) -> None:
+    """When even the floor overflows a tiny width, the floor is returned (caller renders + clips)."""
+    long = "This is definitely far too wide for fifty pixels"
+    assert _fit_font_size(fonts_dir, long, False, 20, 200, 50) == 20
+
+
+def test_fit_font_size_blank_returns_floor(fonts_dir: Path) -> None:
+    """Blank/whitespace text fits at any size, so it collapses to the floor, not a tall blank strip."""
+    assert _fit_font_size(fonts_dir, "   ", False, 14, 200, CANVAS_W) == 14
+
+
+def test_text_fit_width_nearly_fills(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A value that overflows the ceiling is width-bound: fit lands just under the tape width."""
+    el = TextElement(text="WIDGET", fit_width=True, size=512, min_size=12, align="center")
+    img = el.render(CANVAS_W, {"__text__": "WIDGET"}, fonts_dir, icons_dir, icon_collections_dir)
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    ink_w = bbox[2] - bbox[0]
+    assert ink_w <= _FIT_EFF_W  # never overflows the padded area
+    assert ink_w >= 0.8 * _FIT_EFF_W  # grows to nearly fill the width
+
+
+def test_text_fit_width_long_stays_single_line(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    long = "A Very Long Product Name That Would Otherwise Wrap"
+    fitted = TextElement(text=long, fit_width=True, size=120, min_size=10)
+    fitted_img = fitted.render(
+        CANVAS_W, {"__text__": long}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    bbox = _whole_ink_bbox(fitted_img)
+    assert bbox is not None
+    assert (bbox[2] - bbox[0]) <= _FIT_EFF_W  # fits on one line within the tape
+    # Without fit_width the same big font wraps to many lines → a much taller strip.
+    plain = TextElement(text=long, size=120)
+    plain_img = plain.render(
+        CANVAS_W, {"__text__": long}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert fitted_img.height < plain_img.height
+
+
+def test_text_fit_width_off_is_byte_identical(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """fit_width defaults off: an element with the new fields left at defaults renders identically to
+    one without them, so shipped templates are unaffected."""
+    base = TextElement(text="hello", size=32)
+    with_fields = TextElement(text="hello", size=32, fit_width=False, min_size=12)
+    base_img = base.render(
+        CANVAS_W, {"__text__": "hello"}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    new_img = with_fields.render(
+        CANVAS_W, {"__text__": "hello"}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert list(base_img.getdata()) == list(new_img.getdata())
 
 
 def test_spacer_element_exact_height(

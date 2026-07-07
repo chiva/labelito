@@ -1,12 +1,13 @@
-name: address
+name: address-62x29
 description: Shipping/return address on a 62×29 mm die-cut label (DK-11209 family)
 label: "62x29"
 rotate: 0
+valign: center
 fields:
   required: [name]
   optional: [line1, line2, line3]
 layout:
-  - {type: title, text: "{{name}}", max_lines: 1, align: left, bold: true}
-  - {type: text, text: "{{line1}}", size: 26, align: left}
-  - {type: text, text: "{{line2}}", size: 26, align: left}
-  - {type: text, text: "{{line3}}", size: 26, align: left}
+  - {type: text, text: "{{name}}", size: 64, align: left, bold: true, max_lines: 1}
+  - {type: text, text: "{{line1}}", size: 44, align: left, max_lines: 1}
+  - {type: text, text: "{{line2}}", size: 44, align: left, max_lines: 1}
+  - {type: text, text: "{{line3}}", size: 44, align: left, max_lines: 1}

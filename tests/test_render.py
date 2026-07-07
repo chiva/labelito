@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 
 from app.render.elements import (
     ROW_MIN_FLEX_WIDTH,
@@ -1325,8 +1325,61 @@ def test_all_bundled_templates_load() -> None:
     from app.loader import TemplateRegistry
 
     names = TemplateRegistry(TEMPLATES_DIR).load_all()
-    assert {"cable-label", "asset-tag", "address"} <= set(names)
+    assert {"cable-label", "asset-tag", "address-62x29"} <= set(names)
     assert len(names) >= 11
+
+
+# ── valign: vertical placement of the composed block on a fixed die-cut canvas ───
+def _black_span(img: Image.Image) -> tuple[int, int]:
+    """(top, bottom) rows of the black content on a white canvas.
+
+    ``getbbox`` treats 0 as background, so on our white(255)/black(0) canvas we invert first: the
+    inverted image has the content as non-zero, and its bbox's y-range is where the block landed."""
+    bbox = ImageChops.invert(img).getbbox()
+    assert bbox is not None
+    return bbox[1], bbox[3]
+
+
+def test_compose_valign_positions_block_on_die_cut(engine: RenderEngine) -> None:
+    """On a fixed die-cut canvas with spare height, valign shifts the whole stacked block: ``top``
+    (default) hugs the top edge, ``center`` leaves equal slack above/below, ``bottom`` hugs the base."""
+    canvas_w, canvas_h = 200, 300
+    strip_h, count = 40, 2
+    total = strip_h * count  # 80
+    slack = canvas_h - total  # 220
+
+    def strips() -> list[Image.Image]:
+        return [Image.new("L", (canvas_w, strip_h), 0) for _ in range(count)]
+
+    assert _black_span(engine._compose(strips(), canvas_w, canvas_h, valign="top")) == (0, total)
+    assert _black_span(engine._compose(strips(), canvas_w, canvas_h, valign="center")) == (
+        slack // 2,
+        slack // 2 + total,
+    )
+    assert _black_span(engine._compose(strips(), canvas_w, canvas_h, valign="bottom")) == (
+        slack,
+        canvas_h,
+    )
+
+
+def test_compose_valign_center_falls_back_to_top_crop_on_overflow(engine: RenderEngine) -> None:
+    """When content is taller than the die-cut canvas, valign is ignored (start y=0) so the existing
+    per-strip crop still trims the tail from the top rather than pushing the head off-canvas."""
+    canvas_w, canvas_h = 200, 60
+    strips = [Image.new("L", (canvas_w, 50), 0), Image.new("L", (canvas_w, 50), 0)]  # 100 > 60
+    out = engine._compose(strips, canvas_w, canvas_h, valign="center")
+    assert out.height == canvas_h
+    assert ImageChops.invert(out).getbbox() == (0, 0, canvas_w, canvas_h)
+
+
+def test_compose_valign_noop_on_continuous(engine: RenderEngine) -> None:
+    """Continuous media (canvas_height=None) grows to fit the content, so there is no slack for
+    valign to act on — center composes identically to top."""
+    canvas_w = 200
+    strips = [Image.new("L", (canvas_w, 40), 0), Image.new("L", (canvas_w, 40), 0)]
+    top = engine._compose(list(strips), canvas_w, None, valign="top")
+    center = engine._compose(list(strips), canvas_w, None, valign="center")
+    assert top.tobytes() == center.tobytes()
 
 
 # ── i18n — two-pass resolution (translate [[key]] then resolve {{date}}) ──────────

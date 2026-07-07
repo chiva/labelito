@@ -380,6 +380,7 @@ class RenderEngine:
         high_res: bool = False,
         red: bool = False,
         seq: str = "",
+        valign: str = "top",
     ) -> Image.Image:
         # Two-color (red/black) two-layer rendering.
         #
@@ -476,7 +477,9 @@ class RenderEngine:
         elements = [build_element(spec, scale=scale, red_active=red) for spec in layout]
         resolved = self._resolve_all(elements, fields, lang, moment, seq)
         strips = self._render_elements(elements, resolved, render_width)
-        img = self._compose(strips, render_width, render_height, render_min, render_max, red=red)
+        img = self._compose(
+            strips, render_width, render_height, render_min, render_max, red=red, valign=valign
+        )
         if rotate:
             img = img.rotate(rotate, expand=True)
         return img
@@ -494,6 +497,7 @@ class RenderEngine:
         high_res: bool = False,
         red: bool = False,
         seq: str = "",
+        valign: str = "top",
     ) -> bytes:
         img = self.render(
             layout,
@@ -506,6 +510,7 @@ class RenderEngine:
             high_res=high_res,
             red=red,
             seq=seq,
+            valign=valign,
         )
         buf = io.BytesIO()
         img.save(buf, format="PNG")
@@ -527,6 +532,7 @@ class RenderEngine:
         now: datetime | None = None,
         high_res: bool = False,
         red: bool = False,
+        valign: str = "top",
     ) -> Iterator[bytes]:
         """Lazily render ``count`` labels, yielding one PNG byte string per item.
 
@@ -559,6 +565,7 @@ class RenderEngine:
                 high_res=high_res,
                 red=red,
                 seq=seq_str,
+                valign=valign,
             )
 
     # ── Private helpers ─────────────────────────────────────────────────────────
@@ -660,6 +667,7 @@ class RenderEngine:
         max_length_px: int | None = None,
         *,
         red: bool = False,
+        valign: str = "top",
     ) -> Image.Image:
         _min = min_length_px if min_length_px is not None else self.min_length_px
         _max = max_length_px if max_length_px is not None else self.max_length_px
@@ -678,7 +686,18 @@ class RenderEngine:
             canvas = Image.new("RGB", (canvas_width, height), (255, 255, 255))
         else:
             canvas = Image.new("L", (canvas_width, height), 255)
-        y = 0
+        # Vertical placement of the stacked block. ``top`` (the default) keeps the historical
+        # top-anchored layout, so every template that does not opt in composes byte-identically.
+        # Only die-cut media (canvas_height set → fixed face) is shifted: continuous tape has no
+        # fixed frame to centre within (its length is elastic, merely clamped to [min, max]), so
+        # valign is a no-op there. ``center``/``bottom`` shift only when the content actually fits
+        # (slack > 0); on overflow we fall back to y=0 so the per-strip crop below still trims the
+        # tail from the top exactly as before, rather than pushing the head off-canvas.
+        slack = height - total_height
+        if canvas_height is not None and slack > 0 and valign in ("center", "bottom"):
+            y = slack // 2 if valign == "center" else slack
+        else:
+            y = 0
         for strip in strips:
             if y + strip.height > height:
                 # Clip to canvas height — prefer autosize on text elements before reaching this

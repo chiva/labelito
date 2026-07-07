@@ -6,6 +6,6 @@ fields:
   required: [text]
   optional: []
 layout:
-  - {type: spacer, size: 8}
-  - {type: text, text: "{{text}}", size: 40, align: center, max_lines: 2}
-  - {type: spacer, size: 8}
+  - {type: spacer, size: 40}
+  - {type: text, text: "{{text}}", size: 52, align: center, max_lines: 3}
+  - {type: spacer, size: 40}

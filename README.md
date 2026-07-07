@@ -5,6 +5,11 @@
 <h1 align="center">labelito</h1>
 
 <p align="center">
+  <i>labelito</i> · pronounced <b>lah-beh-LEE-toh</b> (Spanish) · IPA <code>/la.be&#712;li.to/</code><br>
+  <sub>a Spanish-style diminutive of “label” — “little label”</sub>
+</p>
+
+<p align="center">
   Self-hosted label printing for <a href="https://www.brother.com/en/products/all/labelmachine/index.htm">Brother QL</a> printers.<br>
   A small container you point at your printer and drive from <b>Home Assistant</b>, a script, or the built-in web UI.<br>
   Define labels once as YAML templates; print them with one HTTP call.
@@ -166,7 +171,7 @@ layout:
 
 The repo ships **17 ready-to-use templates** — kitchen (`freezer-dated`, `fridge-dated`, `pantry`, …),
 generic (`simple-text`, `title-subtitle-qr`, …), and homelab/logistics (`cable-label`, `asset-tag`,
-`address`). These examples are **baked into the image** (at `/app/examples/templates`, outside the
+`address-62x29`). These examples are **baked into the image** (at `/app/examples/templates`, outside the
 `templates/` volume), so bind-mounting your own `templates/` directory — even an empty one — never
 hides them, and image upgrades ship new examples automatically. Your own files are loaded alongside
 and win over a bundled example of the same name. The eight shipped translation catalogs work the same

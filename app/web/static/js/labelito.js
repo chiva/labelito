@@ -380,6 +380,190 @@ function initLanguage() {
   });
 }
 
+/* ── Image fields ───────────────────────────────────────────────────────────────
+ * A template field backed by an `image` layout element (server-reported in a
+ * template's `image_fields`) is filled by choosing/dropping an image file, not by
+ * typing. The browser reads the file, base64-encodes it, and the page's payload
+ * builder merges that base64 into `fields[<name>]` — the SAME shape the JSON /print,
+ * /preview and /preview/draft routes already accept (see app/main.py). We deliberately
+ * do NOT use /preview/multipart (it hardcodes the "image" field name and is
+ * preview-only); one base64 representation covers both preview and print.
+ *
+ * XSS discipline (see the file header): the widget is built entirely from DOM nodes and
+ * textContent — never innerHTML. The thumbnail src is a data: URL derived from the
+ * user's own local file, never device/network text.
+ */
+
+// Mirror app.main.MAX_IMAGE_UPLOAD_BYTES (5 MiB decoded). Reject oversized files client-side with a
+// friendly toast rather than letting the server 413 after a wasted upload.
+const IMAGE_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+// fieldName → {dataUrl, filename}. The full FileReader data URL is kept (not just the base64
+// payload) so a widget rebuilt in place — the Studio re-renders the field form on every keystroke —
+// can redraw its thumbnail from cache without re-reading the file. Only one page is live at a time,
+// so a module-level map is sufficient; reset on template load / template switch.
+const imageFieldData = new Map();
+
+// Strip a FileReader data URL ("data:image/png;base64,AAAA…") down to the base64 payload the render
+// element decodes. Returns "" for an unexpected shape so a broken read can't smuggle a data: prefix
+// into the field (the server would then fail to decode it).
+function _dataUrlToBase64(dataUrl) {
+  const comma = typeof dataUrl === 'string' ? dataUrl.indexOf(',') : -1;
+  return comma >= 0 ? dataUrl.slice(comma + 1) : '';
+}
+
+// Read + validate a chosen/dropped File into imageFieldData[name], then refresh the widget preview
+// and notify the caller. Rejects a non-image type or an over-cap file with a toast and no state
+// change, so an invalid pick leaves any previously-accepted image intact.
+function _acceptImageFile(name, file, wrap, onChange) {
+  if (!file) return;
+  if (file.type && !file.type.startsWith('image/')) {
+    showStatus(`"${file.name}" is not an image file.`, 'err');
+    return;
+  }
+  if (file.size > IMAGE_MAX_UPLOAD_BYTES) {
+    const mb = (IMAGE_MAX_UPLOAD_BYTES / (1024 * 1024)).toFixed(0);
+    showStatus(`"${file.name}" is too large (max ${mb} MB).`, 'err');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const b64 = _dataUrlToBase64(reader.result);
+    if (!b64) {
+      showStatus(`Could not read "${file.name}".`, 'err');
+      return;
+    }
+    imageFieldData.set(name, { dataUrl: reader.result, filename: file.name });
+    _renderImagePreview(wrap, name, file.name, reader.result);
+    if (onChange) onChange();
+  };
+  reader.onerror = () => showStatus(`Could not read "${file.name}".`, 'err');
+  reader.readAsDataURL(file);
+}
+
+// (Re)draw the chosen-file state of a widget: a thumbnail, the file name, and a clear button; or the
+// empty dropzone prompt when no file is held. DOM/textContent only.
+function _renderImagePreview(wrap, name, fileName, dataUrl) {
+  const zone = wrap.querySelector('.image-dropzone');
+  if (!zone) return;
+  zone.replaceChildren();
+  if (dataUrl) {
+    zone.classList.add('has-image');
+    const thumb = document.createElement('img');
+    thumb.className = 'image-thumb';
+    thumb.alt = fileName || name;
+    thumb.src = dataUrl; // a local data: URL from the user's own file — safe, not device text
+    const label = document.createElement('span');
+    label.className = 'image-filename';
+    label.textContent = fileName || 'image';
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'image-clear close';
+    clear.setAttribute('aria-label', 'Remove image');
+    clear.textContent = '×';
+    clear.addEventListener('click', (e) => {
+      e.stopPropagation(); // don't re-open the file dialog the dropzone click handler would trigger
+      clearImageField(name);
+      const input = wrap.querySelector('input[type=file]');
+      if (input) input.value = ''; // let the same file be re-picked after a clear
+      _renderImagePreview(wrap, name, null, null);
+      wrap.dispatchEvent(new CustomEvent('image-cleared', { bubbles: false }));
+    });
+    zone.append(thumb, label, clear);
+  } else {
+    zone.classList.remove('has-image');
+    const prompt = document.createElement('span');
+    prompt.className = 'image-prompt';
+    prompt.textContent = 'Click or drop an image';
+    zone.appendChild(prompt);
+  }
+}
+
+// Build a file-picker + drag-drop widget for an image field. `onChange` fires after a file is
+// accepted OR cleared (the page uses it to re-preview). The hidden <input> keeps the shared
+// id="field-<name>" convention so existing focus/e2e selectors keep working.
+function buildImageField(name, onChange) {
+  const wrap = document.createElement('div');
+  wrap.className = 'image-field';
+
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.id = `field-${name}`;
+  input.name = name;
+  input.className = 'image-file-input';
+  input.hidden = true;
+  input.addEventListener('change', () =>
+    _acceptImageFile(name, input.files && input.files[0], wrap, onChange),
+  );
+
+  const zone = document.createElement('div');
+  zone.className = 'image-dropzone';
+  zone.tabIndex = 0;
+  zone.setAttribute('role', 'button');
+  zone.setAttribute('aria-label', `Choose an image for ${name}`);
+  const openPicker = () => input.click();
+  zone.addEventListener('click', openPicker);
+  zone.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openPicker();
+    }
+  });
+  zone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    zone.classList.add('dragover');
+  });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    _acceptImageFile(name, file, wrap, onChange);
+  });
+
+  // Clearing (the × button, dispatched from _renderImagePreview) re-previews too, so the label
+  // updates to reflect the now-removed image — same onChange path as an accept.
+  wrap.addEventListener('image-cleared', () => {
+    if (onChange) onChange();
+  });
+
+  wrap.append(input, zone);
+  // Redraw from cache when rebuilt in place (Studio re-parse) so the thumbnail survives; otherwise
+  // show the empty prompt.
+  const cached = imageFieldData.get(name);
+  _renderImagePreview(wrap, name, cached ? cached.filename : null, cached ? cached.dataUrl : null);
+  return wrap;
+}
+
+// Cached base64 payload (no data: prefix) for one image field, or null when none is held.
+function imageFieldValue(name) {
+  const entry = imageFieldData.get(name);
+  return entry ? _dataUrlToBase64(entry.dataUrl) : null;
+}
+
+// {name: base64} for the given field names that currently hold an image — spread into a payload's
+// `fields` by the page builders.
+function collectImageFields(names) {
+  const out = {};
+  for (const name of names || []) {
+    const b64 = imageFieldValue(name);
+    if (b64) out[name] = b64;
+  }
+  return out;
+}
+
+// Drop one field's cached image (the widget redraw is the caller's concern).
+function clearImageField(name) {
+  imageFieldData.delete(name);
+}
+
+// Drop every cached image — call when switching templates / re-detecting fields so one template's
+// image never leaks into another's form.
+function resetImageFields() {
+  imageFieldData.clear();
+}
+
 /* ── Init ─────────────────────────────────────────────────────────────────────
  * The shared head loads this script before <body> exists, so nav wiring waits for the
  * DOM. Pages' own inline scripts (end of body) run before this fires; anything they

@@ -219,7 +219,9 @@ if you want the value printed with labelito's own font control.
 #### `image`
 
 A caller-supplied image, drawn from a **field** (base64 in the request, or a multipart upload). The
-field named here is exempt from the text-size cap, so it must not also feed a text `{{token}}`.
+field named here is exempt from the text-size cap, so it must not also feed a text `{{token}}`. In
+the web UI (both the Print page and the Studio preview) an image field renders a file picker with
+drag-and-drop instead of a text box; the chosen image is base64-encoded and sent in that field.
 
 | Attribute | Type | Default |
 |---|---|---|

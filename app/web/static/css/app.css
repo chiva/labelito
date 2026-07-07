@@ -452,6 +452,82 @@ select.input {
   cursor: pointer;
 }
 
+/* Image field: a click/drop target that stands in for a text input on fields backed by an `image`
+   layout element. The <input type=file> itself is hidden; the dropzone is the interactive surface. */
+.image-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.image-dropzone {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Match a text .input exactly (padding/font/border/radius) so the empty picker is the same height
+     and sits flush in the field grid. */
+  padding: 11px 13px;
+  background: var(--panel2);
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  color: var(--ink3);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.image-dropzone:hover,
+.image-dropzone:focus-visible {
+  border-color: var(--blue);
+  outline: none;
+}
+
+.image-dropzone.dragover {
+  border-color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 12%, transparent);
+}
+
+.image-dropzone.has-image {
+  border-style: solid;
+  color: var(--ink);
+  /* Trim vertical padding so the thumbnail row stays about a text-input's height (no layout jump
+     when an image is chosen). */
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.image-thumb {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  flex: none;
+}
+
+.image-filename {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.image-clear {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--ink3);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.image-clear:hover {
+  color: var(--red);
+}
+
 input[type="checkbox"],
 input[type="radio"] {
   accent-color: var(--blue);

@@ -25,6 +25,10 @@ pytestmark = pytest.mark.e2e
 # without needing an image upload or QR/barcode payload.
 SAMPLE_TEMPLATE = "title-subtitle"
 
+# A shipped template with an `image` layout element bound to the `image` field
+# (templates/62-image.yaml, name: image) — used to drive the file-upload UI.
+IMAGE_TEMPLATE = "image"
+
 # A valid 1x1 white PNG, for fulfilling held /preview routes with a real (but recognizable —
 # naturalWidth 1) image body.
 PNG_1PX = base64.b64decode(
@@ -126,6 +130,59 @@ def test_print_dry_run_round_trip(authed_page: Page) -> None:
 
     # The sticky success banner survives the post-print preview refresh.
     expect(authed_page.locator(".status.ok")).to_be_visible()
+
+
+def test_image_field_renders_file_picker_uploads_and_prints(authed_page: Page) -> None:
+    """The Print page renders a file picker (not a text input) for an image field, and an uploaded
+    image previews and rides into the /print payload as base64 in fields.image."""
+    import json as _json
+
+    authed_page.goto("/")
+    _select_template(authed_page, IMAGE_TEMPLATE)
+
+    # The image field is a (hidden) file input inside the drop-target widget, keeping the shared
+    # id="field-<name>" convention — NOT a text input.
+    file_input = authed_page.locator("#field-image")
+    expect(file_input).to_have_attribute("type", "file")
+    expect(authed_page.locator(".image-dropzone")).to_be_visible()
+
+    # Uploading a file fires the change handler → base64-caches the image and auto-previews.
+    file_input.set_input_files(
+        files=[{"name": "logo.png", "mimeType": "image/png", "buffer": PNG_1PX}]
+    )
+    expect(authed_page.locator(".image-dropzone.has-image")).to_be_visible()
+    expect(authed_page.locator(".image-filename")).to_have_text("logo.png")
+
+    # The preview renders a real (decoded) image.
+    authed_page.wait_for_function(
+        "() => { const i = document.getElementById('preview-img'); return i && i.naturalWidth > 0; }"
+    )
+
+    # A dry-run print carries the base64 image under the template's image field.
+    authed_page.check("#dry-run")
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/print") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("button.btn-print")
+
+    response = resp_info.value
+    assert response.status == 200
+    payload = _json.loads(response.request.post_data)
+    assert payload["template"] == IMAGE_TEMPLATE
+    assert payload["fields"].get("image"), "print payload should carry base64 image bytes"
+
+
+def test_image_field_clear_removes_cached_image(authed_page: Page) -> None:
+    """The clear button drops the chosen image so the widget returns to its empty prompt."""
+    authed_page.goto("/")
+    _select_template(authed_page, IMAGE_TEMPLATE)
+    authed_page.locator("#field-image").set_input_files(
+        files=[{"name": "logo.png", "mimeType": "image/png", "buffer": PNG_1PX}]
+    )
+    expect(authed_page.locator(".image-dropzone.has-image")).to_be_visible()
+    authed_page.locator(".image-clear").click()
+    expect(authed_page.locator(".image-dropzone.has-image")).to_have_count(0)
+    expect(authed_page.locator(".image-prompt")).to_be_visible()
 
 
 def test_print_page_background_poll_converges_status_badge(authed_page_snmp: Page) -> None:
@@ -644,6 +701,38 @@ def test_editor_download_yaml_uses_yaml_extension(authed_page: Page) -> None:
 
     assert download_info.value.suggested_filename == "my-label.yaml", (
         download_info.value.suggested_filename
+    )
+
+
+def test_studio_image_field_renders_picker_and_previews(authed_page: Page) -> None:
+    """The Template Studio's sample-field panel renders a file picker for an image field detected in
+    the draft YAML, and an uploaded image renders a real draft preview."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#yaml")).to_be_visible()
+
+    yaml = (
+        "name: draft-image\n"
+        "description: image draft\n"
+        'label: "62"\n'
+        "rotate: 0\n"
+        "fields:\n"
+        "  required: [photo]\n"
+        "  optional: []\n"
+        "layout:\n"
+        "  - {type: image, field: photo}\n"
+    )
+    authed_page.fill("#yaml", yaml)
+
+    # After the parse round-trip, the detected image field renders a (hidden) file input.
+    file_input = authed_page.locator("#field-photo")
+    expect(file_input).to_have_attribute("type", "file")
+    file_input.set_input_files(
+        files=[{"name": "p.png", "mimeType": "image/png", "buffer": PNG_1PX}]
+    )
+
+    # The draft preview renders a real (decoded) image once the upload is merged into the payload.
+    authed_page.wait_for_function(
+        "() => { const i = document.getElementById('preview-img'); return i && i.naturalWidth > 0; }"
     )
 
 

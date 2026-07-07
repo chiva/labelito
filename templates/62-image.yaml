@@ -1,5 +1,5 @@
 name: image
-description: "API-only: image supplied via POST /print in fields.image (base64 or multipart upload), with an optional title"
+description: "Image label: pick or drag-drop an image in the web UI, or POST /print with fields.image (base64 / multipart), with an optional title"
 label: "62"
 rotate: 0
 fields:

@@ -208,6 +208,10 @@ class PrintRequest(BaseModel):
 class TemplateFieldContract(BaseModel):
     required: list[str]
     optional: list[str]
+    # Names of the fields backed by an `image` layout element (from engine.image_field_names). Lets a
+    # client render a file picker instead of a text input for these fields. Defaults to [] so every
+    # existing constructor and the serialized shape stay backward-compatible.
+    image_fields: list[str] = []
 
 
 # Coarse cap on the draft YAML body length. The whole request is already bounded by

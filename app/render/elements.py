@@ -694,7 +694,15 @@ class ImageElement(ElementBase):
             # Image.resize raise ValueError and turn the request into a 500.
             return self._new_canvas(canvas_width, 0)
         img = img.resize((new_w, new_h), Image.LANCZOS)
-        img = img.point(lambda p: 0 if p < 128 else 255)  # 1-bit dither
+        # Keep the image GRAYSCALE in the monochrome pipeline: the final black/white conversion —
+        # brother_ql's convert() at print time, _preview_bw_convert for previews — is what applies
+        # the request's dither / threshold. A hard 1-bit split here would pre-flatten every grey to
+        # pure black or white, making those controls no-ops (and turning a mostly-dark photo into a
+        # solid block). Two-color mode is the exception: it never dithers (brother_ql separates the
+        # red/black layers by HSV), and _tint expects a pre-thresholded graphic for an exact <128
+        # ink/white split, so it is 1-bit there.
+        if self._red_active:
+            img = img.point(lambda p: 0 if p < 128 else 255)
         img = self._tint(img)
 
         canvas = self._new_canvas(canvas_width, new_h + 2 * pad)

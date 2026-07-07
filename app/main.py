@@ -1756,6 +1756,7 @@ def list_templates() -> list[TemplateInfo]:
             fields=TemplateFieldContract(
                 required=t.required_fields,
                 optional=t.optional_fields,
+                image_fields=sorted(_image_field_names(t.layout)),
             ),
             media=_template_media(t.label),
             is_example=t.is_example,
@@ -2375,6 +2376,7 @@ async def parse_template(request: TemplateParseRequest) -> TemplateParseResponse
         fields=TemplateFieldContract(
             required=tmpl.required_fields,
             optional=tmpl.optional_fields,
+            image_fields=sorted(_image_field_names(tmpl.layout)),
         ),
     )
 
@@ -2961,6 +2963,9 @@ async def web_ui(request: Request) -> HTMLResponse:
             "description": t.description,
             "required": t.required_fields,
             "optional": t.optional_fields,
+            # Fields backed by an `image` layout element — the Print page renders a file picker for
+            # these instead of a text input (source of truth: engine.image_field_names).
+            "image_fields": sorted(_image_field_names(t.layout)),
             # Raw brother_ql label id (e.g. "62", "62x29"). Drives the client-side size grouping of
             # the template picker and is the human-readable denomination fallback for the "Other"
             # bucket when `media` is None (label unknown to brother_ql).

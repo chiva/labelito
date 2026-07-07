@@ -257,12 +257,16 @@
       else { pill.className = 'pill pill-muted'; pill.textContent = 'unknown'; }
     }
 
-    // ── Field-input rendering — reused verbatim from the print page (index.html#renderFields):
-    //    one labelled text input per declared field, optional tagged, debounced re-preview on input.
+    // ── Field-input rendering — mirrors the print page (index.html#renderFields): one labelled
+    //    input per declared field, optional tagged, debounced re-preview on input. An image field
+    //    (server-reported in contract.image_fields) gets a file-picker + drag-drop widget instead of
+    //    a text input; its cached image survives this rebuild (the widget redraws from cache), so
+    //    the frequent re-detection on YAML edits never strands a chosen image.
     function renderFields() {
       const container = document.getElementById('fields-container');
       const prev = gatherFields();  // preserve already-typed sample values across re-detection
       container.innerHTML = '';
+      const imageFields = contract.image_fields || [];
       const allFields = [
         ...contract.required.map(f => ({name: f, optional: false})),
         ...contract.optional.map(f => ({name: f, optional: true})),
@@ -271,6 +275,7 @@
       for (const {name, optional} of allFields) {
         const wrap = document.createElement('div');
         wrap.className = 'field';
+        const isImage = imageFields.includes(name);
         const lbl = document.createElement('label');
         lbl.className = 'field-label';
         lbl.htmlFor = `field-${name}`;
@@ -286,23 +291,31 @@
           lbl.appendChild(document.createTextNode(' '));
           lbl.appendChild(tag);
         }
-        const inp = document.createElement('input');
-        inp.type = 'text';
-        inp.className = 'input';
-        inp.id = `field-${name}`;
-        inp.name = name;
-        inp.placeholder = name;
-        if (prev[name] !== undefined) inp.value = prev[name];
-        inp.addEventListener('input', debounce(doPreview, 600));
         wrap.appendChild(lbl);
-        wrap.appendChild(inp);
+        if (isImage) {
+          wrap.appendChild(buildImageField(name, doPreview));
+        } else {
+          const inp = document.createElement('input');
+          inp.type = 'text';
+          inp.className = 'input';
+          inp.id = `field-${name}`;
+          inp.name = name;
+          inp.placeholder = name;
+          if (prev[name] !== undefined) inp.value = prev[name];
+          inp.addEventListener('input', debounce(doPreview, 600));
+          wrap.appendChild(inp);
+        }
         container.appendChild(wrap);
       }
     }
 
     function gatherFields() {
       const fields = {};
+      const imageFields = contract.image_fields || [];
       for (const name of [...contract.required, ...contract.optional]) {
+        // Image fields carry a base64 blob (merged separately via collectImageFields), not the file
+        // input's fake "C:\fakepath\…" value — skip them here.
+        if (imageFields.includes(name)) continue;
         const el = document.getElementById(`field-${name}`);
         if (el && el.value.trim()) fields[name] = el.value.trim();
       }
@@ -407,7 +420,10 @@
         setDraftStatus('empty');
         return;
       }
-      const payload = {yaml, fields: gatherFields(), language: currentLanguage()};
+      // gatherFields() is text-only; merge base64 for any image fields so the draft preview renders
+      // the uploaded image (the /preview/draft route applies the same image caps as /print).
+      const fields = {...gatherFields(), ...collectImageFields(contract.image_fields || [])};
+      const payload = {yaml, fields, language: currentLanguage()};
       try {
         const res = await fetch(api('/preview/draft'), {
           method: 'POST', headers: authHeaders(), body: JSON.stringify(payload),
@@ -583,6 +599,9 @@
         document.getElementById('yaml').value = json.yaml;
         syncYamlHighlight();
         lastLoadedYaml = json.yaml;
+        // A different template is now loaded — drop any image cached under the previous draft so it
+        // can't bleed into the new one (the re-parse below rebuilds the field form fresh).
+        resetImageFields();
         // Reflect the loaded template in the picker when it lists that name.
         const sel = document.getElementById('load-select');
         if (sel) sel.value = name;

@@ -902,7 +902,12 @@
       const t = currentTemplate();
       const container = document.getElementById('fields-container');
       container.replaceChildren();
+      // The form is being rebuilt for a (possibly new) template — drop any image cached under the
+      // previous one so it can't leak into this form. Image data is never persisted, so there is
+      // nothing to restore (restoreSavedFields only refills text inputs).
+      resetImageFields();
       if (!t) return;
+      const imageFields = t.image_fields || [];
       const allFields = [
         ...t.required.map(f => ({name: f, optional: false})),
         ...t.optional.map(f => ({name: f, optional: true})),
@@ -910,6 +915,7 @@
       for (const {name, optional} of allFields) {
         const wrap = document.createElement('div');
         wrap.className = 'field';
+        const isImage = imageFields.includes(name);
         const lbl = document.createElement('label');
         lbl.className = 'field-label';
         lbl.htmlFor = `field-${name}`;
@@ -925,16 +931,27 @@
           req.textContent = ' *';
           lbl.appendChild(req);
         }
-        const inp = document.createElement('input');
-        inp.type = 'text';
-        inp.className = 'input';
-        inp.id = `field-${name}`;
-        inp.name = name;
-        inp.placeholder = name;
-        inp.addEventListener('input', () => { userOverride = true; formRevision++; saveFields(); });
-        inp.addEventListener('input', debounce(doPreview, 600));
         wrap.appendChild(lbl);
-        wrap.appendChild(inp);
+        if (isImage) {
+          // A file-picker + drag-drop widget; the accepted image is base64-cached and merged into
+          // the payload's `fields` by buildPayload(). A pick/clear reprises the text-input wiring
+          // (mark override, bump revision, debounced preview) but never persists the blob.
+          wrap.appendChild(buildImageField(name, () => {
+            userOverride = true;
+            formRevision++;
+            doPreview();  // a pick/clear is a discrete event — preview immediately, no debounce
+          }));
+        } else {
+          const inp = document.createElement('input');
+          inp.type = 'text';
+          inp.className = 'input';
+          inp.id = `field-${name}`;
+          inp.name = name;
+          inp.placeholder = name;
+          inp.addEventListener('input', () => { userOverride = true; formRevision++; saveFields(); });
+          inp.addEventListener('input', debounce(doPreview, 600));
+          wrap.appendChild(inp);
+        }
         container.appendChild(wrap);
       }
     }
@@ -995,9 +1012,12 @@
     }
 
     function buildPayload(extra = {}) {
+      const t = currentTemplate();
       return {
         template: selectedTemplateName,
-        fields: gatherFields(),
+        // gatherFields() is text-only (so image blobs are never persisted to localStorage); merge
+        // the base64 for any image fields here so both /preview and /print carry it.
+        fields: { ...gatherFields(), ...collectImageFields(t ? t.image_fields : []) },
         copies: parseInt(document.getElementById('copies').value, 10) || 1,
         dry_run: document.getElementById('dry-run').checked,
         language: currentLanguage(),

@@ -8,6 +8,6 @@ fields:
   optional: [line1, line2, line3]
 layout:
   - {type: text, text: "{{name}}", size: 64, align: left, bold: true, max_lines: 1}
-  - {type: text, text: "{{line1}}", size: 44, align: left}
-  - {type: text, text: "{{line2}}", size: 44, align: left}
-  - {type: text, text: "{{line3}}", size: 44, align: left}
+  - {type: text, text: "{{line1}}", size: 44, align: left, max_lines: 1}
+  - {type: text, text: "{{line2}}", size: 44, align: left, max_lines: 1}
+  - {type: text, text: "{{line3}}", size: 44, align: left, max_lines: 1}

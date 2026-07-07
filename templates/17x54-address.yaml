@@ -1,7 +1,7 @@
 name: address-17x54
 description: Compact name/address on 17×54 mm die-cut (DK-11204 family)
 label: "17x54"
-rotate: 0
+rotate: 90
 fields:
   required: [name]
   optional: [line1, line2]

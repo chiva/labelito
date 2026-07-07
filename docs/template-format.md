@@ -20,7 +20,7 @@ This document is the authoritative reference for every parameter. It is sourced 
 | `description` | **yes** | string | Human-readable summary shown in the template picker. The picker groups templates by the `label` size denomination and, on an SNMP printer, focuses the group matching the loaded roll. |
 | `label` | **yes** | string | The brother_ql label id the template prints on (e.g. `"62"`, `"62x29"`). Quote it so `62` is not parsed as an integer. See [Choosing a label](#choosing-a-label). |
 | `layout` | **yes** | list | Non-empty list of [layout elements](#layout-elements), rendered top-to-bottom. |
-| `rotate` | no | int | Quarter-turn orientation applied to the whole label. One of `0`, `90`, `180`, `270` (default `0`). Any other value is rejected. |
+| `rotate` | no | int | Quarter-turn orientation. One of `0`, `90`, `180`, `270` (default `0`); any other value is rejected. For **continuous** media the whole label is rotated. For **die-cut** media (both dimensions fixed) a `90`/`270` rotation composes the layout on a **swapped** canvas — author it for the long edge as width, so an address reads landscape along the length — and the driver rotates it back onto the roll's printable size. (A naive `rotate: 90` without this handling would make brother_ql reject the raster with `Bad image dimensions`; the app does the swap for you.) |
 | `fields` | no | mapping | Declares the [fields](#fields) a caller supplies. Omit it for a fully static label. |
 
 A template missing any of `name`, `description`, `label`, `layout` is rejected. The top-level node

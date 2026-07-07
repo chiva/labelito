@@ -873,6 +873,36 @@ def _get_geometry(label_id: str) -> tuple[int, int | None]:
     return geo.width_px, geo.height_px
 
 
+def _compose_canvas(
+    width_px: int, height_px: int | None, rotate: int
+) -> tuple[int, int | None, bool]:
+    """Canvas dimensions the engine should compose on for a given media + rotation.
+
+    A right-angle rotation of RECTANGULAR DIE-CUT media (both dimensions fixed and unequal) must be
+    composed on a SWAPPED canvas: brother_ql's ``convert()`` requires the final raster to equal the
+    label's ``dots_printable`` exactly, so the driver's 90°/270° turn of a ``(W, H)`` image yields
+    ``(H, W)`` and is rejected unless we hand it a ``(H, W)`` image to begin with. Composing landscape
+    (long edge as width) also puts each text line along the long edge — the natural address/folder
+    orientation — instead of cramming it across the narrow edge.
+
+    SQUARE / ROUND die-cut media (``width_px == height_px``, e.g. ``23x23``, ``d12``, ``d24``, ``d58``)
+    is NOT swapped: a swap is a dimensional no-op there, and the driver still rotates the square raster
+    by the full ``tmpl.rotate``, so the preview must apply that same full rotation (the non-swapped
+    path) rather than the swapped net-rotation — otherwise a ``rotate: 90`` square label previews
+    upright but prints sideways.
+
+    Continuous media (``height_px is None``, elastic length) is unchanged: it composes at the printable
+    width and the whole label is rotated, because there is no fixed second dimension to clash.
+
+    Returns ``(canvas_width, canvas_height, swapped)``. ``swapped`` tells the caller the composed image
+    is already in its readable landscape orientation (so the preview applies the swapped net-rotation
+    and the print path leaves the driver to rotate it back onto ``dots_printable``).
+    """
+    if height_px is not None and width_px != height_px and rotate in (90, 270):
+        return height_px, width_px, True
+    return width_px, height_px, False
+
+
 def _preview_bw_convert(img: Image.Image, *, dither: bool, threshold: float) -> Image.Image:
     """Apply the SAME black/white conversion brother_ql's ``convert()`` applies to the print
     raster, so a preview visually matches what will actually print.
@@ -908,19 +938,36 @@ def _render_template_preview(
     """Render a resolved :class:`Template` to a preview PNG.
 
     The single render path shared by the saved-template preview (:func:`_render_preview`) and the
-    draft studio preview (``/preview/draft``): a pre-driver render at the media's printable width
-    with the template's ``rotate`` applied in PIL for display parity, then the SAME black/white
-    conversion the print raster gets (:func:`_preview_bw_convert`) — Floyd-Steinberg dither when
-    ``dither`` is True, else brother_ql's exact threshold cutoff. ``dither``/``threshold`` fall back
-    to the server default (``settings.default_dither`` / ``settings.default_threshold``) when a
-    caller passes ``None`` (``/preview/draft`` has no rasterization options at all — see
-    :class:`DraftPreviewRequest`), so a draft still renders byte-identically to ``/preview`` of the
-    same YAML+fields called with no options overridden — including when ``DEFAULT_DITHER`` is on.
-    High-res and two-color (red) are never applied here regardless of request/template — those
-    remain print-only.
+    draft studio preview (``/preview/draft``): a pre-driver render at the media's compose canvas
+    (:func:`_compose_canvas`) then the SAME black/white conversion the print raster gets
+    (:func:`_preview_bw_convert`) — Floyd-Steinberg dither when ``dither`` is True, else brother_ql's
+    exact threshold cutoff. ``dither``/``threshold`` fall back to the server default
+    (``settings.default_dither`` / ``settings.default_threshold``) when a caller passes ``None``
+    (``/preview/draft`` has no rasterization options at all — see :class:`DraftPreviewRequest`), so a
+    draft still renders byte-identically to ``/preview`` of the same YAML+fields called with no options
+    overridden — including when ``DEFAULT_DITHER`` is on. High-res and two-color (red) are never
+    applied here regardless of request/template — those remain print-only.
+
+    Rotation display parity: for a die-cut right-angle rotation the compose canvas is already swapped
+    to the readable landscape orientation. The driver still rotates the raster by the full
+    ``tmpl.rotate`` for print, so 90° and 270° print rasters differ by a 180° turn; the preview mirrors
+    that with a *net* display rotation of ``tmpl.rotate - 90`` (90° → upright, 270° → 180° flip) so a
+    270° preview matches its flipped print and is never confused with the 90° preview. For continuous
+    media (or 0°/180°) the whole image is rotated in PIL by ``tmpl.rotate`` exactly as before, matching
+    what the driver produces.
     """
     width_px, height_px = _get_geometry(tmpl.label)
-    img = engine.render(tmpl.layout, fields, width_px, height_px, tmpl.rotate, language, now=now)
+    canvas_width, canvas_height, swapped = _compose_canvas(width_px, height_px, tmpl.rotate)
+    preview_rotate = (tmpl.rotate - 90) if swapped else tmpl.rotate
+    img = engine.render(
+        tmpl.layout,
+        fields,
+        canvas_width,
+        canvas_height,
+        preview_rotate,
+        language,
+        now=now,
+    )
     img = _preview_bw_convert(
         img,
         dither=dither if dither is not None else settings.default_dither,
@@ -1068,10 +1115,13 @@ def _execute_print(
     uses the current instant, a reprint replays the frozen original so computed ``{{date}}``
     tokens reproduce exactly.
 
-    Rotation is applied by the driver, not here: the raster is rendered unrotated at the media's
-    printable width (``rotate=0``) and ``tmpl.rotate`` is forwarded to ``render_payload``. brother_ql
-    needs the image at the roll's printable width to rasterize continuous labels correctly; the
-    ``/preview`` path rotates in PIL purely for display parity.
+    Rotation is applied by the driver, not here: the raster is rendered unrotated (engine
+    ``rotate=0``) on the media's compose canvas (:func:`_compose_canvas`) and ``tmpl.rotate`` is
+    forwarded to ``render_payload``. For a die-cut right-angle rotation the compose canvas is SWAPPED
+    (``H x W``) so the driver's quarter turn lands the raster back on ``dots_printable`` (``W x H``) —
+    otherwise brother_ql rejects the rotated image with ``Bad image dimensions``. Continuous media
+    composes at the printable width unchanged. The ``/preview`` path rotates in PIL purely for display
+    parity.
 
     Sequence batches: when ``sequence`` is not None, the batch is sent ONE LABEL AT A TIME.
     Each item's ``{{seq}}`` is resolved per item, then that single label is rendered → converted →
@@ -1088,6 +1138,9 @@ def _execute_print(
     the whole batch the same per-label way. ``copies`` is 1 in this path (model validator).
     """
     width_px, height_px = _get_geometry(tmpl.label)
+    # Compose canvas: swapped (H x W) for die-cut right-angle rotations so the driver's turn lands
+    # back on dots_printable; unchanged for continuous / 0 / 180 deg. The driver still receives rotate.
+    canvas_width, canvas_height, _canvas_swapped = _compose_canvas(width_px, height_px, tmpl.rotate)
     effective_high_res = bool(options.high_res) if options.high_res is not None else False
     effective_red = bool(options.red) if options.red is not None else False
     effective_threshold = float(
@@ -1125,8 +1178,8 @@ def _execute_print(
         return engine.render_to_png(
             tmpl.layout,
             fields,
-            width_px,
-            height_px,
+            canvas_width,
+            canvas_height,
             rotate=0,
             language=language,
             now=now,
@@ -1173,8 +1226,8 @@ def _execute_print(
                 for _ in engine.render_sequence(
                     tmpl.layout,
                     fields,
-                    width_px,
-                    height_px,
+                    canvas_width,
+                    canvas_height,
                     start=sequence.start,
                     count=sequence.count,
                     step=sequence.step,
@@ -1190,8 +1243,8 @@ def _execute_print(
                 engine.render_to_png(
                     tmpl.layout,
                     fields,
-                    width_px,
-                    height_px,
+                    canvas_width,
+                    canvas_height,
                     rotate=0,
                     language=language,
                     now=now,

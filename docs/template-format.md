@@ -122,10 +122,35 @@ into a single vertical stack at the label's printable width.
 
 | Attribute | Type | Default | Notes |
 |---|---|---|---|
-| `padding_top` | int ≥ 0 | `4` | Vertical inset above the element (template px). |
-| `padding_bottom` | int ≥ 0 | `4` | Vertical inset below. |
+| `padding_top` | int ≥ 0 | `0` | Blank band above the element (template px). |
+| `padding_right` | int ≥ 0 | `0` | Insets the content from the right edge. |
+| `padding_bottom` | int ≥ 0 | `0` | Blank band below the element. |
+| `padding_left` | int ≥ 0 | `0` | Insets the content from the left edge — e.g. a left buffer so print doesn't clip at the label border. |
+| `padding` | int, or list of 1–4 ints | — | CSS-style shorthand for the four sides (see below). |
 | `color` | enum | `black` | `red` draws this element in the red layer — honoured only on two-color models when the print resolves `red=true`; otherwise it draws black (output is byte-identical to a plain label). |
 | `width`, `weight`, `valign` | — | — | Column hints honoured **only** inside a [`row`](#row); inert on a stand-alone element. |
+
+**Padding** is applied uniformly around every element: `padding_left`/`padding_right` inset the
+content (the element re-lays-out into the narrower width, so wrapping and alignment respect the
+inset), while `padding_top`/`padding_bottom` add blank bands above/below. It is **additive** on top of
+any spacing an element already carries, and every side defaults to `0`, so a template that sets no
+padding renders exactly as before. Padding applies to top-level layout elements (a `row`/`column`
+container is padded as a whole; its individual children are not).
+
+The `padding` shorthand mirrors CSS's 1–4-value clockwise expansion (a longhand key overrides the
+shorthand for its side):
+
+| Form | Expands to |
+|---|---|
+| `padding: 8` | all four sides `8` |
+| `padding: [8, 12]` | top/bottom `8`, left/right `12` |
+| `padding: [8, 12, 4]` | top `8`, left/right `12`, bottom `4` |
+| `padding: [8, 12, 4, 16]` | top `8`, right `12`, bottom `4`, left `16` |
+
+```yaml
+- {type: text, text: "{{addr}}", padding_left: 24, align: left}   # left buffer off the border
+- {type: title, text: "{{name}}", padding: [12, 24]}              # 12 px vertical, 24 px horizontal
+```
 
 Unknown attributes on an element are ignored (except `children`, which is allowed only on a
 [`row`](#row) or [`column`](#column)).

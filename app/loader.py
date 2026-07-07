@@ -20,6 +20,7 @@ from app.render.elements import (
     LIST_MARKER_CHOICES,
     TEXT_BACKGROUND_CHOICES,
     VALIGN_CHOICES,
+    _resolve_padding,
     _safe_icon_name,
 )
 from app.render.engine import (
@@ -278,11 +279,14 @@ _ELEMENT_NUMERIC_BOUNDS: dict[str, tuple[tuple[str, int, int], ...]] = {
     "spacer": (("size", 0, MAX_ELEMENT_DIMENSION),),
 }
 
-# Paddings exist on EVERY element (ElementBase). They are pixel insets a renderer adds, so an
-# unbounded value inflates the strip height; bound them uniformly.
+# Paddings exist on EVERY element (ElementBase). They are pixel insets the render wrapper adds
+# (top/bottom grow the strip; left/right inset the content), so an unbounded value inflates the strip;
+# bound all four uniformly. The `padding` shorthand is validated separately (_validate_padding).
 _COMMON_NUMERIC_BOUNDS: tuple[tuple[str, int, int], ...] = (
     ("padding_top", 0, MAX_ELEMENT_DIMENSION),
+    ("padding_right", 0, MAX_ELEMENT_DIMENSION),
     ("padding_bottom", 0, MAX_ELEMENT_DIMENSION),
+    ("padding_left", 0, MAX_ELEMENT_DIMENSION),
 )
 
 
@@ -397,6 +401,30 @@ def _require_bool(file_name: str, label: str, key: str, value: Any) -> None:
         )
 
 
+def _validate_padding(file_name: str, label: str, value: Any) -> None:
+    """Validate the CSS-style ``padding`` shorthand: a scalar int or a list of 1-4 ints.
+
+    Mirrors CSS's 1-4-value clockwise forms (all / v h / t h b / t r b l). Each value is a pixel inset
+    bounded like the longhand fields, so a huge/negative/non-int (or a >4-value list) is rejected up
+    front rather than silently mis-expanded by :func:`app.render.elements._resolve_padding`."""
+    if isinstance(value, bool) or not isinstance(value, (int, list)):
+        raise TemplateLoadError(
+            f"{file_name}: {label} 'padding' must be an int or a list of 1-4 ints, got {value!r}"
+        )
+    if isinstance(value, int):
+        _require_int(file_name, label, "padding", value, minimum=0, maximum=MAX_ELEMENT_DIMENSION)
+        return
+    if not 1 <= len(value) <= 4:
+        raise TemplateLoadError(
+            f"{file_name}: {label} 'padding' list must have 1-4 values (CSS clockwise: all / v h / "
+            f"t h b / t r b l), got {len(value)}"
+        )
+    for i, item in enumerate(value):
+        _require_int(
+            file_name, label, f"padding[{i}]", item, minimum=0, maximum=MAX_ELEMENT_DIMENSION
+        )
+
+
 def _validate_row_child_sizing(file_name: str, label: str, child: dict[str, Any]) -> None:
     """Validate the per-child column hints (``width``/``weight``/``valign``) of a row child."""
     width = child.get("width")
@@ -452,6 +480,8 @@ def _validate_element(
     # Bound every render-affecting numeric attribute (sizes, heights, paddings, line counts) BEFORE
     # render/save so a tiny YAML cannot drive an unbounded PIL allocation or an OverflowError.
     _validate_element_numerics(file_name, label, el)
+    if "padding" in el:
+        _validate_padding(file_name, label, el["padding"])
     # Two-color: an optional `color` selects the red vs black layer. Validate up front like
     # every other layout control so a typo (color: blue) is a clear load error, not a silently
     # ignored value. Only honoured when a print resolves red=true; otherwise the element draws black.
@@ -564,8 +594,6 @@ _HEIGHT_DEFAULTS: dict[str, int] = {
     "icon": 80,  # IconElement.size
     "barcode": 60,  # BarcodeElement.height
 }
-# Default vertical insets present on EVERY element (ElementBase.padding_top/padding_bottom == 4).
-_DEFAULT_PADDING = 4
 # Text line height is ≈1.3xfont size (an 8 px line gap atop the glyph height); round up to 2x so the
 # per-element estimate is a comfortable upper bound on the rendered text strip.
 _TEXT_LINE_HEIGHT_FACTOR = 2
@@ -594,9 +622,10 @@ def _estimate_element_height(el: dict[str, Any]) -> int:
     (:data:`MAX_TOTAL_STRIP_HEIGHT`); it is intentionally an upper bound, not exact.
     """
     el_type = str(el.get("type"))
-    padding = _int_attr(el, "padding_top", _DEFAULT_PADDING) + _int_attr(
-        el, "padding_bottom", _DEFAULT_PADDING
-    )
+    # Only top/bottom padding adds height (left/right inset the content width). Resolve via the same
+    # shorthand+longhand logic the renderer uses so the budget matches what actually renders.
+    _pt, _pr, _pb, _pl = _resolve_padding(el)
+    padding = _pt + _pb
 
     if el_type == "row":
         children = el.get("children")

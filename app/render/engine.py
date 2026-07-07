@@ -651,11 +651,26 @@ class RenderEngine:
     ) -> list[Image.Image]:
         strips: list[Image.Image] = []
         for el, res in zip(elements, resolved, strict=True):
+            # Author padding is applied UNIFORMLY here, around every element type, rather than threaded
+            # into each renderer: left/right shrink the width the element lays out into (its own
+            # alignment/wrapping then respects the inset), top/bottom add blank bands. All four default
+            # to 0, so a label with no padding renders byte-identically (content_width == canvas_width,
+            # no wrapping band added). Padding is additive on top of any per-element internal spacing.
+            left, right = el._px(el.padding_left), el._px(el.padding_right)
+            content_width = max(1, canvas_width - left - right)
             strip = el.render(
-                canvas_width, res, self.fonts_dir, self.icons_dir, self.icon_collections_dir
+                content_width, res, self.fonts_dir, self.icons_dir, self.icon_collections_dir
             )
-            if strip.height > 0:
-                strips.append(strip)
+            # A blank element (absent optional field) renders zero-height and contributes nothing — no
+            # padding either, so an empty field never reserves space.
+            if strip.height == 0:
+                continue
+            top, bottom = el._px(el.padding_top), el._px(el.padding_bottom)
+            if left or right or top or bottom:
+                padded = Image.new(strip.mode, (canvas_width, strip.height + top + bottom), el._bg)
+                padded.paste(strip, (left, top))
+                strip = padded
+            strips.append(strip)
         return strips
 
     def _compose(

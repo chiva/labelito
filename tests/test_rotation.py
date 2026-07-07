@@ -57,6 +57,13 @@ def test_compose_canvas_die_cut_straight_no_swap(rotate: int) -> None:
 
 
 @pytest.mark.parametrize("rotate", [0, 90, 180, 270])
+def test_compose_canvas_square_die_cut_never_swaps(rotate: int) -> None:
+    # Square/round die-cut (width == height, e.g. 23x23, d12): a swap is a dimensional no-op and the
+    # driver rotates the raster in place, so it must take the non-swapped (full-rotation) preview path.
+    assert main_mod._compose_canvas(202, 202, rotate) == (202, 202, False)
+
+
+@pytest.mark.parametrize("rotate", [0, 90, 180, 270])
 def test_compose_canvas_continuous_never_swaps(rotate: int) -> None:
     # Continuous media has no fixed second dimension to clash; height stays None, no swap.
     assert main_mod._compose_canvas(696, None, rotate) == (696, None, False)
@@ -161,8 +168,8 @@ def test_preview_die_cut_90_and_270_differ() -> None:
     tmpl270 = validate_template_from_string(_ASYMMETRIC_DIE_CUT_YAML.format(rotate=270))
     assert tmpl90.rotate == 90 and tmpl270.rotate == 270
 
-    png90 = main_mod._render_template_preview(tmpl90, fields, "en")
-    png270 = main_mod._render_template_preview(tmpl270, fields, "en")
+    png90 = main_mod._render_template_preview(tmpl90, fields, "en", dither=False)
+    png270 = main_mod._render_template_preview(tmpl270, fields, "en", dither=False)
     assert png90 != png270, "90° and 270° die-cut previews must be distinguishable"
 
     img90 = Image.open(io.BytesIO(png90))
@@ -171,3 +178,36 @@ def test_preview_die_cut_90_and_270_differ() -> None:
     assert img90.width > img90.height  # both readable landscape
     # 270 preview is the 90 preview turned 180° (net display rotation tmpl.rotate - 90).
     assert img270.rotate(180).tobytes() == img90.tobytes()
+
+
+_ASYMMETRIC_SQUARE_YAML = """\
+name: square-rotate-parity-probe
+description: Asymmetric square die-cut layout to check rotation is not suppressed
+label: "23x23"
+rotate: {rotate}
+fields:
+  required: [name]
+layout:
+  - {{type: title, text: "{{{{name}}}}", align: left, max_lines: 1}}
+"""
+
+
+def test_preview_square_die_cut_applies_full_rotation() -> None:
+    """Regression (Codex): a square/round die-cut label rotates in place, so its preview must apply
+    the full ``tmpl.rotate`` (not the swapped net-rotation) — otherwise a rotate:90 label previews
+    upright while the driver prints it sideways."""
+    from app.loader import validate_template_from_string
+
+    fields = {"name": "TOP-LEFT-EDGE"}
+    tmpl0 = validate_template_from_string(_ASYMMETRIC_SQUARE_YAML.format(rotate=0))
+    tmpl90 = validate_template_from_string(_ASYMMETRIC_SQUARE_YAML.format(rotate=90))
+
+    png0 = main_mod._render_template_preview(tmpl0, fields, "en", dither=False)
+    png90 = main_mod._render_template_preview(tmpl90, fields, "en", dither=False)
+    assert png0 != png90, "square rotate:90 preview must show the rotation, not suppress it"
+
+    img0 = Image.open(io.BytesIO(png0))
+    img90 = Image.open(io.BytesIO(png90))
+    assert img0.size == img90.size  # square, so dims unchanged
+    # The driver rotates the rotate:0 raster by the full 90°; the preview must match that orientation.
+    assert img0.rotate(90, expand=True).tobytes() == img90.tobytes()

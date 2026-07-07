@@ -878,21 +878,27 @@ def _compose_canvas(
 ) -> tuple[int, int | None, bool]:
     """Canvas dimensions the engine should compose on for a given media + rotation.
 
-    A right-angle rotation of DIE-CUT media (both dimensions fixed) must be composed on a SWAPPED
-    canvas: brother_ql's ``convert()`` requires the final raster to equal the label's ``dots_printable``
-    exactly, so the driver's 90°/270° turn of a ``(W, H)`` image yields ``(H, W)`` and is rejected
-    unless we hand it a ``(H, W)`` image to begin with. Composing landscape (long edge as width) also
-    puts each text line along the long edge — the natural address/folder orientation — instead of
-    cramming it across the narrow edge.
+    A right-angle rotation of RECTANGULAR DIE-CUT media (both dimensions fixed and unequal) must be
+    composed on a SWAPPED canvas: brother_ql's ``convert()`` requires the final raster to equal the
+    label's ``dots_printable`` exactly, so the driver's 90°/270° turn of a ``(W, H)`` image yields
+    ``(H, W)`` and is rejected unless we hand it a ``(H, W)`` image to begin with. Composing landscape
+    (long edge as width) also puts each text line along the long edge — the natural address/folder
+    orientation — instead of cramming it across the narrow edge.
+
+    SQUARE / ROUND die-cut media (``width_px == height_px``, e.g. ``23x23``, ``d12``, ``d24``, ``d58``)
+    is NOT swapped: a swap is a dimensional no-op there, and the driver still rotates the square raster
+    by the full ``tmpl.rotate``, so the preview must apply that same full rotation (the non-swapped
+    path) rather than the swapped net-rotation — otherwise a ``rotate: 90`` square label previews
+    upright but prints sideways.
 
     Continuous media (``height_px is None``, elastic length) is unchanged: it composes at the printable
     width and the whole label is rotated, because there is no fixed second dimension to clash.
 
     Returns ``(canvas_width, canvas_height, swapped)``. ``swapped`` tells the caller the composed image
-    is already in its readable landscape orientation (so the preview path must NOT additionally rotate
-    it, while the print path leaves the driver to rotate it back onto ``dots_printable``).
+    is already in its readable landscape orientation (so the preview applies the swapped net-rotation
+    and the print path leaves the driver to rotate it back onto ``dots_printable``).
     """
-    if height_px is not None and rotate in (90, 270):
+    if height_px is not None and width_px != height_px and rotate in (90, 270):
         return height_px, width_px, True
     return width_px, height_px, False
 

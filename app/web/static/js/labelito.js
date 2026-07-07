@@ -404,6 +404,14 @@ const IMAGE_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 // so a module-level map is sufficient; reset on template load / template switch.
 const imageFieldData = new Map();
 
+// fieldName → read-generation. FileReader is async, so a slow read for a large file can finish AFTER
+// the user re-picked, cleared, or switched templates. Each read captures the current generation;
+// its onload only commits if the field's generation is still that value. Picking (a new read),
+// clearing, and resetting all bump the generation, so a superseded read is dropped instead of
+// clobbering the current value (which would otherwise ride into /preview and /print).
+const imageFieldGen = new Map();
+let _imageReadSeq = 0;
+
 // Strip a FileReader data URL ("data:image/png;base64,AAAA…") down to the base64 payload the render
 // element decodes. Returns "" for an unexpected shape so a broken read can't smuggle a data: prefix
 // into the field (the server would then fail to decode it).
@@ -426,8 +434,13 @@ function _acceptImageFile(name, file, wrap, onChange) {
     showStatus(`"${file.name}" is too large (max ${mb} MB).`, 'err');
     return;
   }
+  // Claim this read's generation only now (after validation): a rejected pick must leave a
+  // previously-accepted image — and its in-flight read — untouched.
+  const gen = ++_imageReadSeq;
+  imageFieldGen.set(name, gen);
   const reader = new FileReader();
   reader.onload = () => {
+    if (imageFieldGen.get(name) !== gen) return; // superseded by a newer pick / clear / reset
     const b64 = _dataUrlToBase64(reader.result);
     if (!b64) {
       showStatus(`Could not read "${file.name}".`, 'err');
@@ -437,7 +450,10 @@ function _acceptImageFile(name, file, wrap, onChange) {
     _renderImagePreview(wrap, name, file.name, reader.result);
     if (onChange) onChange();
   };
-  reader.onerror = () => showStatus(`Could not read "${file.name}".`, 'err');
+  reader.onerror = () => {
+    if (imageFieldGen.get(name) !== gen) return;
+    showStatus(`Could not read "${file.name}".`, 'err');
+  };
   reader.readAsDataURL(file);
 }
 
@@ -553,15 +569,19 @@ function collectImageFields(names) {
   return out;
 }
 
-// Drop one field's cached image (the widget redraw is the caller's concern).
+// Drop one field's cached image (the widget redraw is the caller's concern). Bumps the field's read
+// generation so an in-flight read for it can't repopulate the cache after the clear.
 function clearImageField(name) {
   imageFieldData.delete(name);
+  imageFieldGen.set(name, ++_imageReadSeq);
 }
 
 // Drop every cached image — call when switching templates / re-detecting fields so one template's
-// image never leaks into another's form.
+// image never leaks into another's form. Clearing the generation map also invalidates any in-flight
+// read (its captured generation no longer matches the now-absent entry).
 function resetImageFields() {
   imageFieldData.clear();
+  imageFieldGen.clear();
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────────────

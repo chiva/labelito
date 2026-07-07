@@ -29,6 +29,17 @@ SAMPLE_TEMPLATE = "title-subtitle"
 # (templates/62-image.yaml, name: image) — used to drive the file-upload UI.
 IMAGE_TEMPLATE = "image"
 
+
+def _png_bytes(color: int, size: tuple[int, int] = (4, 4)) -> bytes:
+    """A distinct grayscale PNG so two uploads have different base64 payloads."""
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("L", size, color).save(buf, format="PNG")
+    return buf.getvalue()
+
 # A valid 1x1 white PNG, for fulfilling held /preview routes with a real (but recognizable —
 # naturalWidth 1) image body.
 PNG_1PX = base64.b64decode(
@@ -212,6 +223,58 @@ def test_image_field_edit_then_reload_initializes_cleanly(authed_page: Page) -> 
     # Init completed: the image field re-rendered as a file input and the text value was restored.
     expect(authed_page.locator("#field-image")).to_have_attribute("type", "file")
     expect(authed_page.locator("#field-title")).to_have_value("Reload me")
+
+
+def test_image_field_replace_uses_last_pick(authed_page: Page) -> None:
+    """Replacing an image before printing uses the latest pick, not a stale one.
+
+    Guards the read-generation logic that discards a superseded FileReader completion: two picks in
+    succession must leave the widget and the /print payload carrying the SECOND image, never the first.
+    """
+    import json as _json
+
+    authed_page.goto("/")
+    _select_template(authed_page, IMAGE_TEMPLATE)
+
+    first, second = _png_bytes(0, (16, 16)), _png_bytes(255, (4, 4))
+    fi = authed_page.locator("#field-image")
+    fi.set_input_files(files=[{"name": "first.png", "mimeType": "image/png", "buffer": first}])
+    fi.set_input_files(files=[{"name": "second.png", "mimeType": "image/png", "buffer": second}])
+
+    expect(authed_page.locator(".image-filename")).to_have_text("second.png")
+
+    authed_page.check("#dry-run")
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/print") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("button.btn-print")
+    payload = _json.loads(resp_info.value.request.post_data)
+    assert payload["fields"]["image"] == base64.b64encode(second).decode(), (
+        "the last-picked image must win"
+    )
+
+
+def test_studio_undeclared_image_field_renders_picker(authed_page: Page) -> None:
+    """An image element whose field is NOT in fields.required/optional is still fillable in the Studio.
+
+    The loader accepts such a template (an image `field` is not a {{token}}), so the field renderer
+    must render a picker for it — otherwise the image is unfillable and the draft previews blank.
+    """
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#yaml")).to_be_visible()
+    yaml = (
+        "name: draft-undeclared\n"
+        "description: image field not declared in fields\n"
+        'label: "62"\n'
+        "rotate: 0\n"
+        "fields:\n"
+        "  required: []\n"
+        "  optional: []\n"
+        "layout:\n"
+        "  - {type: image, field: photo}\n"
+    )
+    authed_page.fill("#yaml", yaml)
+    expect(authed_page.locator("#field-photo")).to_have_attribute("type", "file")
 
 
 def test_print_page_background_poll_converges_status_badge(authed_page_snmp: Page) -> None:

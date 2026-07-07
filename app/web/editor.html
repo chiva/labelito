@@ -267,9 +267,14 @@
       const prev = gatherFields();  // preserve already-typed sample values across re-detection
       container.innerHTML = '';
       const imageFields = contract.image_fields || [];
+      // An image element's `field` need not be declared in required/optional (it isn't a {{token}}),
+      // so render a picker for any image field not otherwise listed — else it would be unfillable and
+      // the draft would preview blank. Treated as optional (an absent image is a zero-height strip).
+      const declared = new Set([...contract.required, ...contract.optional]);
       const allFields = [
         ...contract.required.map(f => ({name: f, optional: false})),
         ...contract.optional.map(f => ({name: f, optional: true})),
+        ...imageFields.filter(f => !declared.has(f)).map(f => ({name: f, optional: true})),
       ];
       document.getElementById('fields-empty').style.display = allFields.length ? 'none' : '';
       for (const {name, optional} of allFields) {

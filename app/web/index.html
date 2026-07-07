@@ -908,9 +908,15 @@
       resetImageFields();
       if (!t) return;
       const imageFields = t.image_fields || [];
+      // An image element's `field` need not be declared in required/optional (it isn't a {{token}},
+      // so the loader doesn't force it). Render a picker for any such field too — otherwise it would
+      // be unfillable and the label would silently preview/print blank. Treat it as optional (an
+      // absent image renders a zero-height strip, which is valid).
+      const declared = new Set([...t.required, ...t.optional]);
       const allFields = [
         ...t.required.map(f => ({name: f, optional: false})),
         ...t.optional.map(f => ({name: f, optional: true})),
+        ...imageFields.filter(f => !declared.has(f)).map(f => ({name: f, optional: true})),
       ];
       for (const {name, optional} of allFields) {
         const wrap = document.createElement('div');

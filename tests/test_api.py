@@ -1281,6 +1281,34 @@ def _gradient_png_b64(size: tuple[int, int] = (256, 64)) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def _corrupt_png_b64() -> str:
+    """A PNG that parses at the header (valid IHDR/size) but whose pixel data is truncated, so a full
+    decode fails. Exercises the validate-time decode guard."""
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), (120, 120, 120)).save(buf, format="PNG")
+    full = buf.getvalue()
+    return base64.b64encode(full[: len(full) // 2]).decode()
+
+
+def test_preview_corrupt_image_is_422_not_500(client: TestClient) -> None:
+    """A header-valid but pixel-corrupt image is rejected as a clean 422 at validation, not surfaced
+    as a 500 when the renderer later fails to decode it."""
+    resp = client.post(
+        "/preview", json={"template": "image-test", "fields": {"image": _corrupt_png_b64()}}
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_print_corrupt_image_is_422_not_500(client: TestClient) -> None:
+    """/print rejects a pixel-corrupt image up front (422) rather than reaching the print path and
+    failing with a 500."""
+    resp = client.post(
+        "/print",
+        json={"template": "image-test", "fields": {"image": _corrupt_png_b64()}, "dry_run": True},
+    )
+    assert resp.status_code == 422, resp.text
+
+
 def test_preview_image_honours_dither_and_threshold(client: TestClient) -> None:
     """dither and threshold materially change an image preview.
 

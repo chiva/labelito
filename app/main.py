@@ -2627,14 +2627,22 @@ def _validate_upload_image(raw: bytes) -> None:
     try:
         with Image.open(io.BytesIO(raw)) as im:
             width, height = im.size
+            if width * height > MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    413, f"Image too large: {width}x{height} px (max {MAX_IMAGE_PIXELS} px)"
+                )
+            # ``Image.open`` and ``.size`` only parse the header. Force a full pixel decode so a
+            # header-valid but pixel-corrupt upload (truncated/garbled image data) is rejected as a
+            # clean 422 HERE rather than raising OSError deep in the renderer — which would surface as
+            # a 500 and, for /print, only after reaching the print path. Decode AFTER the pixel-count
+            # check so a decompression bomb is bounded out before we allocate its pixels.
+            im.load()
+    except HTTPException:
+        raise  # our own 413 (pixel-count) — not a decode failure
     except Image.DecompressionBombError as exc:
         raise HTTPException(413, f"Image has too many pixels: {exc}") from exc
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise HTTPException(422, f"Invalid image upload: {exc}") from exc
-    if width * height > MAX_IMAGE_PIXELS:
-        raise HTTPException(
-            413, f"Image too large: {width}x{height} px (max {MAX_IMAGE_PIXELS} px)"
-        )
 
 
 def _image_field_names(layout: list[dict[str, Any]]) -> set[str]:

@@ -13,7 +13,12 @@ from typing import Any
 
 from PIL import Image
 
-from app.render.elements import ElementBase, build_element, resolve_custom_icon_path
+from app.render.elements import (
+    ElementBase,
+    _apply_padding,
+    build_element,
+    resolve_custom_icon_path,
+)
 from app.render.i18n import Translator
 
 
@@ -651,34 +656,19 @@ class RenderEngine:
     ) -> list[Image.Image]:
         strips: list[Image.Image] = []
         for el, res in zip(elements, resolved, strict=True):
-            # Author padding is applied UNIFORMLY here, around every element type, rather than threaded
-            # into each renderer: left/right shrink the width the element lays out into (its own
-            # alignment/wrapping then respects the inset), top/bottom add blank bands. All four default
-            # to 0, so a label with no padding renders byte-identically (content_width == canvas_width,
-            # no wrapping band added). Padding is additive on top of any per-element internal spacing.
-            left, right = el._px(el.padding_left), el._px(el.padding_right)
-            content_width = canvas_width - left - right
-            # Horizontal padding wider than the label leaves no room to draw. Fail loudly (the print
-            # path surfaces this as a Render error) instead of clamping to a 1px sliver, which would
-            # print a silently blank/unreadable label from a schema-valid template.
-            if content_width < 1:
-                raise ValueError(
-                    f"padding_left ({el.padding_left}) + padding_right ({el.padding_right}) leaves "
-                    f"no content width on a {canvas_width}px canvas; reduce the horizontal padding"
+            # Author padding is applied UNIFORMLY via _apply_padding — the same helper the row/column
+            # child renderers use — so padding behaves identically on top-level and nested elements.
+            # A blank element (absent optional field) renders zero-height and contributes nothing.
+            def _render(
+                content_width: int, el: ElementBase = el, res: dict[str, Any] = res
+            ) -> Image.Image:
+                return el.render(
+                    content_width, res, self.fonts_dir, self.icons_dir, self.icon_collections_dir
                 )
-            strip = el.render(
-                content_width, res, self.fonts_dir, self.icons_dir, self.icon_collections_dir
-            )
-            # A blank element (absent optional field) renders zero-height and contributes nothing — no
-            # padding either, so an empty field never reserves space.
-            if strip.height == 0:
-                continue
-            top, bottom = el._px(el.padding_top), el._px(el.padding_bottom)
-            if left or right or top or bottom:
-                padded = Image.new(strip.mode, (canvas_width, strip.height + top + bottom), el._bg)
-                padded.paste(strip, (left, top))
-                strip = padded
-            strips.append(strip)
+
+            strip = _apply_padding(el, canvas_width, _render)
+            if strip.height > 0:
+                strips.append(strip)
         return strips
 
     def _compose(

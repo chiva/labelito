@@ -288,15 +288,6 @@ _COMMON_NUMERIC_BOUNDS: tuple[tuple[str, int, int], ...] = (
     ("padding_bottom", 0, MAX_ELEMENT_DIMENSION),
     ("padding_left", 0, MAX_ELEMENT_DIMENSION),
 )
-# Every padding key (longhand sides + the shorthand). Padding is honoured only on top-level elements,
-# so these are rejected on row/column children rather than silently ignored.
-PADDING_KEYS: tuple[str, ...] = (
-    "padding",
-    "padding_top",
-    "padding_right",
-    "padding_bottom",
-    "padding_left",
-)
 
 
 def _validate_element_numerics(file_name: str, label: str, el: dict[str, Any]) -> None:
@@ -463,7 +454,6 @@ def _validate_element(
     el: Any,
     *,
     allowed_containers: frozenset[str] = CONTAINER_TYPES,
-    nested: bool = False,
 ) -> None:
     """Validate one layout element's type (and icon/container/decoration specifics), recursing.
 
@@ -472,21 +462,9 @@ def _validate_element(
     ``column``; a row's children allow only ``column`` (a row may hold columns, not another row); a
     column's children allow no container at all (columns hold only leaf elements). A container found
     where it isn't allowed is rejected loudly rather than silently mis-rendering.
-
-    ``nested`` marks a ``row``/``column`` child. Padding is applied only to top-level elements (by
-    ``RenderEngine._render_elements``); a child's padding_* keys would have no effect, so they are
-    rejected here rather than silently accepted-and-ignored (the same footgun the padding fields were
-    added to remove). Pad the container as a whole instead.
     """
     if not isinstance(el, dict):
         raise TemplateLoadError(f"{file_name}: {label} must be a mapping")
-    if nested:
-        present = [k for k in PADDING_KEYS if k in el]
-        if present:
-            raise TemplateLoadError(
-                f"{file_name}: {label} padding ({', '.join(present)}) is not supported on a "
-                f"row/column child — it has no effect there; pad the container element instead"
-            )
     el_type = el.get("type")
     if el_type not in VALID_ELEMENT_TYPES:
         raise TemplateLoadError(
@@ -574,7 +552,7 @@ def _validate_element(
             child_label = f"{label}.children[{j}]"
             # A row may hold columns but not another row (single-level grid).
             _validate_element(
-                file_name, child_label, child, allowed_containers=frozenset({"column"}), nested=True
+                file_name, child_label, child, allowed_containers=frozenset({"column"})
             )
             _validate_row_child_sizing(file_name, child_label, child)
     elif el_type == "column":
@@ -590,9 +568,7 @@ def _validate_element(
         for j, child in enumerate(children):
             child_label = f"{label}.children[{j}]"
             # A column holds only leaf elements — no container may nest inside it.
-            _validate_element(
-                file_name, child_label, child, allowed_containers=frozenset(), nested=True
-            )
+            _validate_element(file_name, child_label, child, allowed_containers=frozenset())
     elif "children" in el:
         # Only a container ('row'/'column') renders children (the sole elements with that dataclass
         # field). A 'children' list on any other element is silently ignored at render time, yet the

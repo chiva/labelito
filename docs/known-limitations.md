@@ -409,3 +409,28 @@ renderer's own trusted output from the upload decompression-bomb guard (lift `MA
 around that specific internal `Image.open`, or hand the driver a `PIL.Image` directly instead of
 re-encoding to PNG) — deliberately out of scope here to avoid touching the untrusted-upload security
 boundary.
+
+## Over-wide horizontal padding fails at render time, not at template save
+
+Element padding (`padding_left`/`padding_right`, or the `padding` shorthand) is bounded per-side at
+load time (each ≤ `MAX_ELEMENT_DIMENSION`), but the *sum* is **not** validated against the label's
+printable width when a template is saved or parsed — so a schema-valid template can still request
+more horizontal padding than the tape is wide (e.g. `padding_left: 350` + `padding_right: 350` on a
+696 px 62 mm label, or a smaller value on a narrow 12/29 mm roll or inside a narrow row column). Such
+a template **saves and parses successfully**, then `render`/`preview`/`print` raises a clear
+`ValueError` ("padding_left (…) + padding_right (…) leaves no content width on a Npx canvas") which
+the print path surfaces as a `500` render error.
+
+**Why this is acceptable here:** the failure is **loud and named** (never a silently blank label —
+the original clamp-to-1px behaviour was removed), and it surfaces the instant the author previews the
+template, which in the single-author Studio workflow is immediately. The author sees the exact
+padding values and the canvas width and reduces them.
+
+**Why it isn't validated at save time:** the printable width depends on the resolved driver/label
+geometry (per-model `dots_printable`), the template's `rotate` (die-cut media swaps width/height), and
+whether the print is `high_res` (2× scale) — none of which the geometry-agnostic loader knows. Adding
+a save-time `422` would couple the validator to the driver layer and re-derive the compose-canvas
+width (including the rotate swap and high-res doubling) for every element. **Mitigation if needed
+later:** compute the effective compose-canvas width in the template-validation/save path (where the
+label + rotate + render options are known), sum the resolved horizontal padding per element, and
+reject with `422` before the template can be saved or selected.

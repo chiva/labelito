@@ -130,13 +130,14 @@ into a single vertical stack at the label's printable width.
 | `color` | enum | `black` | `red` draws this element in the red layer — honoured only on two-color models when the print resolves `red=true`; otherwise it draws black (output is byte-identical to a plain label). |
 | `width`, `weight`, `valign` | — | — | Column hints honoured **only** inside a [`row`](#row); inert on a stand-alone element. |
 
-**Padding** is applied uniformly around every element: `padding_left`/`padding_right` inset the
-content (the element re-lays-out into the narrower width, so wrapping and alignment respect the
-inset), while `padding_top`/`padding_bottom` add blank bands above/below. It is **additive** on top of
-any spacing an element already carries, and every side defaults to `0`, so a template that sets no
-padding renders exactly as before. Padding applies to top-level layout elements: a `row`/`column`
-container is padded as a whole, and padding on its individual **children is rejected** at load time
-(it would have no effect there) — pad the container instead.
+**Padding** is applied uniformly around every element — top-level elements *and* `row`/`column`
+children (per-cell padding): `padding_left`/`padding_right` inset the content (the element re-lays-out
+into the narrower width, so wrapping and alignment respect the inset), while
+`padding_top`/`padding_bottom` add blank bands above/below. It is **additive** on top of any spacing
+an element already carries, and every side defaults to `0`, so a template that sets no padding renders
+exactly as before. On a `row` child the inset is relative to that child's column width. Horizontal
+padding wider than the available width has no room to render — see
+[known limitations](known-limitations.md).
 
 The `padding` shorthand mirrors CSS's 1–4-value clockwise expansion (a longhand key overrides the
 shorthand for its side):

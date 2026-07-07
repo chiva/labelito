@@ -189,6 +189,38 @@ def test_padding_horizontal_exceeds_width_raises(engine: RenderEngine) -> None:
         engine._render_elements([el], [{}], CANVAS_W)  # CANVAS_W is 696; 350+350 > 696
 
 
+def test_padding_applies_to_column_child(engine: RenderEngine) -> None:
+    """Padding on a row/column child is applied per-cell (via _guarded_child_strip), not just on
+    top-level elements — a padded child stacks taller than an unpadded one."""
+    base = build_element(
+        {"type": "column", "children": [{"type": "text", "text": "hi"}]},
+    )
+    padded = build_element(
+        {"type": "column", "children": [{"type": "text", "text": "hi", "padding_top": 12}]},
+    )
+    [sb] = engine._render_elements([base], [{"__children__": [{}]}], CANVAS_W)
+    [sp] = engine._render_elements([padded], [{"__children__": [{}]}], CANVAS_W)
+    assert sp.height == sb.height + 12
+
+
+def test_padding_applies_to_row_child_left_inset(engine: RenderEngine) -> None:
+    """A row child's left padding insets its content within its own column."""
+    base = build_element(
+        {"type": "row", "children": [{"type": "text", "text": "hi", "align": "left"}]},
+    )
+    padded = build_element(
+        {
+            "type": "row",
+            "children": [{"type": "text", "text": "hi", "align": "left", "padding_left": 30}],
+        },
+    )
+    [sb] = engine._render_elements([base], [{"__children__": [{}]}], CANVAS_W)
+    [sp] = engine._render_elements([padded], [{"__children__": [{}]}], CANVAS_W)
+    bb, pb = _whole_ink_bbox(sb), _whole_ink_bbox(sp)
+    assert bb is not None and pb is not None
+    assert abs((pb[0] - bb[0]) - 30) <= 1
+
+
 def test_padding_scales_with_high_res(engine: RenderEngine) -> None:
     """Padding is a template-px inset, so it doubles under high_res (scale=2) like every dimension."""
     base = build_element({"type": "text", "text": "Hi"}, scale=2)

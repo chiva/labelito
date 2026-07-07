@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -986,6 +987,46 @@ def _failure_placeholder(
     return img
 
 
+def _apply_padding(
+    el: ElementBase,
+    available_width: int,
+    render_fn: Callable[[int], Image.Image],
+) -> Image.Image:
+    """Render ``el`` into a padding-inset width and wrap the result with its per-side padding.
+
+    The single mechanism behind author padding, shared by the engine's top-level vertical stack and
+    the ``row``/``column`` child renderers so padding behaves identically everywhere. ``left``/
+    ``right`` shrink the width handed to ``render_fn`` (the element re-lays-out into the narrower
+    width, so its own wrapping/alignment respect the inset); ``top``/``bottom`` add blank bands. All
+    four default to 0, so an element with no padding renders byte-identically (``render_fn`` gets the
+    full ``available_width`` and no band is added).
+
+    Raises ``ValueError`` when horizontal padding leaves no content width — a schema-valid but
+    unrenderable request (see docs/known-limitations.md); failing loudly beats clamping to a 1px
+    sliver and printing a silently blank label. A zero-height (blank/absent) render is returned as-is
+    so callers keep dropping it without reserving a padding band.
+    """
+    left, right = el._px(el.padding_left), el._px(el.padding_right)
+    if left or right:
+        content_width = available_width - left - right
+        if content_width < 1:
+            raise ValueError(
+                f"padding_left ({el.padding_left}) + padding_right ({el.padding_right}) leaves no "
+                f"content width on a {available_width}px canvas; reduce the horizontal padding"
+            )
+    else:
+        # No horizontal padding: hand the element the width verbatim (which may legitimately be 0 for
+        # an over-narrow row column) so the existing narrow-column handling is preserved unchanged.
+        content_width = available_width
+    strip = render_fn(content_width)
+    top, bottom = el._px(el.padding_top), el._px(el.padding_bottom)
+    if strip.height == 0 or not (left or right or top or bottom):
+        return strip
+    padded = Image.new(strip.mode, (available_width, strip.height + top + bottom), el._bg)
+    padded.paste(strip, (left, top))
+    return padded
+
+
 def _guarded_child_strip(
     child: ElementBase,
     width: int,
@@ -994,7 +1035,7 @@ def _guarded_child_strip(
     icons_dir: Path,
     icon_collections_dir: Path,
 ) -> Image.Image:
-    """Render a container child, substituting a visible failure marker when its column is too narrow.
+    """Render a container child (with its padding) and substitute a visible marker if too narrow.
 
     A data-bearing child (QR/barcode/image) handed a column too narrow to draw its content would
     otherwise vanish silently — a QR clips, a barcode/image collapses to a blank strip — while the
@@ -1006,29 +1047,39 @@ def _guarded_child_strip(
     zero-height strips, so without this a too-narrow image/barcode inside a column would be filtered
     away with no marker. QR clipping is predicted from its fixed size (it never blanks); barcode and
     image are detected by the blank strip their own renderers return when the column collapses.
+
+    The child's padding is applied here via :func:`_apply_padding`, so it works identically on row and
+    column children. The too-narrow guard is evaluated against the padding-inset *content* width — the
+    width the child actually draws into — not the raw column width.
     """
-    if (
-        isinstance(child, QRElement)
-        and RowElement._child_has_content(child, resolved)
-        and width
-        < child._px(child.size) + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
-    ):
-        return _failure_placeholder(
-            width, child._px(child.size), child._canvas_mode, child._bg, child._ink
-        )
-    strip = child.render(width, resolved, fonts_dir, icons_dir, icon_collections_dir)
-    if (
-        isinstance(child, BarcodeElement | ImageElement)
-        and RowElement._child_has_content(child, resolved)
-        and strip.height == 0
-    ):
-        marker_h = (
-            child._px(child.height)
-            if isinstance(child, BarcodeElement)
-            else child._px(ROW_FAILURE_PLACEHOLDER_HEIGHT)
-        )
-        return _failure_placeholder(width, marker_h, child._canvas_mode, child._bg, child._ink)
-    return strip
+
+    def _render(content_width: int) -> Image.Image:
+        if (
+            isinstance(child, QRElement)
+            and RowElement._child_has_content(child, resolved)
+            and content_width
+            < child._px(child.size) + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
+        ):
+            return _failure_placeholder(
+                content_width, child._px(child.size), child._canvas_mode, child._bg, child._ink
+            )
+        strip = child.render(content_width, resolved, fonts_dir, icons_dir, icon_collections_dir)
+        if (
+            isinstance(child, BarcodeElement | ImageElement)
+            and RowElement._child_has_content(child, resolved)
+            and strip.height == 0
+        ):
+            marker_h = (
+                child._px(child.height)
+                if isinstance(child, BarcodeElement)
+                else child._px(ROW_FAILURE_PLACEHOLDER_HEIGHT)
+            )
+            return _failure_placeholder(
+                content_width, marker_h, child._canvas_mode, child._bg, child._ink
+            )
+        return strip
+
+    return _apply_padding(child, width, _render)
 
 
 # ── Row container ────────────────────────────────────────────────────────────────

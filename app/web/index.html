@@ -959,7 +959,13 @@
     function gatherFields() {
       const t = currentTemplate();
       const fields = {};
+      const imageFields = t.image_fields || [];
       for (const name of [...t.required, ...t.optional]) {
+        // Image fields are file inputs whose .value is a browser fake path ("C:\fakepath\…"), not the
+        // image data — skip them here (the base64 is merged separately by buildPayload via
+        // collectImageFields). Reading .value would persist that fake path via saveFields and then
+        // throw InvalidStateError when restoreSavedFields assigns it back to a file input.
+        if (imageFields.includes(name)) continue;
         const el = document.getElementById(`field-${name}`);
         if (el && el.value.trim()) fields[name] = el.value.trim();
       }
@@ -999,7 +1005,10 @@
       let restoredAny = false;
       for (const [name, value] of Object.entries(entry.values)) {
         const el = document.getElementById(`field-${name}`);
-        if (el && typeof value === 'string') {
+        // Never assign to a file input: gatherFields no longer snapshots image fields, but a snapshot
+        // from an older build could still hold a fake path, and `el.value = <non-empty>` on a file
+        // input throws InvalidStateError — which would abort init before options/picker/preview.
+        if (el && el.type !== 'file' && typeof value === 'string') {
           el.value = value;
           restoredAny = true;
         }

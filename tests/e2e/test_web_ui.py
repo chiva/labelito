@@ -185,6 +185,35 @@ def test_image_field_clear_removes_cached_image(authed_page: Page) -> None:
     expect(authed_page.locator(".image-prompt")).to_be_visible()
 
 
+def test_image_field_edit_then_reload_initializes_cleanly(authed_page: Page) -> None:
+    """Regression: an image field must never be persisted as a text value.
+
+    After choosing an image and editing the sibling text field, saveFields used to snapshot the file
+    input's fake "C:\\fakepath\\…" path under the image field name. On the next load restoreSavedFields
+    assigned that non-empty string back to the file input, which throws InvalidStateError and aborts
+    the inline init (options/picker/preview never wire up). The page must reload cleanly and restore
+    the text field.
+    """
+    errors: list[str] = []
+    authed_page.on("pageerror", lambda exc: errors.append(str(exc)))
+
+    authed_page.goto("/")
+    _select_template(authed_page, IMAGE_TEMPLATE)
+    authed_page.locator("#field-image").set_input_files(
+        files=[{"name": "logo.png", "mimeType": "image/png", "buffer": PNG_1PX}]
+    )
+    # Editing the optional title fires saveFields — the moment a bad fake path would be persisted.
+    authed_page.fill("#field-title", "Reload me")
+
+    # Reload: init runs restoreSavedFields synchronously against the persisted snapshot.
+    authed_page.goto("/")
+
+    assert errors == [], f"page init raised: {errors}"
+    # Init completed: the image field re-rendered as a file input and the text value was restored.
+    expect(authed_page.locator("#field-image")).to_have_attribute("type", "file")
+    expect(authed_page.locator("#field-title")).to_have_value("Reload me")
+
+
 def test_print_page_background_poll_converges_status_badge(authed_page_snmp: Page) -> None:
     """On an SNMP deployment (live_status_poll ON) the print page polls /printer/status on a
     visible-tab background timer, so the status badge converges to the printer's real state with no

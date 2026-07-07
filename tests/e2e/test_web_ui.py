@@ -303,6 +303,46 @@ def test_print_waits_for_pending_image_read(authed_page: Page) -> None:
     assert payload["fields"].get("image"), "print sent after the read must carry the image"
 
 
+def test_print_aborts_if_template_switched_during_image_read(authed_page: Page) -> None:
+    """Switching templates while an image read is pending aborts the in-flight print click.
+
+    doPrint snapshots the template at click time and waits for the read; if the user navigates to a
+    different template before the read settles, the click must abort (no /print) rather than print the
+    later template's form — a different layout/geometry entirely.
+    """
+    authed_page.add_init_script(
+        """
+        window.__frQueue = [];
+        window.__flushFR = () => { const q = window.__frQueue.splice(0); q.forEach(fn => fn()); };
+        const orig = FileReader.prototype.readAsDataURL;
+        FileReader.prototype.readAsDataURL = function (blob) {
+          window.__frQueue.push(() => orig.call(this, blob));
+        };
+        """
+    )
+    print_requests: list[str] = []
+    authed_page.on(
+        "request",
+        lambda r: print_requests.append(r.url) if r.url.endswith("/print") else None,
+    )
+
+    authed_page.goto("/")
+    _select_template(authed_page, IMAGE_TEMPLATE)
+    authed_page.locator("#field-image").set_input_files(
+        files=[{"name": "logo.png", "mimeType": "image/png", "buffer": PNG_1PX}]
+    )
+    authed_page.check("#dry-run")
+
+    # Click Print (doPrint suspends awaiting the deferred read), then switch templates, then release.
+    authed_page.click("button.btn-print")
+    _select_template(authed_page, SAMPLE_TEMPLATE)
+    authed_page.evaluate("window.__flushFR()")
+    authed_page.wait_for_timeout(300)
+
+    assert not print_requests, "a template switch during the read must abort the print click"
+    expect(authed_page.locator(".status.info")).to_be_visible()
+
+
 def test_invalid_replacement_cancels_pending_image_read(authed_page: Page) -> None:
     """A rejected replacement pick cancels an older in-flight read.
 

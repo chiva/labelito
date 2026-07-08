@@ -111,8 +111,6 @@ jobs:
     name: E2E (browser + API)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Non-blocking while the suite proves itself in CI — flip to blocking once it is stable.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:

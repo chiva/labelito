@@ -373,6 +373,7 @@ def _project_url(label: str, default: str) -> str:
             return url.strip()
     return default
 
+
 # Compatibility contract for API consumers (the Home Assistant integration gates on this via
 # /health). Bump ONLY on breaking changes to existing endpoints/fields — additive changes keep
 # the number. Independent of the package version, which release-please bumps every release.

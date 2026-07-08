@@ -339,6 +339,13 @@
     // sequence batch (up to 500 labels) would waste a whole roll on duplicate numbering. doPrint also
     // hard-guards on it in case the button is triggered programmatically / by keyboard.
     let printInFlight = false;
+    // Retry-safety across an AMBIGUOUS failure: if a /print throws a network error, the browser can't
+    // know whether the server actually printed. These retain the key + the exact payload of that
+    // attempt so a byte-identical resubmit reuses the key and the server dedups it (returns the prior
+    // job instead of printing again). Any definitive server response, or any payload change, clears
+    // them — so intentional repeats of the same label still print. See doPrint.
+    let retryIdempotencyKey = null;
+    let retryIdempotencyBody = null;
 
     // Remember the last EXPLICITLY picked template across tab switches (Print/Studio/History are
     // separate page navigations — every JS module global, including this one, re-initializes on
@@ -1113,6 +1120,16 @@
       if (restoredAny && !choiceSubmitted()) userOverride = true;
     }
 
+    // A unique idempotency key per submission. Prefer crypto.randomUUID, but fall back for a homelab
+    // served over plain HTTP (a non-secure context where crypto.randomUUID is unavailable) — the key
+    // only needs to be unique per submission, not cryptographically strong.
+    function newIdempotencyKey() {
+      if (window.crypto && crypto.randomUUID) {
+        try { return crypto.randomUUID(); } catch (e) { /* insecure context — fall through */ }
+      }
+      return 'ik-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+    }
+
     function buildPayload(extra = {}) {
       const t = currentTemplate();
       const payload = {
@@ -1319,6 +1336,17 @@
       // duplicate job behind _print_lock (a whole duplicate batch for a sequence print).
       if (printInFlight) return;
       const payload = buildPayload();
+      // Retry-safety: reuse the idempotency key ONLY when resubmitting a payload byte-identical to one
+      // whose previous attempt ended in a network error (retryIdempotencyBody). The server then dedups
+      // the retry instead of printing a second batch. A fresh submit — or any payload change — gets a
+      // new key, so intentional repeats of the same label still print. The key is compared against the
+      // payload WITHOUT it, then attached.
+      const payloadBody = JSON.stringify(payload);
+      const idempotencyKey =
+        retryIdempotencyKey && retryIdempotencyBody === payloadBody
+          ? retryIdempotencyKey
+          : newIdempotencyKey();
+      payload.idempotency_key = idempotencyKey;
       // Snapshot the form revision at send time. On completion we only clear userOverride if it is
       // unchanged — so if the user starts editing the next label while this request is in flight, the
       // stale reply won't clear a guard their newer input has re-raised (and won't let the post-print
@@ -1338,6 +1366,11 @@
           headers: authHeaders(),
           body: JSON.stringify(payload),
         });
+        // A response (any status) is a definitive outcome — the ambiguity that justifies reusing the
+        // key only exists when the request never got one (the catch below). Clear the retry state so
+        // the next submit is treated as a fresh, intentional job.
+        retryIdempotencyKey = null;
+        retryIdempotencyBody = null;
         if (!res.ok) {
           if (handleAuthError(res)) { refreshPrinterStatus(); return; }
           const err = await res.json().catch(() => ({detail: res.statusText}));
@@ -1373,6 +1406,11 @@
         if (LIVE_STATUS_POLL) statusPoller.schedule(0);
         else refreshPrinterStatus();
       } catch (e) {
+        // Network error → the server may or may not have printed. Retain the key + payload so an
+        // identical retry reuses the key and the server dedups it (prints exactly once), rather than
+        // queuing a second batch.
+        retryIdempotencyKey = idempotencyKey;
+        retryIdempotencyBody = payloadBody;
         showStatus('Network error: ' + e.message, 'err');
         refreshPrinterStatus();
       } finally {

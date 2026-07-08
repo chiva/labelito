@@ -259,6 +259,55 @@ def test_seq_double_submit_prints_only_one_batch(authed_page: Page) -> None:
     assert authed_page.evaluate("() => printInFlight") is False
 
 
+def test_seq_retry_after_network_error_reuses_idempotency_key(authed_page: Page) -> None:
+    """After a /print network error (ambiguous — the server may have printed), an identical resubmit
+    must reuse the SAME idempotency_key so the server dedups it instead of printing a second batch.
+    A later intentional repeat (after a definitive success) must get a FRESH key so it still prints."""
+    import json as _json
+
+    keys: list[str] = []
+    state = {"fail_next": True}
+
+    def handle(route: object) -> None:
+        keys.append(_json.loads(route.request.post_data).get("idempotency_key"))  # type: ignore[attr-defined]
+        if state["fail_next"]:
+            state["fail_next"] = False
+            route.abort("failed")  # type: ignore[attr-defined]  # network error → doPrint catch
+        else:
+            route.fulfill(  # type: ignore[attr-defined]
+                status=200,
+                content_type="application/json",
+                body=_json.dumps(
+                    {"job_id": "j", "template": SEQ_TEMPLATE, "copies": 1, "dry_run": True}
+                ),
+            )
+
+    authed_page.route("**/print", handle)
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "50")
+    authed_page.check("#dry-run")
+
+    # Attempt 1 → aborted (network error); the key + payload are retained for retry.
+    authed_page.click("button.btn-print")
+    expect(authed_page.locator(".status.err")).to_be_visible()
+    expect(authed_page.locator("button.btn-print")).to_be_enabled()
+
+    # Attempt 2 → identical payload → reuses the retained key → server would dedup.
+    authed_page.click("button.btn-print")
+    expect(authed_page.locator(".status.ok")).to_be_visible()
+
+    # Attempt 3 → same content but a definitive success cleared the retry state → fresh key so an
+    # intentional repeat still prints.
+    authed_page.click("button.btn-print")
+    authed_page.wait_for_timeout(300)
+
+    assert len(keys) == 3, f"expected 3 /print attempts, saw {len(keys)}"
+    assert keys[0] and keys[0] == keys[1], "a network-error retry must reuse the idempotency key"
+    assert keys[2] and keys[2] != keys[1], "an intentional repeat after success must use a fresh key"
+
+
 def test_seq_edit_marks_form_dirty_like_a_field_edit(authed_page: Page) -> None:
     """Editing an auto-number control is a new in-progress choice (the number is label content), so
     it must set userOverride and bump formRevision — the same dirty-state a field edit raises. Without

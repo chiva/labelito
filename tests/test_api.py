@@ -757,6 +757,28 @@ async def test_startup_uncreatable_data_dir_raises_actionable_error(
     assert isinstance(excinfo.value.__cause__, PermissionError)
 
 
+@_ROOT_BYPASSES_CHMOD
+@pytest.mark.asyncio
+async def test_startup_memory_history_ignores_unusable_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only file-backed history touches DATA_DIR: memory mode must start even when the
+    directory can neither be created nor written."""
+    import app.main as main_mod
+
+    parent = tmp_path / "readonly-parent"
+    parent.mkdir()
+    parent.chmod(0o500)  # r-x: any mkdir under it would be denied
+    data_dir = parent / "data"
+    try:
+        _startup_settings_for_file_history(main_mod, tmp_path, data_dir, monkeypatch)
+        monkeypatch.setattr(main_mod.settings, "history_mode", "memory")
+        await main_mod.startup()
+    finally:
+        parent.chmod(0o700)  # restore so pytest can clean tmp_path up
+    assert not data_dir.exists()
+
+
 # ── Auth: fail closed unless explicitly opted out ────────────────────────────────
 def test_auth_fails_closed_without_token_or_optout(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.main as main_mod

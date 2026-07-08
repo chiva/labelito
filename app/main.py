@@ -799,9 +799,9 @@ async def startup() -> None:
     _history.close()  # release the import-time placeholder before swapping in the configured store
     # Fail closed but legibly: on a fresh Linux clone Docker used to auto-create the ./data
     # bind-mount source as root, so the non-root container could neither create the data dir nor
-    # open the SQLite history DB — surface the host-side fix instead of a raw traceback.
+    # open the SQLite history DB — surface the host-side fix instead of a raw traceback. Only
+    # file-backed history touches DATA_DIR (build_history_store creates it in that mode alone).
     try:
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
         _history = build_history_store(settings)
     except (OSError, sqlite3.OperationalError) as exc:
         raise RuntimeError(

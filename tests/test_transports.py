@@ -453,6 +453,42 @@ def test_network_send_decodes_complete_frame_buffered_at_deadline(
     )
 
 
+def test_network_send_propagates_connect_failure_and_closes_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused/unreachable connection propagates to the caller (main.py maps transport exceptions
+    to a failed job) — send() must not swallow it into a None 'state unknown' — and the socket is
+    still closed by the finally block, with nothing ever sent."""
+
+    class _RefusingSocket(_FakeSocket):
+        def connect(self, addr: tuple[str, int]) -> None:
+            raise ConnectionRefusedError("connection refused")
+
+    fake = _RefusingSocket(b"")
+    _patch_socket(monkeypatch, fake)
+
+    with pytest.raises(ConnectionRefusedError):
+        NetworkTransport("tcp://192.168.1.50:9100").send(b"x")
+
+    assert fake.sent == b"", "nothing must be sent when the connection never opened"
+    assert fake.closed is True, "the socket must be closed even when connect() fails"
+
+
+def test_network_close_closes_cached_socket_and_is_idempotent() -> None:
+    """close() releases a cached socket exactly once: the handle is closed, the reference cleared,
+    and a second close() is a no-op instead of double-closing."""
+    transport = NetworkTransport("tcp://192.168.1.50:9100")
+    transport.close()  # no cached socket yet — must be a silent no-op
+
+    fake = _FakeSocket(b"")
+    transport._sock = fake  # type: ignore[assignment]
+    transport.close()
+
+    assert fake.closed is True
+    assert transport._sock is None, "the cached socket reference must be cleared after close()"
+    transport.close()  # idempotent: nothing left to close
+
+
 def test_network_send_returns_none_on_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """A genuine connection error (reset/broken pipe) on recv → None ('state unknown'), and it must
     NOT be swallowed by the socket-timeout branch — the back-channel is gone, stop polling."""

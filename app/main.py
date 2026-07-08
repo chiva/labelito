@@ -16,7 +16,8 @@ import re
 import sqlite3
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -103,7 +104,9 @@ from app.transports.usb import (
 )
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+# Level is env-driven (LOG_LEVEL, default INFO) — validated and normalized to a canonical level
+# name at settings load, so the string is always one basicConfig accepts.
+logging.basicConfig(level=settings.log_level)
 
 # ── Prometheus metrics ─────────────────────────────────────────────────────────
 LABELS_PRINTED = Counter("labels_printed_total", "Total labels printed", ["template", "dry_run"])
@@ -361,12 +364,33 @@ except importlib.metadata.PackageNotFoundError:
 # field removal, so the contract number moves per the rule above.
 API_VERSION = 2
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Startup/shutdown lifecycle — the supported replacement for the removed-in-future
+    ``@app.on_event`` API, passed to ``FastAPI(lifespan=...)`` below.
+
+    ``startup()`` runs before the server accepts its first request; an exception there (the
+    fail-closed auth check, the unusable-DATA_DIR RuntimeError) aborts boot instead of serving a
+    half-initialized app. ``shutdown()`` runs when serving ends — in a ``finally`` so a crashed
+    server still closes the history store. The bodies live in the module-level ``startup`` /
+    ``shutdown`` functions (defined later in the module; resolved by name only when the app
+    actually starts) so tests keep driving them directly.
+    """
+    await startup()
+    try:
+        yield
+    finally:
+        await shutdown()
+
+
 app = FastAPI(
     title="labelito",
     version=APP_VERSION,
     description="Self-hosted label printing for Brother QL printers.",
     license_info={"name": "GPL-3.0-or-later"},
     openapi_tags=OPENAPI_TAGS,
+    lifespan=_lifespan,
 )
 
 
@@ -793,8 +817,8 @@ def _warn_missing_custom_icons() -> None:
             )
 
 
-@app.on_event("startup")
 async def startup() -> None:
+    """Boot-time initialization, invoked by ``_lifespan`` before the server accepts requests."""
     global _history
     _history.close()  # release the import-time placeholder before swapping in the configured store
     # Fail closed but legibly: on a fresh Linux clone Docker used to auto-create the ./data
@@ -834,8 +858,8 @@ async def startup() -> None:
         _resolve_transport()(settings.printer_uri)
 
 
-@app.on_event("shutdown")
 async def shutdown() -> None:
+    """Teardown, invoked by ``_lifespan`` when serving ends (even after a crash)."""
     _history.close()
 
 
@@ -1992,7 +2016,10 @@ async def print_label(request: PrintRequest) -> PrintResponse:
     # print), not a retry: reject it with 409 rather than silently returning the old job.
     async with _print_lock:
         if request.idempotency_key:
-            prior = _find_idempotent_job(request.idempotency_key)
+            # Threadpool because the store method is sync SQLite behind a thread lock: run on the
+            # loop it could block behind a concurrent save() from a threadpooled print. Still
+            # inside _print_lock — the lookup-before-print ordering is what closes the retry race.
+            prior = await run_in_threadpool(_find_idempotent_job, request.idempotency_key)
             if prior is not None:
                 if prior.request_fingerprint != fingerprint:
                     raise HTTPException(
@@ -2039,7 +2066,10 @@ async def print_label(request: PrintRequest) -> PrintResponse:
     },
 )
 async def reprint(job_id: str) -> PrintResponse:
-    record = _load_job(job_id)
+    # Threadpool because the store read is sync SQLite behind a thread lock: run on the loop it
+    # could block behind a concurrent save() from a threadpooled print (the sync-def history
+    # routes get this for free from FastAPI's own threadpool dispatch).
+    record = await run_in_threadpool(_load_job, job_id)
     if record is None:
         raise HTTPException(404, f"Job {job_id!r} not found in history")
     if record.status == "failed":

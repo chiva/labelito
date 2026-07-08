@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from app.media import required_media_for
 from app.render.elements import (
     COLOR_CHOICES,
     DEFAULT_TEXT_MAX_LINES,
@@ -770,6 +771,17 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
     name = str(raw["name"])
     description = str(raw.get("description", ""))
     label = str(raw["label"])
+
+    # Validate the media size at LOAD time. The request-time guards (app.main's geometry lookup and
+    # the media-compatibility check) already reject an unknown ``label`` — but only when someone
+    # tries to preview/print, so a typo'd media size loaded fine and failed on first use.
+    # :func:`app.media.required_media_for` reads the same brother_ql label registry those guards
+    # compare against (no second media table to drift), and its ValueError already names the bad id
+    # and lists every valid identifier.
+    try:
+        required_media_for(label)
+    except ValueError as exc:
+        raise TemplateLoadError(f"{source_name}: {exc}") from exc
 
     # Coercions below can raise on a plausible typo (rotate: ninety, fields: []); wrap them as
     # TemplateLoadError so one malformed file is skipped-and-reported, never an uncaught 500 in

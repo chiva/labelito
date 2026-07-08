@@ -779,6 +779,55 @@ async def test_startup_memory_history_ignores_unusable_data_dir(
     assert not data_dir.exists()
 
 
+# ── Lifespan: startup/shutdown wired through FastAPI(lifespan=...), not @app.on_event ──────────
+def test_app_registers_no_deprecated_on_event_handlers() -> None:
+    """The lifecycle must run through the lifespan parameter alone: the deprecated ``@app.on_event``
+    registries stay empty, so a future Starlette that removes the legacy API cannot silently skip
+    the fail-closed startup checks (auth opt-out, history-store swap)."""
+    import app.main as main_mod
+
+    assert main_mod.app.router.on_startup == []
+    assert main_mod.app.router.on_shutdown == []
+
+
+def test_lifespan_runs_startup_before_serving_and_shutdown_on_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Booting the app runs startup() before the first request is served and shutdown() when
+    serving ends — the exact semantics the on_event handlers had. The bodies are stubbed (the
+    lifespan resolves them by name at run time) so the test asserts pure wiring/ordering."""
+    import app.main as main_mod
+
+    calls: list[str] = []
+
+    async def fake_startup() -> None:
+        calls.append("startup")
+
+    async def fake_shutdown() -> None:
+        calls.append("shutdown")
+
+    monkeypatch.setattr(main_mod, "startup", fake_startup)
+    monkeypatch.setattr(main_mod, "shutdown", fake_shutdown)
+    with TestClient(main_mod.app) as booted:
+        assert calls == ["startup"]  # ran before serving, exactly once
+        assert booted.get("/livez").status_code == 200
+    assert calls == ["startup", "shutdown"]  # shutdown ran on exit
+
+
+def test_lifespan_startup_failure_aborts_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A startup exception (e.g. the unusable-DATA_DIR RuntimeError) must abort boot through the
+    lifespan — the server never starts serving a half-initialized app."""
+    import app.main as main_mod
+
+    async def failing_startup() -> None:
+        raise RuntimeError("boot failure")
+
+    monkeypatch.setattr(main_mod, "startup", failing_startup)
+    with pytest.raises(RuntimeError, match="boot failure"):
+        with TestClient(main_mod.app):
+            pytest.fail("the app must not serve after a failed startup")
+
+
 # ── Auth: fail closed unless explicitly opted out ────────────────────────────────
 def test_auth_fails_closed_without_token_or_optout(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.main as main_mod
@@ -852,6 +901,42 @@ def test_idempotency_key_dedupes_retry(client: TestClient) -> None:
     assert r2.status_code == 200
     assert r2.json()["job_id"] == r1.json()["job_id"]  # original job returned
     assert main_mod._driver.render_payload.call_count == sends  # nothing re-sent
+
+
+def test_history_lookups_run_off_the_event_loop(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sync SQLite reads in the async handlers — the idempotency lookup inside ``_print_lock``
+    and /reprint's record load — are offloaded to the threadpool, so a store read contending with
+    a concurrent threadpooled save() blocks a worker thread, never the event loop. Asserted via
+    the calling thread: a threadpool worker has no running asyncio loop, the loop thread does."""
+    import asyncio
+
+    import app.main as main_mod
+    from app.models import PrintJobRecord
+
+    on_loop: list[bool] = []
+
+    def _spying(real: object) -> object:
+        def spy(arg: str) -> PrintJobRecord | None:
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(True)
+            except RuntimeError:
+                on_loop.append(False)
+            return real(arg)  # type: ignore[operator]
+
+        return spy
+
+    monkeypatch.setattr(main_mod, "_find_idempotent_job", _spying(main_mod._find_idempotent_job))
+    monkeypatch.setattr(main_mod, "_load_job", _spying(main_mod._load_job))
+
+    body = {"template": "simple", "fields": {"title": "X"}, "idempotency_key": "off-loop-1"}
+    first = client.post("/print", json=body)
+    assert first.status_code == 200
+    assert client.post("/print", json=body).status_code == 200  # dedup path hits the lookup too
+    assert client.post(f"/reprint/{first.json()['job_id']}").status_code == 200
+    assert on_loop == [False, False, False]  # every lookup ran in a worker, never on the loop
 
 
 def test_concurrent_same_key_prints_once(client: TestClient) -> None:
@@ -3630,9 +3715,24 @@ def test_preview_draft_malformed_placeholder_is_422(client: TestClient) -> None:
     assert client.post("/templates/parse", json={"yaml": yaml}).status_code == 422
 
 
-def test_preview_draft_unsupported_label_is_400(client: TestClient) -> None:
-    """A label the configured model does not support → 400 (matches the saved-template path)."""
+def test_preview_draft_unknown_label_is_422(client: TestClient) -> None:
+    """A label id absent from the brother_ql registry is a malformed template → load-time 422.
+
+    Distinct from the model-support 400 below: an unknown id can never be valid on any model, so
+    the loader rejects it before geometry is ever consulted.
+    """
     yaml = _DRAFT_YAML.replace('label: "62"', 'label: "nonsense-label"')
+    resp = client.post("/preview/draft", json={"yaml": yaml, "fields": {"title": "Hi"}})
+    assert resp.status_code == 422
+
+
+def test_preview_draft_model_unsupported_label_is_400(client: TestClient) -> None:
+    """A real media id the configured model can't take → 400 (matches the saved-template path).
+
+    ``102`` is a valid brother_ql label (102 mm continuous, QL-1100 family) so it loads fine, but
+    the QL-810W has no geometry for it.
+    """
+    yaml = _DRAFT_YAML.replace('label: "62"', 'label: "102"')
     resp = client.post("/preview/draft", json={"yaml": yaml, "fields": {"title": "Hi"}})
     assert resp.status_code == 400
 

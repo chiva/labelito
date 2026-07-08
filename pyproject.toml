@@ -89,7 +89,10 @@ filterwarnings = ["error", "ignore::DeprecationWarning"]
 
 [tool.coverage.run]
 source = ["app"]
-omit = ["app/transports/usb.py", "app/transports/network.py"]
+# usb.py stays omitted: its raw pyusb device I/O genuinely needs attached hardware (the mappable
+# logic around it is exercised via patched backends in tests/test_transports.py). network.py is
+# measured: its framing/deadline/error-mapping logic runs entirely against fake sockets.
+omit = ["app/transports/usb.py"]
 
 [tool.coverage.report]
 fail_under = 85

@@ -308,6 +308,104 @@ def test_seq_retry_after_network_error_reuses_idempotency_key(authed_page: Page)
     assert keys[2] and keys[2] != keys[1], "an intentional repeat after success must use a fresh key"
 
 
+def test_seq_large_print_confirms_before_printing(authed_page: Page) -> None:
+    """A non-dry-run sequence batch at/above the confirm threshold must ask before printing (an
+    irreversible physical batch of up to 500 labels). Dismiss → no /print; accept → prints. Mirrors
+    the history page's large-reprint confirmation."""
+    import json as _json
+
+    prints: list[str] = []
+
+    def handle(route: object) -> None:
+        prints.append(route.request.post_data)  # type: ignore[attr-defined]
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_json.dumps(
+                {"job_id": "j", "template": SEQ_TEMPLATE, "copies": 1, "dry_run": False}
+            ),
+        )
+
+    authed_page.route("**/print", handle)
+
+    dialogs: list[str] = []
+    decision = {"accept": False}
+
+    def on_dialog(dialog: object) -> None:
+        dialogs.append(dialog.message)  # type: ignore[attr-defined]
+        (dialog.accept if decision["accept"] else dialog.dismiss)()  # type: ignore[attr-defined]
+
+    authed_page.on("dialog", on_dialog)
+
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "25")
+    if authed_page.is_checked("#dry-run"):
+        authed_page.uncheck("#dry-run")  # a real (non-dry-run) batch triggers the confirm
+
+    # Dismiss → nothing printed, and the prompt named the count + range.
+    authed_page.click("button.btn-print")
+    authed_page.wait_for_timeout(200)
+    assert len(prints) == 0, "dismissing the confirm must not print"
+    assert dialogs and "25" in dialogs[-1] and "1..25" in dialogs[-1]
+
+    # Accept → the batch prints.
+    decision["accept"] = True
+    authed_page.click("button.btn-print")
+    authed_page.wait_for_timeout(300)
+    assert len(prints) == 1, "accepting the confirm must print exactly one batch"
+
+
+def test_seq_retry_after_reload_reuses_idempotency_key(authed_page: Page) -> None:
+    """The ambiguous-failure retry key survives a page reload (sessionStorage): a network error, then
+    a reload, then an identical resubmit must reuse the SAME idempotency_key so the server dedups —
+    the exact failure mode the key exists for. Uses dry-run + a small count to skip the confirm."""
+    import json as _json
+
+    keys: list[str] = []
+    state = {"fail_next": True}
+
+    def handle(route: object) -> None:
+        keys.append(_json.loads(route.request.post_data).get("idempotency_key"))  # type: ignore[attr-defined]
+        if state["fail_next"]:
+            state["fail_next"] = False
+            route.abort("failed")  # type: ignore[attr-defined]
+        else:
+            route.fulfill(  # type: ignore[attr-defined]
+                status=200,
+                content_type="application/json",
+                body=_json.dumps(
+                    {"job_id": "j", "template": SEQ_TEMPLATE, "copies": 1, "dry_run": True}
+                ),
+            )
+
+    authed_page.route("**/print", handle)
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "5")
+    authed_page.check("#dry-run")
+
+    # Attempt 1 → aborted; retry key + payload persisted to sessionStorage.
+    authed_page.click("button.btn-print")
+    expect(authed_page.locator(".status.err")).to_be_visible()
+
+    # Reload — JS globals reset, but sessionStorage (and the restored form) survive.
+    authed_page.reload()
+    expect(authed_page.locator("#template-groups")).to_be_visible()
+    expect(authed_page.locator("button.btn-print")).to_be_enabled()
+
+    # Attempt 2 (post-reload, identical payload) → reuses the persisted key.
+    authed_page.click("button.btn-print")
+    expect(authed_page.locator(".status.ok")).to_be_visible()
+
+    assert len(keys) == 2, f"expected 2 /print attempts, saw {len(keys)}"
+    assert keys[0] and keys[0] == keys[1], (
+        "a retry after reload must reuse the persisted idempotency key"
+    )
+
+
 def test_seq_edit_marks_form_dirty_like_a_field_edit(authed_page: Page) -> None:
     """Editing an auto-number control is a new in-progress choice (the number is label content), so
     it must set userOverride and bump formRevision — the same dirty-state a field edit raises. Without

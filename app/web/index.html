@@ -347,6 +347,45 @@
     let retryIdempotencyKey = null;
     let retryIdempotencyBody = null;
 
+    // ── Ambiguous-failure retry state persistence (RETRY_KEY, in sessionStorage). Keeps the retry key
+    //    alive across a page reload between a network error and the retry so the server can still
+    //    dedup. Defined here; the storage key constant lives with the other sessionStorage keys below
+    //    (hoisted function decls, so order is fine — these only run at print/init time).
+    function persistRetryState(key, body) {
+      // Skip a large body (e.g. one carrying a base64 image) — the in-tab globals still cover a retry
+      // without a reload, and persisting megabytes risks the sessionStorage quota.
+      if (body.length > RETRY_PERSIST_MAX_BODY) return;
+      try {
+        templateStore.setItem(RETRY_KEY, JSON.stringify({key, body}));
+      } catch (e) {
+        /* storage disabled — the in-tab globals still cover a same-page retry */
+      }
+    }
+
+    function clearRetryState() {
+      retryIdempotencyKey = null;
+      retryIdempotencyBody = null;
+      try {
+        templateStore.removeItem(RETRY_KEY);
+      } catch (e) {
+        /* storage disabled — nothing persisted to clear */
+      }
+    }
+
+    // Restore a persisted retry key/body into the globals on page load, so a retry after a reload
+    // reuses the key. Corrupt/absent state is ignored, never thrown.
+    function restoreRetryState() {
+      try {
+        const saved = JSON.parse(templateStore.getItem(RETRY_KEY));
+        if (saved && typeof saved.key === 'string' && typeof saved.body === 'string') {
+          retryIdempotencyKey = saved.key;
+          retryIdempotencyBody = saved.body;
+        }
+      } catch (e) {
+        /* corrupt/absent — no retry state to restore */
+      }
+    }
+
     // Remember the last EXPLICITLY picked template across tab switches (Print/Studio/History are
     // separate page navigations — every JS module global, including this one, re-initializes on
     // each load). sessionStorage (not the localStorage siblings above) so the scope matches the ask
@@ -368,6 +407,21 @@
     // after printing would resurrect the guard doPrint just cleared, and a roll swap would stop
     // refocusing even though it refocuses fine for a user who stayed on the page.
     const SUBMITTED_KEY = 'labelito_choice_submitted';
+
+    // Ambiguous-failure retry state (see retryIdempotencyKey/Body) persisted in sessionStorage so a
+    // page reload BETWEEN a network error and the retry doesn't drop the key — the form restores
+    // identically across reload, so the rebuilt payload still matches and the server dedups. Session
+    // scope: a reload/nav within the tab, not a forever record; cleared on any definitive response.
+    const RETRY_KEY = 'labelito_retry_idempotency';
+    // Don't persist a huge payload body (e.g. one carrying a base64 image) to sessionStorage — it
+    // risks the storage quota for a rare image+sequence combo; the in-tab globals still cover retry
+    // without a reload. A sequence payload's body is well under this.
+    const RETRY_PERSIST_MAX_BODY = 50000;
+
+    // Count at/above which a non-dry-run sequence batch asks for confirmation before printing —
+    // mirrors the history page's REPRINT_CONFIRM_THRESHOLD so print and reprint guard identically. A
+    // batch is an irreversible physical action far larger than the copies cap (up to 500 labels).
+    const SEQ_CONFIRM_THRESHOLD = 10;
 
     function choiceSubmitted() {
       try {
@@ -1336,6 +1390,20 @@
       // duplicate job behind _print_lock (a whole duplicate batch for a sequence print).
       if (printInFlight) return;
       const payload = buildPayload();
+      // A sequence batch is an irreversible physical action far larger than the copies cap (up to 500
+      // labels), so a stale restored count / typo / accidental click could burn a roll. Confirm a
+      // non-dry-run batch at/above the threshold with its count and numbered range, mirroring the
+      // history page's large-reprint guard. Dry runs print nothing physical, so they skip this.
+      if (
+        !payload.dry_run &&
+        payload.sequence &&
+        payload.sequence.count >= SEQ_CONFIRM_THRESHOLD
+      ) {
+        const range = seqRangeLabel(payload.sequence);
+        if (!confirm(`Print ${payload.sequence.count} labels (${range})? This can't be undone.`)) {
+          return;
+        }
+      }
       // Retry-safety: reuse the idempotency key ONLY when resubmitting a payload byte-identical to one
       // whose previous attempt ended in a network error (retryIdempotencyBody). The server then dedups
       // the retry instead of printing a second batch. A fresh submit — or any payload change — gets a
@@ -1367,10 +1435,9 @@
           body: JSON.stringify(payload),
         });
         // A response (any status) is a definitive outcome — the ambiguity that justifies reusing the
-        // key only exists when the request never got one (the catch below). Clear the retry state so
-        // the next submit is treated as a fresh, intentional job.
-        retryIdempotencyKey = null;
-        retryIdempotencyBody = null;
+        // key only exists when the request never got one (the catch below). Clear the retry state
+        // (globals + persisted) so the next submit is treated as a fresh, intentional job.
+        clearRetryState();
         if (!res.ok) {
           if (handleAuthError(res)) { refreshPrinterStatus(); return; }
           const err = await res.json().catch(() => ({detail: res.statusText}));
@@ -1406,11 +1473,12 @@
         if (LIVE_STATUS_POLL) statusPoller.schedule(0);
         else refreshPrinterStatus();
       } catch (e) {
-        // Network error → the server may or may not have printed. Retain the key + payload so an
-        // identical retry reuses the key and the server dedups it (prints exactly once), rather than
-        // queuing a second batch.
+        // Network error → the server may or may not have printed. Retain the key + payload (globals +
+        // persisted across a reload) so an identical retry reuses the key and the server dedups it
+        // (prints exactly once), rather than queuing a second batch.
         retryIdempotencyKey = idempotencyKey;
         retryIdempotencyBody = payloadBody;
+        persistRetryState(idempotencyKey, payloadBody);
         showStatus('Network error: ' + e.message, 'err');
         refreshPrinterStatus();
       } finally {
@@ -1590,6 +1658,7 @@
     renderFields();
     restoreSavedFields();   // after renderFields() so the field inputs it fills already exist
     restorePrintOptions();  // before rebuildTemplatePicker() so its syncRedToggleForTemplate() re-gates a restored #red
+    restoreRetryState();    // reattach an ambiguous-failure retry key from a pre-reload network error
     rebuildTemplatePicker();  // group the picker + badge from required media; refreshed once status loads
     refreshPrinterStatus();
     if (LIVE_STATUS_POLL) statusPoller.start();  // visible-tab poll, SNMP only

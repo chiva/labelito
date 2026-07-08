@@ -214,6 +214,51 @@ def test_seq_template_print_sends_sequence_spec(authed_page: Page) -> None:
     expect(authed_page.locator(".status.ok")).to_be_visible()
 
 
+def test_seq_double_submit_prints_only_one_batch(authed_page: Page) -> None:
+    """A double-click / re-entrant submit during an in-flight sequence print must NOT queue a second
+    batch — the in-flight guard disables the button and doPrint early-returns. Without it a slow
+    500-label batch could be duplicated by an impatient second click, wasting a whole roll.
+
+    Deterministic because JS is single-threaded: the first doPrint() sets printInFlight synchronously
+    before it awaits fetch, so the second call runs fully (and hits the guard) before the first's
+    request resolves. Asserts exactly one /print reaches the network."""
+    import json as _json
+
+    seen: list[str] = []
+
+    def handle(route: object) -> None:
+        seen.append(route.request.post_data)  # type: ignore[attr-defined]
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_json.dumps(
+                {"job_id": "j1", "template": SEQ_TEMPLATE, "copies": 1, "dry_run": True}
+            ),
+        )
+
+    authed_page.route("**/print", handle)
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "500")
+    authed_page.check("#dry-run")
+
+    # Two synchronous doPrint() calls: the first suspends at its awaited fetch with printInFlight set;
+    # the second must early-return. Capture whether the button was disabled between them.
+    disabled_mid = authed_page.evaluate(
+        "() => { doPrint();"
+        " const d = document.querySelector('.btn-print').disabled;"
+        " doPrint(); return d; }"
+    )
+    assert disabled_mid is True, "the Print button must disable while a print is in flight"
+    authed_page.wait_for_timeout(300)
+    assert len(seen) == 1, f"a re-entrant submit must not queue a second batch (saw {len(seen)})"
+    assert _json.loads(seen[0]).get("sequence"), "the one request must carry the sequence spec"
+    # The guard releases after the request settles so the next print can proceed.
+    expect(authed_page.locator("button.btn-print")).to_be_enabled()
+    assert authed_page.evaluate("() => printInFlight") is False
+
+
 def test_seq_edit_marks_form_dirty_like_a_field_edit(authed_page: Page) -> None:
     """Editing an auto-number control is a new in-progress choice (the number is label content), so
     it must set userOverride and bump formRevision — the same dirty-state a field edit raises. Without

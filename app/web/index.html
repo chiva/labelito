@@ -334,6 +334,11 @@
     // user has started the next label can't clear a guard that newer input has re-raised (stale-completion
     // race).
     let formRevision = 0;
+    // True while a /print request is in flight. Disables the Print button (via syncPrintButtonState)
+    // so a double-click or impatient retry can't queue a SECOND job behind the first — which for a
+    // sequence batch (up to 500 labels) would waste a whole roll on duplicate numbering. doPrint also
+    // hard-guards on it in case the button is triggered programmatically / by keyboard.
+    let printInFlight = false;
 
     // Remember the last EXPLICITLY picked template across tab switches (Print/Studio/History are
     // separate page navigations — every JS module global, including this one, re-initializes on
@@ -1301,7 +1306,7 @@
 
     async function doPrint() {
       // A print must never be built from a half-loaded image. The Print button is disabled while any
-      // image read is in flight (syncImageReadState), so this is normally unreachable — but guard
+      // image read is in flight (syncPrintButtonState), so this is normally unreachable — but guard
       // anyway rather than submit a label missing the just-chosen image. Keeping the snapshot below
       // synchronous (no await) is what makes the payload the exact state at click time: fields,
       // template, options and image can't change between the click and the send.
@@ -1309,6 +1314,10 @@
         showStatus('Still reading the selected image — try again in a moment.', 'info');
         return;
       }
+      // Reject a re-entrant print: the button is disabled while a /print is in flight, but a keyboard
+      // activation or a programmatic call could still land here — a second submit would queue a
+      // duplicate job behind _print_lock (a whole duplicate batch for a sequence print).
+      if (printInFlight) return;
       const payload = buildPayload();
       // Snapshot the form revision at send time. On completion we only clear userOverride if it is
       // unchanged — so if the user starts editing the next label while this request is in flight, the
@@ -1319,6 +1328,10 @@
       // the instant the job is sent. The post-print refresh and the background poll converge the badge
       // back to the printer's real state; failure paths below reconcile it so it can never stick.
       setStateBadge('printing', 'Printing…');
+      // Latch the in-flight guard for the whole request lifetime — disables the Print button so a
+      // double-click can't queue a duplicate job; cleared in finally on every exit path.
+      printInFlight = true;
+      syncPrintButtonState();
       try {
         const res = await fetch(api('/print'), {
           method: 'POST',
@@ -1362,6 +1375,11 @@
       } catch (e) {
         showStatus('Network error: ' + e.message, 'err');
         refreshPrinterStatus();
+      } finally {
+        // Release the guard however the request settled (ok, HTTP error, or network throw) so the
+        // Print button re-enables for the next label — subject to the image-read gate.
+        printInFlight = false;
+        syncPrintButtonState();
       }
     }
 
@@ -1514,15 +1532,16 @@
       });
     }
 
-    // Disable Print while an image read is in flight (fired by the shared image widget), so doPrint —
-    // which snapshots the payload synchronously — can never run before the chosen image is committed
-    // to the cache. Re-enabled the moment all reads settle.
-    function syncImageReadState() {
+    // Disable Print while an image read is in flight (fired by the shared image widget) — so doPrint,
+    // which snapshots the payload synchronously, can never run before the chosen image is committed to
+    // the cache — OR while a /print is already in flight (printInFlight), so a double-click can't queue
+    // a duplicate batch. Re-evaluated whenever either condition changes.
+    function syncPrintButtonState() {
       const btn = document.querySelector('.btn-print');
-      if (btn) btn.disabled = imageReadsPending();
+      if (btn) btn.disabled = imageReadsPending() || printInFlight;
     }
-    document.addEventListener('labelito:image-reads-changed', syncImageReadState);
-    syncImageReadState();
+    document.addEventListener('labelito:image-reads-changed', syncPrintButtonState);
+    syncPrintButtonState();
 
     // Re-render the preview when the nav's label language changes.
     onLanguageChange(() => doPreview());

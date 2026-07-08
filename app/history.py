@@ -11,7 +11,11 @@ backend therefore changes behaviour, not just durability — see ``docs/known-li
 
 Records are stored as the full ``PrintJobRecord`` JSON in a ``record`` column, with ``job_id`` /
 ``idempotency_key`` / ``status`` mirrored into indexed columns for O(log n) lookup. Keeping the
-pydantic model as the source of truth means new model fields need no schema migration.
+pydantic model as the source of truth means new model fields need no schema migration — provided
+they have defaults (see CONTRIBUTING.md). Each row also carries a ``format_version`` column
+(:data:`HISTORY_FORMAT_VERSION`) so a breaking model change can be detected instead of exploding:
+rows that fail validation or come from a newer format are skipped with a warning, never raised
+into the request path (worst case for dedup: one duplicate print instead of a 500).
 """
 
 from __future__ import annotations
@@ -21,12 +25,46 @@ import sqlite3
 import threading
 from typing import Protocol, runtime_checkable
 
+from pydantic import ValidationError
+
 from app.config import Settings
 from app.models import PrintJobRecord
 
 log = logging.getLogger(__name__)
 
 _IN_MEMORY = ":memory:"
+
+HISTORY_FORMAT_VERSION = 1
+"""Format version stamped on every persisted row.
+
+Bump only for a breaking ``PrintJobRecord`` change (required field, rename, semantic change);
+additive fields with defaults need no bump. Rows with a NULL version (written before the column
+existed) are treated as version 1; rows newer than this constant are skipped on read.
+"""
+
+
+def _load_row(job_id: str, record_json: str, format_version: int | None) -> PrintJobRecord | None:
+    """Deserialize one history row, returning ``None`` (with one WARNING) if it is unreadable.
+
+    Tolerant by design: history reads sit on request paths (``/reprint``, ``/history``, keyed
+    ``/print``), so a row from a newer format (downgrade) or one that fails validation (upgrade
+    that changed the model) must degrade to a miss, not a 500.
+    """
+    version = format_version if format_version is not None else 1
+    if version > HISTORY_FORMAT_VERSION:
+        log.warning(
+            "Skipping history row for job %s: format_version %d is newer than supported %d "
+            "(written by a newer labelito?)",
+            job_id,
+            version,
+            HISTORY_FORMAT_VERSION,
+        )
+        return None
+    try:
+        return PrintJobRecord.model_validate_json(record_json)
+    except ValidationError as exc:
+        log.warning("Skipping unreadable history row for job %s: %s", job_id, exc)
+        return None
 
 
 @runtime_checkable
@@ -103,10 +141,16 @@ class SqliteHistoryStore:
                 job_id          TEXT NOT NULL,
                 idempotency_key TEXT,
                 status          TEXT NOT NULL,
-                record          TEXT NOT NULL
+                record          TEXT NOT NULL,
+                format_version  INTEGER
             )
             """
         )
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        if "format_version" not in columns:
+            # Legacy DB created before versioning: ADD COLUMN is cheap in SQLite and leaves
+            # existing rows NULL, which reads treat as version 1.
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN format_version INTEGER")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_job_id ON jobs(job_id)")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key)")
         self._conn.commit()
@@ -115,13 +159,14 @@ class SqliteHistoryStore:
         with self._lock:
             try:
                 self._conn.execute(
-                    "INSERT INTO jobs (job_id, idempotency_key, status, record) "
-                    "VALUES (?, ?, ?, ?)",
+                    "INSERT INTO jobs (job_id, idempotency_key, status, record, format_version) "
+                    "VALUES (?, ?, ?, ?, ?)",
                     (
                         record.job_id,
                         record.idempotency_key,
                         record.status,
                         record.model_dump_json(),
+                        HISTORY_FORMAT_VERSION,
                     ),
                 )
                 self._prune()
@@ -150,34 +195,37 @@ class SqliteHistoryStore:
     def get(self, job_id: str) -> PrintJobRecord | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT record FROM jobs WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+                "SELECT job_id, record, format_version FROM jobs "
+                "WHERE job_id = ? ORDER BY id DESC LIMIT 1",
                 (job_id,),
             ).fetchone()
-        return PrintJobRecord.model_validate_json(row[0]) if row else None
+        return _load_row(*row) if row else None
 
     def find_idempotent(self, key: str) -> PrintJobRecord | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT record FROM jobs "
+                "SELECT job_id, record, format_version FROM jobs "
                 "WHERE idempotency_key = ? AND status != 'failed' ORDER BY id DESC LIMIT 1",
                 (key,),
             ).fetchone()
-        return PrintJobRecord.model_validate_json(row[0]) if row else None
+        # An unreadable row degrades to a dedup miss: a duplicate print beats a 500.
+        return _load_row(*row) if row else None
 
     def recent(self, limit: int) -> list[PrintJobRecord]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT record FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
+                "SELECT job_id, record, format_version FROM jobs ORDER BY id DESC LIMIT ?",
+                (limit,),
             ).fetchall()
-        return [PrintJobRecord.model_validate_json(r[0]) for r in rows]
+        return [record for r in rows if (record := _load_row(*r)) is not None]
 
     def page(self, *, offset: int, limit: int) -> list[PrintJobRecord]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT record FROM jobs ORDER BY id DESC LIMIT ? OFFSET ?",
+                "SELECT job_id, record, format_version FROM jobs ORDER BY id DESC LIMIT ? OFFSET ?",
                 (limit, offset),
             ).fetchall()
-        return [PrintJobRecord.model_validate_json(r[0]) for r in rows]
+        return [record for r in rows if (record := _load_row(*r)) is not None]
 
     def count(self) -> int:
         with self._lock:
@@ -250,6 +298,7 @@ def build_history_store(settings: Settings) -> HistoryStore:
 
 
 __all__ = [
+    "HISTORY_FORMAT_VERSION",
     "HistoryStore",
     "NullHistoryStore",
     "SqliteHistoryStore",

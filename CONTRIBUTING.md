@@ -29,6 +29,17 @@ the app with no printer, the dev harness, testing tiers, and gotchas).
 - All new features need tests; aim to keep `render`/`discovery`/`loader`/`drivers` coverage ≥85%
 - Follow [Conventional Commits](https://www.conventionalcommits.org/)
 
+### Changing `PrintJobRecord`
+
+History rows persist the full `PrintJobRecord` as JSON (`history.db`), so old databases must stay
+readable across upgrades:
+
+- New `PrintJobRecord` fields **must have defaults** — rows written before the field existed
+  still need to validate.
+- A breaking change (required field, rename, changed meaning) requires bumping
+  `HISTORY_FORMAT_VERSION` in `app/history.py`; readers skip rows from a newer format instead
+  of failing.
+
 ## License
 
 By contributing you agree that your contribution is licensed under **GPL-3.0-or-later**

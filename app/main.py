@@ -364,6 +364,11 @@ except importlib.metadata.PackageNotFoundError:
 # field removal, so the contract number moves per the rule above.
 API_VERSION = 2
 
+# Project identity surfaced in the web UI's About modal. Mirrors pyproject.toml [project.urls]
+# and the SPDX license so the running app can point users at the source and license.
+REPO_URL = "https://github.com/chiva/labelito"
+APP_LICENSE = "GPL-3.0-or-later"
+
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -2216,6 +2221,12 @@ def _web_ctx(page: str, request: Request) -> dict[str, Any]:
         "languages": translator.available(),
         "default_language": settings.default_language,
         "asset_v": _ASSET_VERSION,
+        # About-modal identity — static, rendered server-side so the modal opens instantly; the live
+        # runtime rows (model/transport/…) are lazy-fetched from /health by the JS layer.
+        "app_version": APP_VERSION,
+        "api_version": API_VERSION,
+        "repo_url": REPO_URL,
+        "app_license": APP_LICENSE,
     }
 
 

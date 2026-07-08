@@ -1,0 +1,44 @@
+{#
+  About / version modal, shared across the three page shells via _nav.html. A native <dialog>
+  (opened with showModal()) so Esc-to-close and the modal backdrop come for free — mirrors the
+  #confirm-dialog pattern in editor.html.
+
+  Static rows (version/API/repo/license) come from _web_ctx (app/main.py): app_version,
+  api_version, repo_url, app_license — rendered server-side so the modal opens fully populated.
+  The runtime rows (#about-model / #about-transport / #about-templates) are filled by the JS
+  layer from GET /health when the modal first opens; they degrade to "unavailable" on failure.
+#}
+{% from "partials/_icons.html" import icon %}
+<dialog id="about-dialog" class="about-dialog" aria-labelledby="about-title">
+  <div class="about-head">
+    <span class="about-title" id="about-title">About labelito</span>
+    <button class="btn-icon" type="button" id="about-close" title="Close" aria-label="Close">{{ icon("xmark") }}</button>
+  </div>
+  <p class="about-tagline">Self-hosted label printing for Brother QL printers.</p>
+  <dl class="about-list">
+    <div class="about-row">
+      <dt>Version</dt>
+      <dd>{{ app_version }} <span class="muted">(API v{{ api_version }})</span></dd>
+    </div>
+    <div class="about-row">
+      <dt>Model</dt>
+      <dd id="about-model" class="muted">…</dd>
+    </div>
+    <div class="about-row">
+      <dt>Transport</dt>
+      <dd id="about-transport" class="muted">…</dd>
+    </div>
+    <div class="about-row">
+      <dt>Templates</dt>
+      <dd id="about-templates" class="muted">…</dd>
+    </div>
+    <div class="about-row">
+      <dt>Repo</dt>
+      <dd><a href="{{ repo_url }}" target="_blank" rel="noopener noreferrer">{{ repo_url | replace("https://", "") }}</a></dd>
+    </div>
+    <div class="about-row">
+      <dt>License</dt>
+      <dd>{{ app_license }}</dd>
+    </div>
+  </dl>
+</dialog>

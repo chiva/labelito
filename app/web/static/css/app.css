@@ -1102,6 +1102,66 @@ dialog::backdrop {
   background: rgba(4, 8, 16, 0.6);
 }
 
+/* ── About modal (nav info button → #about-dialog) ──────────────────────────── */
+
+.about-dialog {
+  max-width: min(92vw, 420px);
+}
+
+.about-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.about-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.about-tagline {
+  margin: 6px 0 16px;
+  color: var(--ink3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.about-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.about-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.about-row dt {
+  color: var(--ink3);
+  font-weight: 600;
+}
+
+.about-row dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.about-row a {
+  color: var(--blue-light);
+}
+
+[data-theme="light"] .about-row a {
+  color: var(--blue-deep);
+}
+
 /* ── Theme toggle (sun shown in dark mode, moon in light) ───────────────────── */
 
 #theme-toggle .theme-moon {

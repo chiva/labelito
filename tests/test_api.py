@@ -3715,9 +3715,24 @@ def test_preview_draft_malformed_placeholder_is_422(client: TestClient) -> None:
     assert client.post("/templates/parse", json={"yaml": yaml}).status_code == 422
 
 
-def test_preview_draft_unsupported_label_is_400(client: TestClient) -> None:
-    """A label the configured model does not support → 400 (matches the saved-template path)."""
+def test_preview_draft_unknown_label_is_422(client: TestClient) -> None:
+    """A label id absent from the brother_ql registry is a malformed template → load-time 422.
+
+    Distinct from the model-support 400 below: an unknown id can never be valid on any model, so
+    the loader rejects it before geometry is ever consulted.
+    """
     yaml = _DRAFT_YAML.replace('label: "62"', 'label: "nonsense-label"')
+    resp = client.post("/preview/draft", json={"yaml": yaml, "fields": {"title": "Hi"}})
+    assert resp.status_code == 422
+
+
+def test_preview_draft_model_unsupported_label_is_400(client: TestClient) -> None:
+    """A real media id the configured model can't take → 400 (matches the saved-template path).
+
+    ``102`` is a valid brother_ql label (102 mm continuous, QL-1100 family) so it loads fine, but
+    the QL-810W has no geometry for it.
+    """
+    yaml = _DRAFT_YAML.replace('label: "62"', 'label: "102"')
     resp = client.post("/preview/draft", json={"yaml": yaml, "fields": {"title": "Hi"}})
     assert resp.status_code == 400
 

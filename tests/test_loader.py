@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from app.loader import TemplateLoadError, TemplateRegistry, load_template
+from app.loader import (
+    TemplateLoadError,
+    TemplateRegistry,
+    load_template,
+    validate_template_from_string,
+)
 
 
 def write_yaml(path: Path, content: str) -> Path:
@@ -71,6 +76,61 @@ def test_empty_layout_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(TemplateLoadError, match="non-empty"):
         load_template(path)
+
+
+def test_unknown_media_label_raises_at_load(tmp_path: Path) -> None:
+    """A typo'd media size must fail at LOAD time, naming the bad id and the valid identifiers.
+
+    The preview/print guards already reject an unknown ``label`` — but only when someone tries to
+    USE the template, so a typo (``62x28`` for ``62x29``) previously loaded fine and surfaced as a
+    request-time error on first print. The loader must reject it up front with the same
+    brother_ql-registry message the media guard uses.
+    """
+    path = write_yaml(
+        tmp_path / "typo.yaml",
+        """\
+        name: typo
+        description: typo'd media size
+        label: "62x28"
+        layout:
+          - {type: text, text: x}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match=r"typo\.yaml: Unknown brother_ql label '62x28'"):
+        load_template(path)
+    # The message must be actionable: it lists the valid identifiers to pick from.
+    with pytest.raises(TemplateLoadError, match=r"Known:.*62x29"):
+        load_template(path)
+
+
+def test_unknown_media_label_raises_for_draft_too() -> None:
+    """The draft studio shares the loader's schema validation, so a draft with a typo'd media size
+    must be rejected by exactly the same load-time check (mapped to a 422 by the caller)."""
+    draft = textwrap.dedent("""\
+        name: draft-typo
+        description: typo'd media size in a draft
+        label: "sixtytwo"
+        layout:
+          - {type: text, text: x}
+    """)
+    with pytest.raises(TemplateLoadError, match="<draft>: Unknown brother_ql label 'sixtytwo'"):
+        validate_template_from_string(draft)
+
+
+@pytest.mark.parametrize("label", ["62", "62x29", "29x90", "17x54", "62red", "23x23"])
+def test_known_media_labels_still_load(tmp_path: Path, label: str) -> None:
+    """Every real brother_ql media id — continuous, die-cut, and two-color — keeps loading."""
+    path = write_yaml(
+        tmp_path / "known.yaml",
+        f"""\
+        name: known
+        description: real media id
+        label: "{label}"
+        layout:
+          - {{type: text, text: x}}
+    """,
+    )
+    assert load_template(path).label == label
 
 
 def test_unknown_element_type_raises(tmp_path: Path) -> None:

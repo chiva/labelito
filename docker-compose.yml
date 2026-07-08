@@ -49,8 +49,10 @@ services:
       # `${VAR:?msg}` makes `docker compose up` fail fast if API_TOKEN is unset or empty.
       API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set ALLOW_UNAUTHENTICATED=true}
       # ALLOW_UNAUTHENTICATED: "true"  # run open (trusted intranet only; token is sniffable over plain HTTP)
+    # /readyz is dependency-aware (templates, transport, history store; 503 when not serving) and
+    # unauthenticated. It deliberately excludes printer reachability — see app/main.py's readyz.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/readyz')"]
       interval: 30s
       timeout: 5s
       retries: 3

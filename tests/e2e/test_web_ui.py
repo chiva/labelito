@@ -29,6 +29,10 @@ SAMPLE_TEMPLATE = "title-subtitle"
 # (templates/62-image.yaml, name: image) — used to drive the file-upload UI.
 IMAGE_TEMPLATE = "image"
 
+# A shipped template that uses the {{seq}} auto-numbering token (templates/62-numbered-bin.yaml,
+# name: numbered-bin) — drives the sequence (batch) controls on the Print page.
+SEQ_TEMPLATE = "numbered-bin"
+
 
 def _png_bytes(color: int, size: tuple[int, int] = (4, 4)) -> bytes:
     """A distinct grayscale PNG so two uploads have different base64 payloads."""
@@ -142,6 +146,316 @@ def test_print_dry_run_round_trip(authed_page: Page) -> None:
 
     # The sticky success banner survives the post-print preview refresh.
     expect(authed_page.locator(".status.ok")).to_be_visible()
+
+
+def test_seq_template_shows_sequence_controls_and_hides_copies(authed_page: Page) -> None:
+    """Selecting a {{seq}} template swaps the Copies stepper for the Auto-number (sequence) panel —
+    the two are mutually exclusive server-side, so the UI never shows both."""
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    expect(authed_page.locator("#copies-field")).to_be_hidden()
+    # Switching back to a plain template restores Copies and hides the sequence panel.
+    _select_template(authed_page, SAMPLE_TEMPLATE)
+    expect(authed_page.locator("#copies-field")).to_be_visible()
+    expect(authed_page.locator("#sequence-field")).to_be_hidden()
+
+
+def test_seq_template_previews_first_item_without_error(authed_page: Page) -> None:
+    """A {{seq}} template previews the first item from the UI (the Print page sends the auto-number
+    controls as a `sequence` on /preview) — no 422, and the preview image renders. Fields are filled
+    first: a preview with an empty required field 422s on the missing field, unrelated to sequence."""
+    import json as _json
+
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/preview") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("button.btn-preview")
+
+    response = resp_info.value
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent.get("sequence"), "the preview payload must carry the sequence spec"
+    assert sent["copies"] == 1, "copies is pinned to 1 for a sequence template"
+    assert response.status == 200, f"seq preview must not 422 with fields filled: {response.status}"
+    expect(authed_page.locator("#preview-section")).to_be_visible()
+    assert authed_page.locator(".status.err").count() == 0
+
+
+def test_seq_template_print_sends_sequence_spec(authed_page: Page) -> None:
+    """Printing a {{seq}} template (dry-run) sends a `sequence` object built from the Auto-number
+    controls, with copies pinned to 1 — the batch path the API-only feature now exposes in the UI."""
+    import json as _json
+
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "5")
+    authed_page.fill("#seq-start", "10")
+    authed_page.fill("#seq-padding", "3")
+    authed_page.check("#dry-run")
+
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/print") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("button.btn-print")
+
+    response = resp_info.value
+    assert response.status == 200, f"Expected 200, got {response.status}"
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent["sequence"] == {"start": 10, "count": 5, "step": 1, "padding": 3}
+    assert sent["copies"] == 1, "copies must be pinned to 1 (mutually exclusive with sequence)"
+    body = response.json()
+    assert body["dry_run"] is True
+    assert body["template"] == SEQ_TEMPLATE
+    expect(authed_page.locator(".status.ok")).to_be_visible()
+
+
+def test_seq_double_submit_prints_only_one_batch(authed_page: Page) -> None:
+    """A double-click / re-entrant submit during an in-flight sequence print must NOT queue a second
+    batch — the in-flight guard disables the button and doPrint early-returns. Without it a slow
+    500-label batch could be duplicated by an impatient second click, wasting a whole roll.
+
+    Deterministic because JS is single-threaded: the first doPrint() sets printInFlight synchronously
+    before it awaits fetch, so the second call runs fully (and hits the guard) before the first's
+    request resolves. Asserts exactly one /print reaches the network."""
+    import json as _json
+
+    seen: list[str] = []
+
+    def handle(route: object) -> None:
+        seen.append(route.request.post_data)  # type: ignore[attr-defined]
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_json.dumps(
+                {"job_id": "j1", "template": SEQ_TEMPLATE, "copies": 1, "dry_run": True}
+            ),
+        )
+
+    authed_page.route("**/print", handle)
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "500")
+    authed_page.check("#dry-run")
+
+    # Two synchronous doPrint() calls: the first suspends at its awaited fetch with printInFlight set;
+    # the second must early-return. Capture whether the button was disabled between them.
+    disabled_mid = authed_page.evaluate(
+        "() => { doPrint();"
+        " const d = document.querySelector('.btn-print').disabled;"
+        " doPrint(); return d; }"
+    )
+    assert disabled_mid is True, "the Print button must disable while a print is in flight"
+    authed_page.wait_for_timeout(300)
+    assert len(seen) == 1, f"a re-entrant submit must not queue a second batch (saw {len(seen)})"
+    assert _json.loads(seen[0]).get("sequence"), "the one request must carry the sequence spec"
+    # The guard releases after the request settles so the next print can proceed.
+    expect(authed_page.locator("button.btn-print")).to_be_enabled()
+    assert authed_page.evaluate("() => printInFlight") is False
+
+
+def test_seq_retry_after_network_error_reuses_idempotency_key(authed_page: Page) -> None:
+    """After a /print network error (ambiguous — the server may have printed), an identical resubmit
+    must reuse the SAME idempotency_key so the server dedups it instead of printing a second batch.
+    A later intentional repeat (after a definitive success) must get a FRESH key so it still prints."""
+    import json as _json
+
+    keys: list[str] = []
+    state = {"fail_next": True}
+
+    def handle(route: object) -> None:
+        keys.append(_json.loads(route.request.post_data).get("idempotency_key"))  # type: ignore[attr-defined]
+        if state["fail_next"]:
+            state["fail_next"] = False
+            route.abort("failed")  # type: ignore[attr-defined]  # network error → doPrint catch
+        else:
+            route.fulfill(  # type: ignore[attr-defined]
+                status=200,
+                content_type="application/json",
+                body=_json.dumps(
+                    {"job_id": "j", "template": SEQ_TEMPLATE, "copies": 1, "dry_run": True}
+                ),
+            )
+
+    authed_page.route("**/print", handle)
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "50")
+    authed_page.check("#dry-run")
+
+    # Attempt 1 → aborted (network error); the key + payload are retained for retry.
+    authed_page.click("button.btn-print")
+    expect(authed_page.locator(".status.err")).to_be_visible()
+    expect(authed_page.locator("button.btn-print")).to_be_enabled()
+
+    # Attempt 2 → identical payload → reuses the retained key → server would dedup.
+    authed_page.click("button.btn-print")
+    expect(authed_page.locator(".status.ok")).to_be_visible()
+
+    # Attempt 3 → same content but a definitive success cleared the retry state → fresh key so an
+    # intentional repeat still prints.
+    authed_page.click("button.btn-print")
+    authed_page.wait_for_timeout(300)
+
+    assert len(keys) == 3, f"expected 3 /print attempts, saw {len(keys)}"
+    assert keys[0] and keys[0] == keys[1], "a network-error retry must reuse the idempotency key"
+    assert keys[2] and keys[2] != keys[1], (
+        "an intentional repeat after success must use a fresh key"
+    )
+
+
+def test_seq_large_print_confirms_before_printing(authed_page: Page) -> None:
+    """A non-dry-run sequence batch at/above the confirm threshold must ask before printing (an
+    irreversible physical batch of up to 500 labels). Dismiss → no /print; accept → prints. Mirrors
+    the history page's large-reprint confirmation."""
+    import json as _json
+
+    prints: list[str] = []
+
+    def handle(route: object) -> None:
+        prints.append(route.request.post_data)  # type: ignore[attr-defined]
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_json.dumps(
+                {"job_id": "j", "template": SEQ_TEMPLATE, "copies": 1, "dry_run": False}
+            ),
+        )
+
+    authed_page.route("**/print", handle)
+
+    dialogs: list[str] = []
+    decision = {"accept": False}
+
+    def on_dialog(dialog: object) -> None:
+        dialogs.append(dialog.message)  # type: ignore[attr-defined]
+        (dialog.accept if decision["accept"] else dialog.dismiss)()  # type: ignore[attr-defined]
+
+    authed_page.on("dialog", on_dialog)
+
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "25")
+    if authed_page.is_checked("#dry-run"):
+        authed_page.uncheck("#dry-run")  # a real (non-dry-run) batch triggers the confirm
+
+    # Dismiss → nothing printed, and the prompt named the count + range.
+    authed_page.click("button.btn-print")
+    authed_page.wait_for_timeout(200)
+    assert len(prints) == 0, "dismissing the confirm must not print"
+    assert dialogs and "25" in dialogs[-1] and "1..25" in dialogs[-1]
+
+    # Accept → the batch prints.
+    decision["accept"] = True
+    authed_page.click("button.btn-print")
+    authed_page.wait_for_timeout(300)
+    assert len(prints) == 1, "accepting the confirm must print exactly one batch"
+
+
+def test_seq_retry_after_reload_reuses_idempotency_key(authed_page: Page) -> None:
+    """The ambiguous-failure retry key survives a page reload (sessionStorage): a network error, then
+    a reload, then an identical resubmit must reuse the SAME idempotency_key so the server dedups —
+    the exact failure mode the key exists for. Uses dry-run + a small count to skip the confirm."""
+    import json as _json
+
+    keys: list[str] = []
+    state = {"fail_next": True}
+
+    def handle(route: object) -> None:
+        keys.append(_json.loads(route.request.post_data).get("idempotency_key"))  # type: ignore[attr-defined]
+        if state["fail_next"]:
+            state["fail_next"] = False
+            route.abort("failed")  # type: ignore[attr-defined]
+        else:
+            route.fulfill(  # type: ignore[attr-defined]
+                status=200,
+                content_type="application/json",
+                body=_json.dumps(
+                    {"job_id": "j", "template": SEQ_TEMPLATE, "copies": 1, "dry_run": True}
+                ),
+            )
+
+    authed_page.route("**/print", handle)
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "5")
+    authed_page.check("#dry-run")
+
+    # Attempt 1 → aborted; retry key + payload persisted to sessionStorage.
+    authed_page.click("button.btn-print")
+    expect(authed_page.locator(".status.err")).to_be_visible()
+
+    # Reload — JS globals reset, but sessionStorage (and the restored form) survive.
+    authed_page.reload()
+    expect(authed_page.locator("#template-groups")).to_be_visible()
+    expect(authed_page.locator("button.btn-print")).to_be_enabled()
+
+    # Attempt 2 (post-reload, identical payload) → reuses the persisted key.
+    authed_page.click("button.btn-print")
+    expect(authed_page.locator(".status.ok")).to_be_visible()
+
+    assert len(keys) == 2, f"expected 2 /print attempts, saw {len(keys)}"
+    assert keys[0] and keys[0] == keys[1], (
+        "a retry after reload must reuse the persisted idempotency key"
+    )
+
+
+def test_seq_edit_marks_form_dirty_like_a_field_edit(authed_page: Page) -> None:
+    """Editing an auto-number control is a new in-progress choice (the number is label content), so
+    it must set userOverride and bump formRevision — the same dirty-state a field edit raises. Without
+    it, a /print completing while the operator edits the next batch could clear the guard and let a
+    roll-driven refocus replace the template out from under the newer edits."""
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+
+    # Baseline after selecting + filling: capture the revision, then reset the guard as a completed
+    # print would (userOverride=false), and confirm a seq edit re-raises it.
+    rev_before = authed_page.evaluate("() => formRevision")
+    authed_page.evaluate("() => { userOverride = false; }")
+    authed_page.fill("#seq-start", "7")
+
+    assert authed_page.evaluate("() => userOverride") is True, (
+        "a sequence edit must re-raise userOverride"
+    )
+    assert authed_page.evaluate("() => formRevision") > rev_before, (
+        "a sequence edit must bump formRevision"
+    )
+
+
+def test_seq_inputs_normalize_on_commit_not_while_typing(authed_page: Page) -> None:
+    """Print-page auto-number inputs must not be rewritten mid-keystroke (a lone '-' used to snap to
+    the default, making a negative start un-typeable), while the /print payload stays valid — the
+    same deferral the studio uses. Clamping happens on `change` (blur/Enter/spinner), not `input`."""
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    start = authed_page.locator("#seq-start")
+    count = authed_page.locator("#seq-count")
+
+    # Clearing a field stays empty on the input path; the payload still reads a clamped value.
+    count.fill("")
+    assert count.input_value() == "", "clearing a field must not snap to the default on input"
+    assert authed_page.evaluate("() => currentSequenceSpec().count") == 10
+    assert count.input_value() == "", "reading the spec must not rewrite the field"
+    count.dispatch_event("change")
+    assert count.input_value() == "10", "a blank field defaults on commit"
+
+    # A negative start is now typeable (a lone '-' is no longer wiped on input).
+    start.fill("")
+    start.focus()
+    authed_page.keyboard.type("-5")
+    assert start.input_value() == "-5", "a negative start must be typeable (not clamped mid-entry)"
+    start.dispatch_event("change")
+    assert start.input_value() == "-5", "an in-bounds negative start is preserved on commit"
 
 
 def test_image_field_renders_file_picker_uploads_and_prints(authed_page: Page) -> None:
@@ -965,6 +1279,89 @@ def test_studio_image_field_renders_picker_and_previews(authed_page: Page) -> No
     authed_page.wait_for_function(
         "() => { const i = document.getElementById('preview-img'); return i && i.naturalWidth > 0; }"
     )
+
+
+def test_studio_seq_template_shows_controls_and_previews_first_item(authed_page: Page) -> None:
+    """The Template Studio reveals its Auto-number controls for a {{seq}} draft and previews the
+    FIRST item — a {{seq}} draft is no longer preview-blind in the editor. Toggling the YAML back to
+    a non-seq layout hides the controls again."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#yaml")).to_be_visible()
+
+    seq_yaml = (
+        "name: draft-seq\n"
+        "description: seq draft\n"
+        'label: "62"\n'
+        "rotate: 0\n"
+        "layout:\n"
+        '  - {type: title, text: "Box {{seq}}"}\n'
+    )
+    authed_page.fill("#yaml", seq_yaml)
+
+    # The auto-number panel appears (uses_seq from the parse round-trip) and the draft renders.
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    authed_page.fill("#seq-start", "5")
+    authed_page.fill("#seq-padding", "3")
+
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/preview/draft") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.fill("#seq-count", "12")  # any auto-number edit re-previews
+
+    response = resp_info.value
+    import json as _json
+
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent.get("sequence"), "the draft preview payload must carry the sequence spec"
+    assert response.status == 200, f"seq draft must preview, not 422: {response.status}"
+    authed_page.wait_for_function(
+        "() => { const i = document.getElementById('preview-img'); return i && i.naturalWidth > 0; }"
+    )
+
+    # Switching to a non-seq layout hides the controls again.
+    authed_page.fill(
+        "#yaml",
+        'name: d2\ndescription: plain\nlabel: "62"\nlayout:\n  - {type: title, text: "Static"}\n',
+    )
+    expect(authed_page.locator("#sequence-field")).to_be_hidden()
+
+
+def test_studio_seq_inputs_normalize_on_commit_not_while_typing(authed_page: Page) -> None:
+    """An auto-number input must NOT be rewritten mid-keystroke (that made a negative start
+    un-typeable — a lone "-" snapped straight to the default), yet the preview payload must stay
+    valid throughout. Clamping is deferred to `change` (blur/Enter/spinner); the preview reads
+    clamped values purely, without touching the field."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#yaml")).to_be_visible()
+    authed_page.fill(
+        "#yaml",
+        "name: draft-seq\ndescription: seq\n"
+        'label: "62"\nrotate: 0\nlayout:\n  - {type: title, text: "Box {{seq}}"}\n',
+    )
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    start = authed_page.locator("#seq-start")
+    count = authed_page.locator("#seq-count")
+
+    # Clearing a field stays empty on the INPUT path (previously it snapped to the default the moment
+    # it went blank, so you couldn't clear-to-retype).
+    count.fill("")
+    assert count.input_value() == "", "clearing a field must not snap to the default on input"
+    # ...yet the preview payload is still valid: currentSequenceSpec reads a CLAMPED value without
+    # mutating the field (blank count → default 10), so /preview/draft never sees a broken spec.
+    assert authed_page.evaluate("() => currentSequenceSpec().count") == 10
+    assert count.input_value() == "", "reading the spec must not rewrite the field"
+    # Committing (change / blur / spinner) normalizes the display.
+    count.dispatch_event("change")
+    assert count.input_value() == "10", "a blank field defaults on commit"
+
+    # A negative start is now typeable: a lone '-' used to be wiped on input (parseInt('-') is NaN →
+    # reset to the default), so the next digit produced a positive number. Type it key by key.
+    start.fill("")
+    start.focus()
+    authed_page.keyboard.type("-5")
+    assert start.input_value() == "-5", "a negative start must be typeable (not clamped mid-entry)"
+    start.dispatch_event("change")
+    assert start.input_value() == "-5", "an in-bounds negative start is preserved on commit"
 
 
 def test_status_banner_does_not_execute_injected_markup(authed_page: Page) -> None:

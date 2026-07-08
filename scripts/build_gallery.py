@@ -49,6 +49,7 @@ if str(_REPO_ROOT) not in sys.path:
 from app import main as app_main  # noqa: E402  (env must be set before app import)
 from app.loader import Template  # noqa: E402
 from app.media import MEDIA_TYPE_CONTINUOUS, required_media_for  # noqa: E402
+from app.render.engine import format_seq, uses_seq  # noqa: E402
 
 # Default output root: the tracked static site. Previews land under ``<OUT>/assets/samples``.
 DEFAULT_OUT_DIR = _REPO_ROOT / "site"
@@ -62,6 +63,15 @@ SAMPLE_LANGUAGE = "en"
 # A FIXED render moment so re-runs are byte-reproducible (tests can assert; CI deploys don't churn).
 # Auto-dated templates ({{date}}, {{date+6m}}) resolve against this instant.
 SAMPLE_NOW = datetime(2026, 1, 15, 9, 30, 0)
+
+# A {{seq}} template's showcase renders the first item of a sample batch so the preview reads like a
+# real numbered label ("001") instead of a blank {{seq}}. The same spec is emitted in the manifest
+# and the copy-paste curl so the published /print snippet is valid (a {{seq}} template REQUIRES a
+# sequence spec — a fields-only body would 422).
+SAMPLE_SEQ_START = 1
+SAMPLE_SEQ_STEP = 1
+SAMPLE_SEQ_PADDING = 3
+SAMPLE_SEQ_COUNT = 10
 
 # A small bundled PNG, base64-encoded on demand, for the API-only ``image`` template's ``image``
 # field (the element base64-decodes fields[field] — see app/render/elements.py ImageElement).
@@ -113,6 +123,7 @@ SAMPLES: dict[str, dict[str, Any]] = {
         "contents": "Cables; Adapters; Chargers; Batteries",
         "qr": "https://inv.example/box/7",
     },
+    "numbered-bin": {"title": "Parts drawer", "contents": "M3 screws"},
     "two-column": {
         "left_title": "Groceries",
         "left_items": "Milk; Eggs; Bread; Butter",
@@ -175,10 +186,17 @@ def _size_label(label_id: str) -> str:
     return f"{width} x {media.length_mm:g} mm · die-cut"
 
 
-def _curl_example(name: str, fields: dict[str, Any]) -> str:
-    """A copy-pasteable POST /print snippet. Bulky base64 image payloads are elided for readability."""
+def _curl_example(name: str, fields: dict[str, Any], sequence: dict[str, Any] | None = None) -> str:
+    """A copy-pasteable POST /print snippet. Bulky base64 image payloads are elided for readability.
+
+    A ``{{seq}}`` template REQUIRES a ``sequence`` spec at /print (a fields-only body 422s), so the
+    snippet carries the sample batch spec whenever one is supplied.
+    """
     display = {k: ("<base64-png>" if k == "image" else v) for k, v in fields.items()}
-    body = json.dumps({"template": name, "fields": display}, ensure_ascii=False)
+    payload: dict[str, Any] = {"template": name, "fields": display}
+    if sequence is not None:
+        payload["sequence"] = sequence
+    body = json.dumps(payload, ensure_ascii=False)
     return (
         "curl -X POST http://localhost:8765/print \\\n"
         "  -H 'Content-Type: application/json' \\\n"
@@ -186,11 +204,20 @@ def _curl_example(name: str, fields: dict[str, Any]) -> str:
     )
 
 
-def _entry(tmpl: Template, image_rel: str, fields: dict[str, Any]) -> dict[str, Any]:
-    """Assemble one manifest record for a template (everything gallery.html needs to draw a card)."""
+def _entry(
+    tmpl: Template,
+    image_rel: str,
+    fields: dict[str, Any],
+    sequence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Assemble one manifest record for a template (everything gallery.html needs to draw a card).
+
+    ``sequence`` (present only for a ``{{seq}}`` template) is surfaced so the card and its curl
+    snippet reflect the batch the preview image was rendered from.
+    """
     width_px, height_px = app_main._get_geometry(tmpl.label)
     display_fields = {k: ("<base64-png>" if k == "image" else v) for k, v in fields.items()}
-    return {
+    entry: dict[str, Any] = {
         "name": tmpl.name,
         "description": tmpl.description or "",
         "label": tmpl.label,
@@ -202,8 +229,11 @@ def _entry(tmpl: Template, image_rel: str, fields: dict[str, Any]) -> dict[str, 
         "image": image_rel,
         "width_px": width_px,
         "height_px": height_px,
-        "curl": _curl_example(tmpl.name, fields),
+        "curl": _curl_example(tmpl.name, fields, sequence),
     }
+    if sequence is not None:
+        entry["sequence"] = sequence
+    return entry
 
 
 class GalleryBuildError(RuntimeError):
@@ -285,18 +315,38 @@ def build(out_dir: Path, *, strict_icons: bool = True) -> list[dict[str, Any]]:
             if tmpl is None:  # pragma: no cover - names() and get() come from the same registry
                 continue
             fields = _fields_for(tmpl)
+            # A {{seq}} template resolves {{seq}} to "" without a value, showcasing a blank-numbered
+            # label. Render the first item of a sample batch (start=1, padding=3 → "001") so the
+            # gallery preview reads like a real print — mirrors what /preview shows for item #start.
+            # The same spec is threaded into the manifest/curl so the copy-paste /print body is valid
+            # (a {{seq}} template REQUIRES a sequence spec; a fields-only body would 422).
+            sequence = (
+                {
+                    "start": SAMPLE_SEQ_START,
+                    "count": SAMPLE_SEQ_COUNT,
+                    "step": SAMPLE_SEQ_STEP,
+                    "padding": SAMPLE_SEQ_PADDING,
+                }
+                if uses_seq(tmpl.layout)
+                else None
+            )
+            seq = (
+                format_seq(SAMPLE_SEQ_START, 0, SAMPLE_SEQ_STEP, SAMPLE_SEQ_PADDING)
+                if sequence is not None
+                else ""
+            )
             capture = _IconWarningCapture()
             icon_logger.addHandler(capture)
             try:
                 png = app_main._render_template_preview(
-                    tmpl, fields, SAMPLE_LANGUAGE, now=SAMPLE_NOW
+                    tmpl, fields, SAMPLE_LANGUAGE, now=SAMPLE_NOW, seq=seq
                 )
             finally:
                 icon_logger.removeHandler(capture)
             blank_icon_reports.extend(f"{name}: {message}" for message in capture.messages)
             (samples_dir / f"{name}.png").write_bytes(png)
             image_rel = f"{SAMPLES_SUBDIR.as_posix()}/{name}.png"
-            entries.append(_entry(tmpl, image_rel, fields))
+            entries.append(_entry(tmpl, image_rel, fields, sequence))
     finally:
         icon_logger.setLevel(previous_level)
 

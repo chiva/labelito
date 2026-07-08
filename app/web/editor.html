@@ -19,6 +19,15 @@
     #draft-preview .paper-frame { min-height: 90px; margin-top: 4px; align-items: center; }
     #preview-img:not([src]) { display: none; }
 
+    /* Auto-numbering (sequence) controls — shown only for a {{seq}} draft (syncSequenceForDraft).
+       A compact 4-up grid of small number inputs; the preview renders the first item (at start). */
+    #sequence-field { margin-bottom: 16px; }
+    #sequence-field .field-label { display: block; margin-bottom: 8px; }
+    .seq-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .seq-cell { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 600; color: var(--ink3); text-transform: uppercase; letter-spacing: 0.03em; }
+    .seq-cell .input { max-width: 100%; }
+    #seq-hint { margin: 8px 0 0; }
+
     /* "Preview unavailable" placeholder + inline error — mirrors the print page's Live preview so a
        draft that can't render (missing required fields, invalid YAML) reports the reason in the card
        instead of a transient toast. Warning (amber), not fatal red: a failed draft is recoverable. */
@@ -120,6 +129,19 @@
         </div>
         <p class="hint" id="fields-empty">Auto-detected <code>{{ '{{placeholder}}' }}</code> fields appear here. Computed tokens (date/now/seq) and translations are excluded.</p>
         <div id="fields-container"></div>
+        <!-- Shown only when the draft uses the {{ '{{seq}}' }} auto-numbering token (parse response's
+             uses_seq): the preview renders the FIRST item of this batch (at `start`), so a {{ '{{seq}}' }}
+             draft previews a real numbered label instead of erroring. Bounds mirror SequenceSpec. -->
+        <div class="field" id="sequence-field" style="display:none">
+          <span class="field-label">Auto-number <code>{{ '{{seq}}' }}</code></span>
+          <div class="seq-grid">
+            <label class="seq-cell">Start<input type="number" id="seq-start" class="input" value="1" min="-1000000000" max="1000000000"></label>
+            <label class="seq-cell">Step<input type="number" id="seq-step" class="input" value="1" min="1" max="1000000"></label>
+            <label class="seq-cell">Pad<input type="number" id="seq-padding" class="input" value="0" min="0" max="32"></label>
+            <label class="seq-cell">Count<input type="number" id="seq-count" class="input" value="10" min="1" max="500"></label>
+          </div>
+          <p class="hint" id="seq-hint">The preview shows the first label; printing this template runs the whole numbered batch.</p>
+        </div>
         <div class="paper-frame">
           <img id="preview-img" alt="Label preview">
           <div id="preview-placeholder" style="display:none" role="status" aria-live="polite">
@@ -237,6 +259,9 @@
     // Most-recent detected field contract, so the preview gathers exactly the auto-detected fields
     // (mirrors index.html's gatherFields, driven by the parsed contract instead of the picker data).
     let contract = {required: [], optional: []};
+    // Whether the current draft uses {{seq}} (from the parse response). Drives the sequence controls
+    // and whether doPreview() sends a `sequence` object. Reset false for an empty/invalid draft.
+    let draftUsesSeq = false;
 
     // The YAML last seeded or loaded, so "Load existing" can confirm before discarding edits.
     let lastLoadedYaml = '';
@@ -338,7 +363,13 @@
     // older draft and later preview/save payloads would mis-shape their values.
     async function refreshFields(seq) {
       const yaml = currentYaml();
-      if (!yaml.trim()) { contract = {required: [], optional: []}; renderFields(); return false; }
+      if (!yaml.trim()) {
+        contract = {required: [], optional: []};
+        draftUsesSeq = false;
+        renderFields();
+        syncSequenceForDraft();
+        return false;
+      }
       try {
         const res = await fetch(api('/templates/parse'), {
           method: 'POST', headers: authHeaders(), body: JSON.stringify({yaml}),
@@ -351,11 +382,55 @@
         const json = await res.json();
         if (seq !== previewSeq) return false;
         contract = json.fields || {required: [], optional: []};
+        draftUsesSeq = !!json.uses_seq;
         renderFields();
+        syncSequenceForDraft();
         return true;
       } catch (e) {
         return false;
       }
+    }
+
+    // Reveal the auto-number controls when the draft uses {{seq}}. Unlike the Print page there is no
+    // Copies control to hide — a draft's item count comes only from the sequence spec. Clamps the
+    // inputs so a sent spec is always valid (count is required, ge=1).
+    function syncSequenceForDraft() {
+      const seqField = document.getElementById('sequence-field');
+      if (!seqField) return;
+      seqField.style.display = draftUsesSeq ? '' : 'none';
+      if (draftUsesSeq) clampSequence();
+    }
+
+    // Read one auto-number input clamped into its SequenceSpec bound (models.py), defaulting a
+    // blank/non-numeric field — PURE: returns a number and never touches the DOM, so a partial entry
+    // the user is mid-typing (e.g. a lone "-" toward a negative start) is not rewritten under them.
+    function clampSeqValue(id, lo, hi, dflt) {
+      const el = document.getElementById(id);
+      if (!el) return dflt;
+      const v = parseInt(el.value, 10);
+      return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
+    }
+
+    // Normalize the DISPLAYED input values into their bounds — writes to the DOM, so only call it on
+    // commit (change/blur) or when revealing the panel, never on every keystroke (that would rewrite
+    // a partial entry the moment it is typed).
+    function clampSequence() {
+      document.getElementById('seq-count').value = clampSeqValue('seq-count', 1, 500, 10);
+      document.getElementById('seq-start').value = clampSeqValue('seq-start', -1000000000, 1000000000, 1);
+      document.getElementById('seq-step').value = clampSeqValue('seq-step', 1, 1000000, 1);
+      document.getElementById('seq-padding').value = clampSeqValue('seq-padding', 0, 32, 0);
+    }
+
+    // The `sequence` object sent on /preview/draft — reads CLAMPED values WITHOUT mutating the inputs,
+    // so the payload is always valid even while a field shows a partial entry. The render uses item 0
+    // (start), so only start/step/padding shape the previewed number; count rides along for validity.
+    function currentSequenceSpec() {
+      return {
+        start: clampSeqValue('seq-start', -1000000000, 1000000000, 1),
+        count: clampSeqValue('seq-count', 1, 500, 10),
+        step: clampSeqValue('seq-step', 1, 1000000, 1),
+        padding: clampSeqValue('seq-padding', 0, 32, 0),
+      };
     }
 
     // Flatten a /preview/draft failure into ONE human sentence for the inline error (never a toast,
@@ -429,6 +504,9 @@
       // the uploaded image (the /preview/draft route applies the same image caps as /print).
       const fields = {...gatherFields(), ...collectImageFields(contract.image_fields || [])};
       const payload = {yaml, fields, language: currentLanguage()};
+      // A {{seq}} draft renders its first item — send the auto-number spec so the preview shows a
+      // real number instead of 422ing (the biconditional guard rejects a {{seq}} draft with no spec).
+      if (draftUsesSeq) payload.sequence = currentSequenceSpec();
       try {
         const res = await fetch(api('/preview/draft'), {
           method: 'POST', headers: authHeaders(), body: JSON.stringify(payload),
@@ -978,6 +1056,18 @@
     new ResizeObserver(refreshYamlHscroll).observe(yamlTextarea);
 
     document.getElementById('yaml').addEventListener('input', debounce(doPreview, 600));
+    // Auto-number inputs re-preview the first item (start/step/padding change the drawn number). One
+    // shared debounce so edits across the four inputs coalesce into a single draft render. Preview on
+    // `input` (currentSequenceSpec reads clamped values without rewriting the field, so a partial
+    // entry renders without being overwritten mid-keystroke); normalize the displayed value only on
+    // `change` (blur / Enter / spinner step) so the field ends up showing exactly what will print.
+    const debouncedSeqPreview = debounce(doPreview, 600);
+    for (const id of ['seq-start', 'seq-count', 'seq-step', 'seq-padding']) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.addEventListener('input', debouncedSeqPreview);
+      el.addEventListener('change', () => { clampSequence(); doPreview(); });
+    }
 
     // ── Auth: token wiring shared with the other pages (labelito.js#initTokenInput). ──
     // Re-pull the printer status (and so the "Your Printer" highlight) when the token changes: on a

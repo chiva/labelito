@@ -16,6 +16,13 @@
     details.section { margin-top: 16px; }
     details.section .section-body { display: flex; flex-direction: column; gap: 10px; }
     #threshold { max-width: 110px; }
+    /* Auto-numbering (sequence) controls — a compact 4-up grid of small number inputs shown only
+       for a {{seq}} template. flex:1 lets it take the copies slot's width in the options-row. */
+    .seq-field { flex: 1; min-width: 0; }
+    .seq-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .seq-cell { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 600; color: var(--ink3); text-transform: uppercase; letter-spacing: 0.03em; }
+    .seq-cell .input { max-width: 100%; }
+    #seq-hint { margin-top: 6px; }
     /* Threshold renders as one compact row (label · input · hint) — the B/W group subtitle already
        explains what the cutoff does, so the field only needs the blank-means-default reminder. */
     .threshold-row { flex-direction: row; align-items: center; gap: 10px; }
@@ -125,13 +132,29 @@
           <div id="fields-container"></div>
 
           <div class="options-row">
-            <div class="field">
+            <div class="field" id="copies-field">
               <span class="field-label" id="copies-label">Copies</span>
               <div class="stepper">
                 <button type="button" id="copies-minus" aria-label="Fewer copies">&minus;</button>
                 <input type="number" id="copies" value="1" min="1" max="10" aria-labelledby="copies-label">
                 <button type="button" id="copies-plus" aria-label="More copies">+</button>
               </div>
+            </div>
+            <!-- Shown only for a template that uses the {{ '{{seq}}' }} auto-numbering token
+                 (currentTemplate().uses_seq): syncSequenceForTemplate() toggles this against
+                 #copies-field — the two are mutually exclusive server-side (sequence drives the item
+                 count; copies > 1 is a 422). buildPayload() sends a `sequence` object from these when
+                 visible. Bounds mirror SequenceSpec (models.py): count 1-500 (required), start
+                 ±1e9, step 1-1e6, padding 0-32. -->
+            <div class="field seq-field" id="sequence-field" style="display:none">
+              <span class="field-label">Auto-number <code>{{ '{{seq}}' }}</code></span>
+              <div class="seq-grid">
+                <label class="seq-cell">Count<input type="number" id="seq-count" class="input" value="10" min="1" max="500"></label>
+                <label class="seq-cell">Start<input type="number" id="seq-start" class="input" value="1" min="-1000000000" max="1000000000"></label>
+                <label class="seq-cell">Step<input type="number" id="seq-step" class="input" value="1" min="1" max="1000000"></label>
+                <label class="seq-cell">Pad<input type="number" id="seq-padding" class="input" value="0" min="0" max="32"></label>
+              </div>
+              <div class="hint" id="seq-hint">Prints a batch, one numbered label per item — preview shows the first.</div>
             </div>
             <label class="check-label">
               <input type="checkbox" id="dry-run">
@@ -311,6 +334,57 @@
     // user has started the next label can't clear a guard that newer input has re-raised (stale-completion
     // race).
     let formRevision = 0;
+    // True while a /print request is in flight. Disables the Print button (via syncPrintButtonState)
+    // so a double-click or impatient retry can't queue a SECOND job behind the first — which for a
+    // sequence batch (up to 500 labels) would waste a whole roll on duplicate numbering. doPrint also
+    // hard-guards on it in case the button is triggered programmatically / by keyboard.
+    let printInFlight = false;
+    // Retry-safety across an AMBIGUOUS failure: if a /print throws a network error, the browser can't
+    // know whether the server actually printed. These retain the key + the exact payload of that
+    // attempt so a byte-identical resubmit reuses the key and the server dedups it (returns the prior
+    // job instead of printing again). Any definitive server response, or any payload change, clears
+    // them — so intentional repeats of the same label still print. See doPrint.
+    let retryIdempotencyKey = null;
+    let retryIdempotencyBody = null;
+
+    // ── Ambiguous-failure retry state persistence (RETRY_KEY, in sessionStorage). Keeps the retry key
+    //    alive across a page reload between a network error and the retry so the server can still
+    //    dedup. Defined here; the storage key constant lives with the other sessionStorage keys below
+    //    (hoisted function decls, so order is fine — these only run at print/init time).
+    function persistRetryState(key, body) {
+      // Skip a large body (e.g. one carrying a base64 image) — the in-tab globals still cover a retry
+      // without a reload, and persisting megabytes risks the sessionStorage quota.
+      if (body.length > RETRY_PERSIST_MAX_BODY) return;
+      try {
+        templateStore.setItem(RETRY_KEY, JSON.stringify({key, body}));
+      } catch (e) {
+        /* storage disabled — the in-tab globals still cover a same-page retry */
+      }
+    }
+
+    function clearRetryState() {
+      retryIdempotencyKey = null;
+      retryIdempotencyBody = null;
+      try {
+        templateStore.removeItem(RETRY_KEY);
+      } catch (e) {
+        /* storage disabled — nothing persisted to clear */
+      }
+    }
+
+    // Restore a persisted retry key/body into the globals on page load, so a retry after a reload
+    // reuses the key. Corrupt/absent state is ignored, never thrown.
+    function restoreRetryState() {
+      try {
+        const saved = JSON.parse(templateStore.getItem(RETRY_KEY));
+        if (saved && typeof saved.key === 'string' && typeof saved.body === 'string') {
+          retryIdempotencyKey = saved.key;
+          retryIdempotencyBody = saved.body;
+        }
+      } catch (e) {
+        /* corrupt/absent — no retry state to restore */
+      }
+    }
 
     // Remember the last EXPLICITLY picked template across tab switches (Print/Studio/History are
     // separate page navigations — every JS module global, including this one, re-initializes on
@@ -333,6 +407,21 @@
     // after printing would resurrect the guard doPrint just cleared, and a roll swap would stop
     // refocusing even though it refocuses fine for a user who stayed on the page.
     const SUBMITTED_KEY = 'labelito_choice_submitted';
+
+    // Ambiguous-failure retry state (see retryIdempotencyKey/Body) persisted in sessionStorage so a
+    // page reload BETWEEN a network error and the retry doesn't drop the key — the form restores
+    // identically across reload, so the rebuilt payload still matches and the server dedups. Session
+    // scope: a reload/nav within the tab, not a forever record; cleared on any definitive response.
+    const RETRY_KEY = 'labelito_retry_idempotency';
+    // Don't persist a huge payload body (e.g. one carrying a base64 image) to sessionStorage — it
+    // risks the storage quota for a rare image+sequence combo; the in-tab globals still cover retry
+    // without a reload. A sequence payload's body is well under this.
+    const RETRY_PERSIST_MAX_BODY = 50000;
+
+    // Count at/above which a non-dry-run sequence batch asks for confirmation before printing —
+    // mirrors the history page's REPRINT_CONFIRM_THRESHOLD so print and reprint guard identically. A
+    // batch is an irreversible physical action far larger than the copies cap (up to 500 labels).
+    const SEQ_CONFIRM_THRESHOLD = 10;
 
     function choiceSubmitted() {
       try {
@@ -670,6 +759,7 @@
       saveFields();
       updateMediaBadge();
       syncRedToggleForTemplate();
+      syncSequenceForTemplate();
       clearPreviewForSwitch();  // drop the previous template's label before the new one renders
       doPreview();
     }
@@ -839,6 +929,7 @@
       if (selectionChanged) renderFields();
       updateMediaBadge();
       syncRedToggleForTemplate();
+      syncSequenceForTemplate();
       if (selectionChanged) { clearPreviewForSwitch(); doPreview(); }
     }
 
@@ -859,6 +950,69 @@
       if (defaultHint) defaultHint.style.display = supported ? '' : 'none';
       if (disabledHint) disabledHint.style.display = supported ? 'none' : '';
       if (rollNote) rollNote.style.display = supported ? '' : 'none';
+    }
+
+    // Reveal the auto-numbering (sequence) controls and hide the Copies stepper for a {{seq}}
+    // template — and vice-versa. The two are mutually exclusive server-side (sequence drives the
+    // item count; a sequence with copies > 1 is a 422), so the UI never shows both at once.
+    // Re-evaluated on every template pick since uses_seq is per-template. Copies is reset to a valid
+    // value when hidden so a stale value can't ride into a later non-seq payload (buildPayload also
+    // pins copies=1 for a seq template, so a hidden Copies value never reaches the wire either way).
+    function syncSequenceForTemplate() {
+      const usesSeq = !!currentTemplate().uses_seq;
+      const seqField = document.getElementById('sequence-field');
+      const copiesField = document.getElementById('copies-field');
+      if (seqField) seqField.style.display = usesSeq ? '' : 'none';
+      if (copiesField) copiesField.style.display = usesSeq ? 'none' : '';
+      if (usesSeq) clampSequence(); else clampCopies();
+      updatePrintLabel();
+    }
+
+    // Clamp each auto-number input into its SequenceSpec bound (models.py), falling back to the
+    // default when the field is blank/non-numeric so buildPayload always sends a valid spec (count
+    // is required, ge=1 — an empty count would 422 the preview/print).
+    // Read one auto-number input clamped into its SequenceSpec bound (models.py), defaulting a
+    // blank/non-numeric field — PURE: returns a number and never touches the DOM, so a partial entry
+    // the user is mid-typing (e.g. a lone "-" toward a negative start) is not rewritten under them.
+    function clampSeqValue(id, lo, hi, dflt) {
+      const el = document.getElementById(id);
+      if (!el) return dflt;
+      const v = parseInt(el.value, 10);
+      return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
+    }
+
+    // Normalize the DISPLAYED input values into their bounds — writes to the DOM, so only call it on
+    // commit (change/blur) or when revealing the panel, never on every keystroke (that would rewrite
+    // a partial entry the moment it is typed).
+    function clampSequence() {
+      document.getElementById('seq-count').value = clampSeqValue('seq-count', 1, 500, 10);
+      document.getElementById('seq-start').value = clampSeqValue('seq-start', -1000000000, 1000000000, 1);
+      document.getElementById('seq-step').value = clampSeqValue('seq-step', 1, 1000000, 1);
+      document.getElementById('seq-padding').value = clampSeqValue('seq-padding', 0, 32, 0);
+    }
+
+    // "first..last" for a sequence spec, each zero-padded like format_seq (str(value).zfill(padding)
+    // in Python) — mirrors the History page's batch range label. last = start + (count-1)*step.
+    function seqRangeLabel(spec) {
+      const pad = (n) => {
+        const s = String(Math.abs(n)).padStart(spec.padding || 0, '0');
+        return n < 0 ? `-${s}` : s;
+      };
+      const last = spec.start + (spec.count - 1) * spec.step;
+      return spec.count > 1 ? `${pad(spec.start)}..${pad(last)}` : pad(spec.start);
+    }
+
+    // Build the `sequence` object from the auto-number controls (clamped first). count drives the
+    // batch size; start/step/padding shape each {{seq}} value (start + index*step, zero-padded).
+    function currentSequenceSpec() {
+      // Reads CLAMPED values WITHOUT mutating the inputs, so the payload is always valid even while a
+      // field shows a partial entry the user is mid-typing.
+      return {
+        start: clampSeqValue('seq-start', -1000000000, 1000000000, 1),
+        count: clampSeqValue('seq-count', 1, 500, 10),
+        step: clampSeqValue('seq-step', 1, 1000000, 1),
+        padding: clampSeqValue('seq-padding', 0, 32, 0),
+      };
     }
 
     // Legend explaining the dimmed cards, shown only when at least one bundled example is visible.
@@ -1028,9 +1182,19 @@
       if (restoredAny && !choiceSubmitted()) userOverride = true;
     }
 
+    // A unique idempotency key per submission. Prefer crypto.randomUUID, but fall back for a homelab
+    // served over plain HTTP (a non-secure context where crypto.randomUUID is unavailable) — the key
+    // only needs to be unique per submission, not cryptographically strong.
+    function newIdempotencyKey() {
+      if (window.crypto && crypto.randomUUID) {
+        try { return crypto.randomUUID(); } catch (e) { /* insecure context — fall through */ }
+      }
+      return 'ik-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+    }
+
     function buildPayload(extra = {}) {
       const t = currentTemplate();
-      return {
+      const payload = {
         template: selectedTemplateName,
         // gatherFields() is text-only (so image blobs are never persisted to localStorage); merge
         // the base64 for any image fields here so both /preview and /print carry it.
@@ -1049,6 +1213,14 @@
         },
         ...extra,
       };
+      // A {{seq}} template drives its item count from the sequence spec and rejects copies > 1
+      // (mutually exclusive, server 422). Attach the spec and pin copies=1 so both /preview (renders
+      // item #start) and /print (renders the whole batch) carry a valid, non-conflicting request.
+      if (t && t.uses_seq) {
+        payload.copies = 1;
+        payload.sequence = currentSequenceSpec();
+      }
+      return payload;
     }
 
     // Flatten a /preview failure into ONE human sentence — never the raw JSON body, never the HTTP
@@ -1213,7 +1385,7 @@
 
     async function doPrint() {
       // A print must never be built from a half-loaded image. The Print button is disabled while any
-      // image read is in flight (syncImageReadState), so this is normally unreachable — but guard
+      // image read is in flight (syncPrintButtonState), so this is normally unreachable — but guard
       // anyway rather than submit a label missing the just-chosen image. Keeping the snapshot below
       // synchronous (no await) is what makes the payload the exact state at click time: fields,
       // template, options and image can't change between the click and the send.
@@ -1221,7 +1393,36 @@
         showStatus('Still reading the selected image — try again in a moment.', 'info');
         return;
       }
+      // Reject a re-entrant print: the button is disabled while a /print is in flight, but a keyboard
+      // activation or a programmatic call could still land here — a second submit would queue a
+      // duplicate job behind _print_lock (a whole duplicate batch for a sequence print).
+      if (printInFlight) return;
       const payload = buildPayload();
+      // A sequence batch is an irreversible physical action far larger than the copies cap (up to 500
+      // labels), so a stale restored count / typo / accidental click could burn a roll. Confirm a
+      // non-dry-run batch at/above the threshold with its count and numbered range, mirroring the
+      // history page's large-reprint guard. Dry runs print nothing physical, so they skip this.
+      if (
+        !payload.dry_run &&
+        payload.sequence &&
+        payload.sequence.count >= SEQ_CONFIRM_THRESHOLD
+      ) {
+        const range = seqRangeLabel(payload.sequence);
+        if (!confirm(`Print ${payload.sequence.count} labels (${range})? This can't be undone.`)) {
+          return;
+        }
+      }
+      // Retry-safety: reuse the idempotency key ONLY when resubmitting a payload byte-identical to one
+      // whose previous attempt ended in a network error (retryIdempotencyBody). The server then dedups
+      // the retry instead of printing a second batch. A fresh submit — or any payload change — gets a
+      // new key, so intentional repeats of the same label still print. The key is compared against the
+      // payload WITHOUT it, then attached.
+      const payloadBody = JSON.stringify(payload);
+      const idempotencyKey =
+        retryIdempotencyKey && retryIdempotencyBody === payloadBody
+          ? retryIdempotencyKey
+          : newIdempotencyKey();
+      payload.idempotency_key = idempotencyKey;
       // Snapshot the form revision at send time. On completion we only clear userOverride if it is
       // unchanged — so if the user starts editing the next label while this request is in flight, the
       // stale reply won't clear a guard their newer input has re-raised (and won't let the post-print
@@ -1231,12 +1432,20 @@
       // the instant the job is sent. The post-print refresh and the background poll converge the badge
       // back to the printer's real state; failure paths below reconcile it so it can never stick.
       setStateBadge('printing', 'Printing…');
+      // Latch the in-flight guard for the whole request lifetime — disables the Print button so a
+      // double-click can't queue a duplicate job; cleared in finally on every exit path.
+      printInFlight = true;
+      syncPrintButtonState();
       try {
         const res = await fetch(api('/print'), {
           method: 'POST',
           headers: authHeaders(),
           body: JSON.stringify(payload),
         });
+        // A response (any status) is a definitive outcome — the ambiguity that justifies reusing the
+        // key only exists when the request never got one (the catch below). Clear the retry state
+        // (globals + persisted) so the next submit is treated as a fresh, intentional job.
+        clearRetryState();
         if (!res.ok) {
           if (handleAuthError(res)) { refreshPrinterStatus(); return; }
           const err = await res.json().catch(() => ({detail: res.statusText}));
@@ -1257,7 +1466,13 @@
             /* storage disabled — nothing persisted, so nothing to mark consumed */
           }
         }
-        showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
+        // A sequence batch reports copies:1 in the response (one printer job per numbered label), so
+        // describe the batch from the spec the client sent — e.g. "×40 (001..040)" — instead of the
+        // misleading "copies: 1". Plain prints keep the copies readout.
+        const countLabel = payload.sequence
+          ? `sequence: ×${payload.sequence.count} (${seqRangeLabel(payload.sequence)})`
+          : `copies: ${json.copies}`;
+        showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · ${countLabel}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
         await doPreview();
         // Open the fast-poll bridge so the card tracks the print→idle transition at ~1s instead of the
         // 4s base cadence. On SNMP, re-tick the poller now (schedule(0)) and let isBusy hold the fast
@@ -1266,8 +1481,19 @@
         if (LIVE_STATUS_POLL) statusPoller.schedule(0);
         else refreshPrinterStatus();
       } catch (e) {
+        // Network error → the server may or may not have printed. Retain the key + payload (globals +
+        // persisted across a reload) so an identical retry reuses the key and the server dedups it
+        // (prints exactly once), rather than queuing a second batch.
+        retryIdempotencyKey = idempotencyKey;
+        retryIdempotencyBody = payloadBody;
+        persistRetryState(idempotencyKey, payloadBody);
         showStatus('Network error: ' + e.message, 'err');
         refreshPrinterStatus();
+      } finally {
+        // Release the guard however the request settled (ok, HTTP error, or network throw) so the
+        // Print button re-enables for the next label — subject to the image-read gate.
+        printInFlight = false;
+        syncPrintButtonState();
       }
     }
 
@@ -1285,6 +1511,12 @@
           red: red ? red.checked : false,
           dither: document.getElementById('dither').checked,
           threshold: document.getElementById('threshold').value,
+          // Auto-number controls (raw strings, like copies/threshold) so a session's chosen batch
+          // shape round-trips. Only meaningful for {{seq}} templates; harmless to persist otherwise.
+          seq_start: document.getElementById('seq-start').value,
+          seq_count: document.getElementById('seq-count').value,
+          seq_step: document.getElementById('seq-step').value,
+          seq_padding: document.getElementById('seq-padding').value,
         }));
       } catch (e) {
         /* storage disabled — the option changes still apply for this page view */
@@ -1315,7 +1547,12 @@
       if (red && typeof saved.red === 'boolean') red.checked = saved.red;
       if (typeof saved.dither === 'boolean') document.getElementById('dither').checked = saved.dither;
       if (typeof saved.threshold === 'string') document.getElementById('threshold').value = saved.threshold;
+      if (typeof saved.seq_start === 'string') document.getElementById('seq-start').value = saved.seq_start;
+      if (typeof saved.seq_count === 'string') document.getElementById('seq-count').value = saved.seq_count;
+      if (typeof saved.seq_step === 'string') document.getElementById('seq-step').value = saved.seq_step;
+      if (typeof saved.seq_padding === 'string') document.getElementById('seq-padding').value = saved.seq_padding;
       clampCopies();
+      clampSequence();
       updatePrintLabel();
       syncThresholdToggledByDither();
     }
@@ -1331,6 +1568,14 @@
       const label = document.getElementById('print-label');
       if (document.getElementById('dry-run').checked) {
         label.textContent = 'Dry run';
+        return;
+      }
+      // A {{seq}} template prints a batch of `count` distinct numbered labels — reflect the count
+      // from the auto-number control, not the (hidden, pinned-to-1) Copies stepper.
+      const t = currentTemplate();
+      if (t && t.uses_seq) {
+        const c = parseInt(document.getElementById('seq-count').value, 10) || 1;
+        label.textContent = `Print ${c} labels`;
         return;
       }
       const n = parseInt(document.getElementById('copies').value, 10) || 1;
@@ -1384,16 +1629,41 @@
     document.getElementById('high-res').addEventListener('change', () => { saveOptions(); schedulePreview(); });
     const redToggle = document.getElementById('red');
     if (redToggle) redToggle.addEventListener('change', () => { saveOptions(); schedulePreview(); });  // absent on non-two-color models
-
-    // Disable Print while an image read is in flight (fired by the shared image widget), so doPrint —
-    // which snapshots the payload synchronously — can never run before the chosen image is committed
-    // to the cache. Re-enabled the moment all reads settle.
-    function syncImageReadState() {
-      const btn = document.querySelector('.btn-print');
-      if (btn) btn.disabled = imageReadsPending();
+    // Auto-number inputs: reflect the batch count in the button label and re-preview item #start.
+    // start/step/padding change the previewed number; count only changes the label (the preview
+    // renders the first item regardless) — all four re-preview for simplicity, sending a valid spec.
+    // These are label CONTENT (they define the printed number/batch), not just print options, so an
+    // edit is a new in-progress choice: mark it dirty exactly like a field edit (userOverride +
+    // formRevision) and drop SUBMITTED_KEY. Otherwise a /print still in flight could, on completion,
+    // clear userOverride and mark this batch submitted — letting a later roll-driven refocus replace
+    // the selected template/form out from under the newer batch edits.
+    for (const id of ['seq-start', 'seq-count', 'seq-step', 'seq-padding']) {
+      const seqEl = document.getElementById(id);
+      // Mark the form dirty + re-preview on input, but do NOT clamp here: clamping rewrites the DOM
+      // and would wipe a partial entry mid-keystroke (a lone "-" toward a negative start snapping to
+      // the default). The payload stays valid because buildPayload → currentSequenceSpec reads
+      // clamped values purely. saveOptions persists the raw text, matching copies/threshold.
+      seqEl.addEventListener('input', () => {
+        userOverride = true;
+        formRevision++;
+        try { templateStore.removeItem(SUBMITTED_KEY); } catch (e) { /* storage disabled */ }
+        updatePrintLabel(); saveOptions(); schedulePreview();
+      });
+      // Normalize the displayed value only once the user commits (blur / Enter / spinner step), so
+      // the field ends up showing exactly what will print.
+      seqEl.addEventListener('change', () => { clampSequence(); updatePrintLabel(); saveOptions(); });
     }
-    document.addEventListener('labelito:image-reads-changed', syncImageReadState);
-    syncImageReadState();
+
+    // Disable Print while an image read is in flight (fired by the shared image widget) — so doPrint,
+    // which snapshots the payload synchronously, can never run before the chosen image is committed to
+    // the cache — OR while a /print is already in flight (printInFlight), so a double-click can't queue
+    // a duplicate batch. Re-evaluated whenever either condition changes.
+    function syncPrintButtonState() {
+      const btn = document.querySelector('.btn-print');
+      if (btn) btn.disabled = imageReadsPending() || printInFlight;
+    }
+    document.addEventListener('labelito:image-reads-changed', syncPrintButtonState);
+    syncPrintButtonState();
 
     // Re-render the preview when the nav's label language changes.
     onLanguageChange(() => doPreview());
@@ -1404,6 +1674,7 @@
     renderFields();
     restoreSavedFields();   // after renderFields() so the field inputs it fills already exist
     restorePrintOptions();  // before rebuildTemplatePicker() so its syncRedToggleForTemplate() re-gates a restored #red
+    restoreRetryState();    // reattach an ambiguous-failure retry key from a pre-reload network error
     rebuildTemplatePicker();  // group the picker + badge from required media; refreshed once status loads
     refreshPrinterStatus();
     if (LIVE_STATUS_POLL) statusPoller.start();  // visible-tab poll, SNMP only

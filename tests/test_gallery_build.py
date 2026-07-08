@@ -17,6 +17,7 @@ import pytest
 from PIL import Image
 
 from app import main as app_main
+from app.models import PrintRequest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT_PATH = _REPO_ROOT / "scripts" / "build_gallery.py"
@@ -120,6 +121,37 @@ def test_manifest_entries_have_the_fields_gallery_needs(manifest: list[dict]) ->
         assert entry["image"].endswith(f"{entry['name']}.png")
         assert entry["curl"].startswith("curl -X POST")
         assert entry["name"] in entry["curl"]
+
+
+def test_seq_template_manifest_and_curl_carry_a_valid_sequence(manifest: list[dict]) -> None:
+    """A {{seq}} template REQUIRES a sequence spec at /print, so its manifest record and copy-paste
+    curl must include one — otherwise the published snippet 422s. A non-seq template carries none."""
+    import shlex
+
+    from app.render.engine import uses_seq
+
+    nb = next((e for e in manifest if e["name"] == "numbered-bin"), None)
+    if nb is None:  # the shipped template is optional to the suite's fixtures
+        pytest.skip("no 'numbered-bin' template registered")
+
+    # numbered-bin uses {{seq}} → manifest sequence key + a valid SequenceSpec shape.
+    assert uses_seq(app_main.registry.get("numbered-bin").layout)
+    spec = nb.get("sequence")
+    assert spec is not None, "a {{seq}} template's manifest entry must carry a sequence spec"
+    PrintRequest.model_validate(
+        {"template": "numbered-bin", "fields": nb["fields"], "sequence": spec}
+    )
+
+    # The curl body must round-trip as the same valid /print request (sequence included).
+    body = shlex.split(nb["curl"].split(" -d ", 1)[1])[0]
+    parsed = json.loads(body)
+    assert parsed["sequence"] == spec
+    PrintRequest.model_validate(parsed)
+
+    # A non-seq template carries no sequence key in either place.
+    plain = next(e for e in manifest if e["name"] == "freezer-dated")
+    assert "sequence" not in plain
+    assert '"sequence"' not in plain["curl"]
 
 
 def test_all_declared_fields_are_populated_in_the_example(manifest: list[dict]) -> None:

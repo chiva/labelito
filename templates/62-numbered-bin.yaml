@@ -1,0 +1,18 @@
+name: numbered-bin
+description: Numbered storage bins — prints a run of sequentially numbered bin labels (homelab parts drawers or pantry crates)
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [contents]
+layout:
+  - {type: spacer, size: 6}
+  - {type: title, text: "{{title}}", max_lines: 1, align: center, bold: true}
+  - type: row
+    align_items: center
+    spacing: 12
+    children:
+      - {type: title, text: "#{{seq}}", align: left, max_lines: 1}
+      - {type: qr, data: "bin-{{seq}}", size: 130, width: 140, align: right}
+  - {type: text, text: "{{contents}}", size: 26, align: center, max_lines: 2}
+  - {type: spacer, size: 6}

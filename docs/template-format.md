@@ -92,7 +92,7 @@ Always available without being declared as fields:
 | `{{now}}` | Current date+time | Same offset/format options (e.g. `{{now:%H:%M}}`). |
 | `{{seq}}` | Per-item sequence number | Only meaningful in a sequence batch (a `/print` with a `sequence` spec). Numbered `start + index*step`, optionally zero-padded. A template that uses `{{seq}}` printed **without** a sequence spec is rejected (it would print a blank number). |
 
-A sequence spec on the `/print` request controls `{{seq}}`:
+A sequence spec controls `{{seq}}`:
 
 | Field | Default | Range |
 |---|---|---|
@@ -100,6 +100,16 @@ A sequence spec on the `/print` request controls `{{seq}}`:
 | `count` | — (required) | `1 … 500` |
 | `step` | `1` | `1 … 1e6` |
 | `padding` | `0` (no padding) | `0 … 32` |
+
+`sequence` and `copies` are mutually exclusive — `sequence` drives the item count, so `copies` must
+be `1` (a `sequence` with `copies > 1` is a `422`). In the **Print page** a template that uses
+`{{seq}}` swaps the Copies stepper for an **Auto-number** panel (count / start / step / pad); the
+live preview renders the **first** item (at `start`), and the Print button prints the whole batch —
+one distinct numbered label per item. The **Template Studio** (`/editor`) shows the same Auto-number
+panel for a `{{seq}}` draft and renders the first item in its live draft preview. Both `/preview` and
+`/preview/draft` accept the same `sequence` object to render that first item, so a `{{seq}}` template
+is no longer preview-blind in either surface. The shipped `numbered-bin` template is a worked example
+(numbered storage bins for a homelab parts drawer or pantry crates).
 
 ### Translation tokens (i18n)
 

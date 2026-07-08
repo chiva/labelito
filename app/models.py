@@ -228,6 +228,11 @@ class DraftPreviewRequest(BaseModel):
     absent: like ``/preview``, the draft preview is a pre-driver monochrome render and never
     dithers / goes two-color / 600-dpi (those only affect /print and /reprint), so accepting them
     would be a misleading divergence.
+
+    ``sequence`` is the exception: a draft whose layout uses ``{{seq}}`` needs a spec so the preview
+    can render the first item (at ``start``) instead of a blank number. It is not a rasterization
+    option — it shapes the label content — and mirrors ``/preview`` (the studio sends the same object
+    the Print page does). Only the first item is drawn regardless of ``count``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -242,6 +247,9 @@ class DraftPreviewRequest(BaseModel):
     )
     fields: dict[str, Any] = Field(default={}, examples=[{"title": "Hello"}])
     language: str | None = Field(default=None, max_length=35, examples=["en"])
+    # Auto-numbering spec for a {{seq}} draft — the preview renders the item at `start`. Absent for a
+    # non-seq draft (and inert if present on one, matching /preview's preview=True forward-only check).
+    sequence: SequenceSpec | None = Field(default=None)
 
 
 class TemplateParseRequest(BaseModel):
@@ -270,6 +278,10 @@ class TemplateParseResponse(BaseModel):
     rotate: int
     valign: str = "top"
     fields: TemplateFieldContract
+    # True when the draft layout uses the {{seq}} auto-numbering token. The studio reveals its
+    # sequence controls (and sends a `sequence` on /preview/draft) so a {{seq}} draft previews its
+    # first item instead of erroring. Defaults False so the response shape stays backward-compatible.
+    uses_seq: bool = False
 
 
 class SaveTemplateRequest(BaseModel):
@@ -335,6 +347,11 @@ class TemplateInfo(BaseModel):
     # True when this template is a bundled example (shipped in the image), not one from the user's
     # templates_dir. Lets clients visually distinguish shipped examples from the user's own.
     is_example: bool = False
+    # True when the layout references the {{seq}} auto-numbering token (engine.uses_seq). Such a
+    # template MUST be printed with a `sequence` spec (and cannot use `copies` > 1) — the Print page
+    # uses this to reveal the sequence controls and hide the copies stepper instead of letting the
+    # print 422. Defaults to False so the serialized shape stays backward-compatible.
+    uses_seq: bool = False
 
 
 class TemplateSourceResponse(BaseModel):

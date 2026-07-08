@@ -1882,7 +1882,11 @@ async def preview(request: PrintRequest, download: bool = False) -> Response:
         if request.options.threshold is None
         else request.options.threshold
     )
-    png = _render_preview(
+    # Offload the blocking PIL render exactly like /print offloads _execute_print: rendering on the
+    # event loop would stall every other request (health, metrics, auth) for the render duration.
+    # HTTPException raised inside the helper propagates unchanged through run_in_threadpool.
+    png = await run_in_threadpool(
+        _render_preview,
         tmpl.name,
         request.fields,
         language,
@@ -2296,7 +2300,18 @@ async def preview_multipart(
     language: Annotated[str | None, Form()] = None,
     image: Annotated[UploadFile | None, File()] = None,
 ) -> Response:
-    fields: dict[str, Any] = json.loads(fields_json)
+    # Guard the form-field parse by hand: fields_json arrives as an opaque form string, so FastAPI's
+    # automatic body validation never sees it — an unguarded json.loads would surface malformed
+    # input as an unhandled 500 instead of the 422 the JSON routes return for the same mistake.
+    try:
+        parsed = json.loads(fields_json)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(422, f"Invalid fields_json: not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            422, f"Invalid fields_json: expected a JSON object, got {type(parsed).__name__}"
+        )
+    fields: dict[str, Any] = parsed
     if image is not None:
         if image.content_type and not image.content_type.startswith("image/"):
             raise HTTPException(
@@ -2305,7 +2320,10 @@ async def preview_multipart(
         # Read at most one byte past the cap so an oversized upload is bounded in memory; the
         # truncated read then trips the size check in _validate_upload_image with a 413.
         img_bytes = await image.read(MAX_IMAGE_UPLOAD_BYTES + 1)
-        _validate_upload_image(img_bytes)
+        # _validate_upload_image fully decodes the image (im.load(), up to 16 MP) — offload it like
+        # the render calls so the decode can't stall the event loop. HTTPException propagates
+        # unchanged through run_in_threadpool.
+        await run_in_threadpool(_validate_upload_image, img_bytes)
         fields["image"] = base64.b64encode(img_bytes).decode()
     # Build the same model the JSON routes receive. Constructing it by hand here bypasses FastAPI's
     # automatic body validation, so a blank template name (min_length=1) would raise ValidationError
@@ -2365,7 +2383,8 @@ async def preview_draft(request: DraftPreviewRequest) -> Response:
     _validate_image_fields(tmpl, request.fields)
     _validate_text_fields(tmpl, request.fields)
     language = request.language or settings.default_language
-    png = _render_template_preview(tmpl, request.fields, language)
+    # Same event-loop offload as /preview: the draft render is the same blocking PIL work.
+    png = await run_in_threadpool(_render_template_preview, tmpl, request.fields, language)
     return Response(content=png, media_type="image/png")
 
 

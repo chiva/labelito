@@ -88,6 +88,7 @@ SAMPLES: dict[str, dict[str, Any]] = {
     "freezer-dated": {"title": "Chicken stock", "subtitle": "Homemade"},
     "fridge-dated": {"title": "Cooked rice", "subtitle": "Jasmine"},
     "pantry": {"title": "Basmati rice", "subtitle": "Organic", "quantity": "2 kg"},
+    "meal-prep": {"title": "Chicken curry", "subtitle": "Batch cook", "portions": "4 portions"},
     "custom-icon": {"title": "Bolognese sauce", "subtitle": "2 portions"},
     "icon-collection": {"title": "Morning blend", "subtitle": "Whole bean · medium roast"},
     "row-demo": {"title": "Nightly backup", "status": "Completed 02:14"},

@@ -1,0 +1,26 @@
+name: meal-prep
+description: Batch-cook / meal-prep label — dish, stored + use-by dates, and portions
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+  optional: [subtitle, portions]
+layout:
+  - {type: spacer, size: 8}
+  # Dish name. The `padding` shorthand ([vertical, horizontal]) keeps a comfortable side margin so a
+  # long name never crowds the tape edge — padding is additive on top of the element's own spacing.
+  - {type: title, text: "{{title}}", max_lines: 2, align: center, bold: true, padding: [0, 20]}
+  - {type: subtitle, text: "{{subtitle}}", max_lines: 1, align: center}
+  - {type: line}
+  # Two dated cells split by a divider. Per-cell `padding` insets each date away from the divider so
+  # the columns read as tidy, evenly-spaced boxes — padding applied to a row CHILD, not just a
+  # top-level element (the capability this template showcases).
+  - type: row
+    align_items: center
+    divider: true
+    children:
+      - {type: text, text: "[[stored]]\n{{date}}", size: 24, align: center, padding: [2, 14]}
+      - {type: text, text: "[[expires]]\n{{date+4d}}", size: 24, align: center, padding: [2, 14]}
+  - {type: line}
+  - {type: text, text: "{{portions}}", size: 22, align: center, padding_top: 4}
+  - {type: spacer, size: 8}

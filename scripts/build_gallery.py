@@ -272,21 +272,33 @@ def build(out_dir: Path, *, strict_icons: bool = True) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     blank_icon_reports: list[str] = []
     icon_logger = logging.getLogger(_ICON_WARNING_LOGGER)
-    for name in names:
-        tmpl = app_main.registry.get(name)
-        if tmpl is None:  # pragma: no cover - names() and get() come from the same registry
-            continue
-        fields = _fields_for(tmpl)
-        capture = _IconWarningCapture()
-        icon_logger.addHandler(capture)
-        try:
-            png = app_main._render_template_preview(tmpl, fields, SAMPLE_LANGUAGE, now=SAMPLE_NOW)
-        finally:
-            icon_logger.removeHandler(capture)
-        blank_icon_reports.extend(f"{name}: {message}" for message in capture.messages)
-        (samples_dir / f"{name}.png").write_bytes(png)
-        image_rel = f"{SAMPLES_SUBDIR.as_posix()}/{name}.png"
-        entries.append(_entry(tmpl, image_rel, fields))
+    # Pin the logger to WARNING for the capture window: Logger.warning() drops the record before
+    # any handler sees it when the effective level is higher, and this logger has no level of its
+    # own — it inherits root, which app.main's basicConfig sets from LOG_LEVEL. Without the pin, a
+    # LOG_LEVEL=ERROR build would "pass" strict with blank icons. Restored afterward so the build
+    # script does not change the process's logging config beyond this window.
+    previous_level = icon_logger.level
+    icon_logger.setLevel(logging.WARNING)
+    try:
+        for name in names:
+            tmpl = app_main.registry.get(name)
+            if tmpl is None:  # pragma: no cover - names() and get() come from the same registry
+                continue
+            fields = _fields_for(tmpl)
+            capture = _IconWarningCapture()
+            icon_logger.addHandler(capture)
+            try:
+                png = app_main._render_template_preview(
+                    tmpl, fields, SAMPLE_LANGUAGE, now=SAMPLE_NOW
+                )
+            finally:
+                icon_logger.removeHandler(capture)
+            blank_icon_reports.extend(f"{name}: {message}" for message in capture.messages)
+            (samples_dir / f"{name}.png").write_bytes(png)
+            image_rel = f"{SAMPLES_SUBDIR.as_posix()}/{name}.png"
+            entries.append(_entry(tmpl, image_rel, fields))
+    finally:
+        icon_logger.setLevel(previous_level)
 
     # Every template is rendered before failing so ONE build reports every broken icon, not just the
     # first. Raised before the manifest is written: a strict build never leaves a manifest behind

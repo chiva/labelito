@@ -279,6 +279,32 @@ def test_strict_build_passes_when_the_icon_resolves(
     assert (out_dir / build_mod.SAMPLES_SUBDIR / "icon-ok.png").is_file()
 
 
+def test_strict_build_catches_blank_icons_even_when_logging_is_quieter(
+    build_mod, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The strict check must not depend on the ambient logging config: with the elements logger
+    effectively above WARNING (e.g. LOG_LEVEL=ERROR reaching root via app.main's basicConfig),
+    ``Logger.warning`` drops the record before any handler sees it — build() pins the logger to
+    WARNING for the capture window and restores it afterward."""
+    import logging
+
+    _isolate_gallery(
+        monkeypatch,
+        tmp_path,
+        _ICON_TEMPLATE.format(name="ghost-icon", icon="ghost-glyph"),
+        icon_files={},
+    )
+    icon_logger = logging.getLogger("app.render.elements")
+    previous = icon_logger.level
+    icon_logger.setLevel(logging.ERROR)
+    try:
+        with pytest.raises(build_mod.GalleryBuildError, match="blank icon"):
+            build_mod.build(tmp_path / "out")
+        assert icon_logger.level == logging.ERROR, "build() must restore the pre-build level"
+    finally:
+        icon_logger.setLevel(previous)
+
+
 def test_non_strict_build_keeps_the_graceful_blank_icon_behavior(
     build_mod, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

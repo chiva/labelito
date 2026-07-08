@@ -61,10 +61,12 @@ h1,h2,h3,p,pre{margin:0;}
 /* gallery grid */
 .gallery{max-width:1180px;margin:0 auto;padding:clamp(20px,3vw,32px) clamp(18px,5vw,64px) clamp(56px,7vw,96px);display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:20px;}
 .gcard{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;}
-.paper{background:#fff;padding:18px;display:flex;align-items:center;justify-content:center;height:230px;border-bottom:1px solid var(--line);}
+.paper{background:#dfe3e8;padding:18px;display:flex;align-items:center;justify-content:center;height:230px;border-bottom:1px solid var(--line);}
 /* Cap both axes so a tall continuous roll (variable min-length) and a wide 62 mm label both sit
-   evenly in the grid, aspect ratio preserved — the preview stays faithful to the printed shape. */
-.paper img{max-width:100%;max-height:100%;width:auto;height:auto;image-rendering:auto;display:block;box-shadow:0 1px 6px rgba(0,0,0,.14);border-radius:2px;}
+   evenly in the grid, aspect ratio preserved — the preview stays faithful to the printed shape.
+   Paper is a mid gray (not white) and the image gets a visible border because most labels
+   render on a white background — white-on-white with only a shadow reads as blank. */
+.paper img{max-width:100%;max-height:100%;width:auto;height:auto;image-rendering:auto;display:block;border:1px solid rgba(0,0,0,.14);box-shadow:0 1px 8px rgba(0,0,0,.18);border-radius:2px;}
 .gbody{padding:18px 18px 20px;display:flex;flex-direction:column;gap:12px;flex:1;}
 .grow{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
 .gname{font-family:var(--mono);font-size:15px;font-weight:700;letter-spacing:-0.01em;color:var(--ink);word-break:break-word;}

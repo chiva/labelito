@@ -276,6 +276,30 @@ def test_padding_on_squeezed_column_matches_padless_degradation(engine: RenderEn
     assert list(padded.getdata()) == list(padless.getdata())
 
 
+def test_padding_on_nested_column_child_in_squeezed_row_degrades(engine: RenderEngine) -> None:
+    """The degradation also holds one nesting level down: a padded text inside a column that sits
+    in a squeezed row cell goes through the same shared _guarded_child_strip path and must render
+    without raising, not 500."""
+    el = build_element(
+        {
+            "type": "row",
+            "children": [
+                {"type": "text", "text": "wide", "width": CANVAS_W},  # squeezes the column sibling
+                {
+                    "type": "column",
+                    "children": [
+                        {"type": "text", "text": "hi", "padding_left": 20, "padding_right": 20}
+                    ],
+                },
+            ],
+        }
+    )
+    res = [{"__children__": [{}, {"__children__": [{}]}]}]
+    [strip] = engine._render_elements([el], res, CANVAS_W)
+    assert strip.width == CANVAS_W
+    assert strip.height > 0  # nothing raised anywhere in the nested chain
+
+
 def test_padding_over_cap_on_top_level_container_still_raises(engine: RenderEngine) -> None:
     """The child-level degradation must not soften the top-level contract: an element whose OWN
     horizontal padding exceeds the full-width canvas is a template-authoring error and still fails

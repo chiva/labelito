@@ -233,6 +233,12 @@ class SqliteHistoryStore:
         return [record for r in rows if (record := _load_row(*r)) is not None]
 
     def page(self, *, offset: int, limit: int) -> list[PrintJobRecord]:
+        """Return one page, newest first.
+
+        SQL LIMIT/OFFSET is applied before :func:`_load_row` filtering, so a page containing
+        unreadable rows comes back shorter than ``limit`` (same for :meth:`recent`); offsets
+        stay stable because skipped rows still occupy their slot.
+        """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT job_id, record, format_version FROM jobs ORDER BY id DESC LIMIT ? OFFSET ?",
@@ -241,6 +247,8 @@ class SqliteHistoryStore:
         return [record for r in rows if (record := _load_row(*r)) is not None]
 
     def count(self) -> int:
+        """Total stored rows — including any an unreadable-row skip keeps out of
+        :meth:`recent`/:meth:`page`, so it can exceed the number of displayable records."""
         with self._lock:
             (count,) = self._conn.execute("SELECT COUNT(*) FROM jobs").fetchone()
         return int(count)

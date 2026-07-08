@@ -13,7 +13,12 @@ from typing import Any
 
 from PIL import Image
 
-from app.render.elements import ElementBase, build_element, resolve_custom_icon_path
+from app.render.elements import (
+    ElementBase,
+    _apply_padding,
+    build_element,
+    resolve_custom_icon_path,
+)
 from app.render.i18n import Translator
 
 
@@ -651,9 +656,17 @@ class RenderEngine:
     ) -> list[Image.Image]:
         strips: list[Image.Image] = []
         for el, res in zip(elements, resolved, strict=True):
-            strip = el.render(
-                canvas_width, res, self.fonts_dir, self.icons_dir, self.icon_collections_dir
-            )
+            # Author padding is applied UNIFORMLY via _apply_padding — the same helper the row/column
+            # child renderers use — so padding behaves identically on top-level and nested elements.
+            # A blank element (absent optional field) renders zero-height and contributes nothing.
+            def _render(
+                content_width: int, el: ElementBase = el, res: dict[str, Any] = res
+            ) -> Image.Image:
+                return el.render(
+                    content_width, res, self.fonts_dir, self.icons_dir, self.icon_collections_dir
+                )
+
+            strip = _apply_padding(el, canvas_width, _render)
             if strip.height > 0:
                 strips.append(strip)
         return strips

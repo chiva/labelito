@@ -271,6 +271,90 @@ def test_text_strip_product_cap_raises(tmp_path: Path) -> None:
         load_template(path)
 
 
+def test_padding_shorthand_and_longhand_load(tmp_path: Path) -> None:
+    """Scalar and 1-4-value list `padding`, plus longhand sides, all load."""
+    path = write_yaml(
+        tmp_path / "pad-ok.yaml",
+        """\
+        name: pad-ok
+        description: valid padding
+        label: "62"
+        layout:
+          - {type: text, text: a, padding: 8}
+          - {type: text, text: b, padding: [8, 12]}
+          - {type: text, text: c, padding: [8, 12, 4, 16]}
+          - {type: text, text: d, padding_left: 24, padding_top: 6}
+    """,
+    )
+    assert len(load_template(path).layout) == 4
+
+
+def test_padding_shorthand_too_many_values_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "pad-5.yaml",
+        """\
+        name: pad-5
+        description: padding list too long
+        label: "62"
+        layout:
+          - {type: text, text: a, padding: [1, 2, 3, 4, 5]}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="padding"):
+        load_template(path)
+
+
+def test_padding_shorthand_non_int_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "pad-str.yaml",
+        """\
+        name: pad-str
+        description: padding not an int
+        label: "62"
+        layout:
+          - {type: text, text: a, padding: huge}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="padding"):
+        load_template(path)
+
+
+def test_padding_on_row_and_column_children_loads(tmp_path: Path) -> None:
+    """Padding is supported on row/column children (applied per-cell at render), so it loads there —
+    longhand on a row child and the shorthand on a column child."""
+    path = write_yaml(
+        tmp_path / "pad-children.yaml",
+        """\
+        name: pad-children
+        description: padding on container children
+        label: "62"
+        layout:
+          - type: row
+            children:
+              - {type: text, text: a, padding_left: 20}
+              - type: column
+                children:
+                  - {type: text, text: b, padding: 8}
+    """,
+    )
+    assert len(load_template(path).layout) == 1
+
+
+def test_padding_left_out_of_range_raises(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "pad-big.yaml",
+        """\
+        name: pad-big
+        description: padding_left over the dimension cap
+        label: "62"
+        layout:
+          - {type: text, text: a, padding_left: 99999}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="padding_left"):
+        load_template(path)
+
+
 def test_in_bounds_render_dimensions_load(tmp_path: Path) -> None:
     """Ordinary in-bounds qr/text/rotate values still load (the tightened caps reject nothing real:
     qr.size 600, text size 48 with max_lines 4, rotate 90)."""

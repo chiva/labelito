@@ -25,7 +25,9 @@ from app.render.elements import (
     TextElement,
     TitleElement,
     _load_font,
+    _resolve_padding,
     _wrap_text,
+    build_element,
 )
 from app.render.engine import (
     _BROTHER_QL_MAX_RASTER_ROWS,
@@ -117,6 +119,117 @@ def test_text_element_custom_size(
     img = el.render(CANVAS_W, {"__text__": "test"}, fonts_dir, icons_dir, icon_collections_dir)
     assert img.width == CANVAS_W
     assert img.height > 0
+
+
+# ── Element padding (unified top/right/bottom/left + CSS shorthand) ───────────────
+def test_resolve_padding_shorthand_forms() -> None:
+    """The `padding` shorthand expands with CSS 1-4-value clockwise semantics."""
+    assert _resolve_padding({"padding": 8}) == (8, 8, 8, 8)
+    assert _resolve_padding({"padding": [8]}) == (8, 8, 8, 8)
+    assert _resolve_padding({"padding": [8, 12]}) == (8, 12, 8, 12)  # v, h
+    assert _resolve_padding({"padding": [8, 12, 4]}) == (8, 12, 4, 12)  # t, h, b
+    assert _resolve_padding({"padding": [8, 12, 4, 16]}) == (8, 12, 4, 16)  # t, r, b, l
+    assert _resolve_padding({}) == (0, 0, 0, 0)
+
+
+def test_resolve_padding_longhand_overrides_shorthand() -> None:
+    """A longhand side wins over the shorthand (specific beats general)."""
+    assert _resolve_padding({"padding": 8, "padding_left": 30}) == (8, 8, 8, 30)
+
+
+def test_build_element_expands_padding_shorthand() -> None:
+    el = build_element({"type": "text", "text": "x", "padding": [8, 12, 4, 16]})
+    assert (el.padding_top, el.padding_right, el.padding_bottom, el.padding_left) == (8, 12, 4, 16)
+
+
+def test_padding_defaults_zero(engine: RenderEngine) -> None:
+    """Every side defaults to 0, and an explicit padding:0 is a byte-identical no-op."""
+    base = build_element({"type": "text", "text": "hi"})
+    assert (base.padding_top, base.padding_right, base.padding_bottom, base.padding_left) == (
+        0,
+        0,
+        0,
+        0,
+    )
+    zero = build_element({"type": "text", "text": "hi", "padding": 0})
+    [sb] = engine._render_elements([base], [{}], CANVAS_W)
+    [sz] = engine._render_elements([zero], [{}], CANVAS_W)
+    assert list(sb.getdata()) == list(sz.getdata())
+
+
+def test_padding_top_bottom_add_bands(engine: RenderEngine) -> None:
+    """top/bottom padding grows the strip height by exactly (top+bottom); width unchanged."""
+    base = build_element({"type": "text", "text": "Hello"})
+    padded = build_element(
+        {"type": "text", "text": "Hello", "padding_top": 10, "padding_bottom": 20}
+    )
+    [sb] = engine._render_elements([base], [{}], CANVAS_W)
+    [sp] = engine._render_elements([padded], [{}], CANVAS_W)
+    assert sp.width == CANVAS_W
+    assert sp.height == sb.height + 30
+
+
+def test_padding_left_shifts_content_right(engine: RenderEngine) -> None:
+    """left padding insets the content: left-aligned ink starts ~left px further right."""
+    base = build_element({"type": "text", "text": "Hello", "align": "left"})
+    padded = build_element({"type": "text", "text": "Hello", "align": "left", "padding_left": 40})
+    [sb] = engine._render_elements([base], [{}], CANVAS_W)
+    [sp] = engine._render_elements([padded], [{}], CANVAS_W)
+    bb, pb = _whole_ink_bbox(sb), _whole_ink_bbox(sp)
+    assert bb is not None and pb is not None
+    assert abs((pb[0] - bb[0]) - 40) <= 1
+    assert sp.width == CANVAS_W  # strip stays full width; only the content is inset
+
+
+def test_padding_horizontal_exceeds_width_raises(engine: RenderEngine) -> None:
+    """Horizontal padding wider than the canvas leaves no content — fail loudly, don't silently render
+    a blank sliver from a schema-valid template."""
+    el = build_element({"type": "text", "text": "x", "padding_left": 350, "padding_right": 350})
+    with pytest.raises(ValueError, match="no content width"):
+        engine._render_elements([el], [{}], CANVAS_W)  # CANVAS_W is 696; 350+350 > 696
+
+
+def test_padding_applies_to_column_child(engine: RenderEngine) -> None:
+    """Padding on a row/column child is applied per-cell (via _guarded_child_strip), not just on
+    top-level elements — a padded child stacks taller than an unpadded one."""
+    base = build_element(
+        {"type": "column", "children": [{"type": "text", "text": "hi"}]},
+    )
+    padded = build_element(
+        {"type": "column", "children": [{"type": "text", "text": "hi", "padding_top": 12}]},
+    )
+    [sb] = engine._render_elements([base], [{"__children__": [{}]}], CANVAS_W)
+    [sp] = engine._render_elements([padded], [{"__children__": [{}]}], CANVAS_W)
+    assert sp.height == sb.height + 12
+
+
+def test_padding_applies_to_row_child_left_inset(engine: RenderEngine) -> None:
+    """A row child's left padding insets its content within its own column."""
+    base = build_element(
+        {"type": "row", "children": [{"type": "text", "text": "hi", "align": "left"}]},
+    )
+    padded = build_element(
+        {
+            "type": "row",
+            "children": [{"type": "text", "text": "hi", "align": "left", "padding_left": 30}],
+        },
+    )
+    [sb] = engine._render_elements([base], [{"__children__": [{}]}], CANVAS_W)
+    [sp] = engine._render_elements([padded], [{"__children__": [{}]}], CANVAS_W)
+    bb, pb = _whole_ink_bbox(sb), _whole_ink_bbox(sp)
+    assert bb is not None and pb is not None
+    assert abs((pb[0] - bb[0]) - 30) <= 1
+
+
+def test_padding_scales_with_high_res(engine: RenderEngine) -> None:
+    """Padding is a template-px inset, so it doubles under high_res (scale=2) like every dimension."""
+    base = build_element({"type": "text", "text": "Hi"}, scale=2)
+    padded = build_element(
+        {"type": "text", "text": "Hi", "padding_top": 10, "padding_bottom": 10}, scale=2
+    )
+    [sb] = engine._render_elements([base], [{}], CANVAS_W)
+    [sp] = engine._render_elements([padded], [{}], CANVAS_W)
+    assert sp.height == sb.height + 40  # (10 + 10) * scale 2
 
 
 def test_spacer_element_exact_height(

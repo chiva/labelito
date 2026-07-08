@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -60,9 +61,10 @@ ROW_FAILURE_PLACEHOLDER_HEIGHT = 64
 ROW_MIN_FLEX_WIDTH = 24
 
 # Column container: extra vertical gap inserted *between* stacked children. Defaults to 0 because
-# every leaf element already carries its own padding_top/padding_bottom (4 px each) — the same
-# implicit spacing the top-level vertical stack uses — so a column with spacing=0 stacks its
-# children exactly as if they sat at the top level, and a positive spacing only widens the gaps.
+# text elements already carry their own baked-in vertical breathing room (top/line/block pads inside
+# _render_text_block) — the same implicit spacing the top-level vertical stack relies on — so a column
+# with spacing=0 stacks its children just as they would sit at the top level, and a positive spacing
+# only widens the gaps. (Author-set padding_* is a separate, additive knob applied at the top level.)
 COLUMN_DEFAULT_SPACING = 0
 
 # Row vertical divider: default rule thickness drawn in each inter-column gap when `divider` is set.
@@ -95,12 +97,64 @@ ICON_DEFAULT_STYLE = "solid"
 ICON_ASSET_EXTS = (".svg", ".png")
 
 
+def _resolve_padding(spec: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Resolve an element spec's padding to ``(top, right, bottom, left)`` in template px.
+
+    Combines the CSS-style ``padding`` shorthand with any longhand ``padding_{top,right,bottom,left}``
+    override, mirroring CSS's 1-4-value clockwise expansion:
+
+    * scalar / ``[a]``      → all four sides = a
+    * ``[v, h]``            → top=bottom=v, right=left=h
+    * ``[t, h, b]``         → top=t, right=left=h, bottom=b
+    * ``[t, r, b, l]``      → top, right, bottom, left
+
+    A longhand key always wins over the shorthand for its side (specific beats general). Values stay
+    in template px (unscaled); the renderer applies ``self._px``. This is deliberately defensive —
+    the loader validates shape/bounds up front, so any malformed/absent input simply falls back to 0.
+    """
+    top = right = bottom = left = 0
+    p = spec.get("padding")
+    if isinstance(p, int) and not isinstance(p, bool):
+        top = right = bottom = left = p
+    elif isinstance(p, (list, tuple)):
+        vals = [v for v in p if isinstance(v, int) and not isinstance(v, bool)]
+        if len(vals) == 1:
+            top = right = bottom = left = vals[0]
+        elif len(vals) == 2:
+            top = bottom = vals[0]
+            right = left = vals[1]
+        elif len(vals) == 3:
+            top, bottom = vals[0], vals[2]
+            right = left = vals[1]
+        elif len(vals) >= 4:
+            top, right, bottom, left = vals[0], vals[1], vals[2], vals[3]
+
+    def _override(key: str, current: int) -> int:
+        v = spec.get(key)
+        return v if isinstance(v, int) and not isinstance(v, bool) else current
+
+    top = _override("padding_top", top)
+    right = _override("padding_right", right)
+    bottom = _override("padding_bottom", bottom)
+    left = _override("padding_left", left)
+    return top, right, bottom, left
+
+
 # ── Base ───────────────────────────────────────────────────────────────────────
 @dataclass
 class ElementBase:
     type: str
-    padding_top: int = 4
-    padding_bottom: int = 4
+    # Per-side padding (template px, unscaled — the renderer applies ``self._px``). Default 0 so a
+    # label is byte-identical unless an author opts in; padding is ADDITIVE on top of whatever
+    # per-element internal spacing already exists (e.g. text's baked-in top/line/block pads). Authored
+    # either as these CSS-vocab longhand keys or via the ``padding`` shorthand — build_element resolves
+    # both into these four fields (see _resolve_padding). Applied uniformly to every element type by a
+    # single wrapper in the engine's _render_elements: left/right inset the content width, top/bottom
+    # add blank bands.
+    padding_top: int = 0
+    padding_right: int = 0
+    padding_bottom: int = 0
+    padding_left: int = 0
     # Layout hints honoured only when the element is a child of a `row`; inert otherwise
     # (consistent with the "unknown keys are ignored" contract for stand-alone elements).
     width: int | None = None  # fixed column width in px; None ⇒ flexible (shares leftover space)
@@ -933,6 +987,46 @@ def _failure_placeholder(
     return img
 
 
+def _apply_padding(
+    el: ElementBase,
+    available_width: int,
+    render_fn: Callable[[int], Image.Image],
+) -> Image.Image:
+    """Render ``el`` into a padding-inset width and wrap the result with its per-side padding.
+
+    The single mechanism behind author padding, shared by the engine's top-level vertical stack and
+    the ``row``/``column`` child renderers so padding behaves identically everywhere. ``left``/
+    ``right`` shrink the width handed to ``render_fn`` (the element re-lays-out into the narrower
+    width, so its own wrapping/alignment respect the inset); ``top``/``bottom`` add blank bands. All
+    four default to 0, so an element with no padding renders byte-identically (``render_fn`` gets the
+    full ``available_width`` and no band is added).
+
+    Raises ``ValueError`` when horizontal padding leaves no content width — a schema-valid but
+    unrenderable request (see docs/known-limitations.md); failing loudly beats clamping to a 1px
+    sliver and printing a silently blank label. A zero-height (blank/absent) render is returned as-is
+    so callers keep dropping it without reserving a padding band.
+    """
+    left, right = el._px(el.padding_left), el._px(el.padding_right)
+    if left or right:
+        content_width = available_width - left - right
+        if content_width < 1:
+            raise ValueError(
+                f"padding_left ({el.padding_left}) + padding_right ({el.padding_right}) leaves no "
+                f"content width on a {available_width}px canvas; reduce the horizontal padding"
+            )
+    else:
+        # No horizontal padding: hand the element the width verbatim (which may legitimately be 0 for
+        # an over-narrow row column) so the existing narrow-column handling is preserved unchanged.
+        content_width = available_width
+    strip = render_fn(content_width)
+    top, bottom = el._px(el.padding_top), el._px(el.padding_bottom)
+    if strip.height == 0 or not (left or right or top or bottom):
+        return strip
+    padded = Image.new(strip.mode, (available_width, strip.height + top + bottom), el._bg)
+    padded.paste(strip, (left, top))
+    return padded
+
+
 def _guarded_child_strip(
     child: ElementBase,
     width: int,
@@ -941,7 +1035,7 @@ def _guarded_child_strip(
     icons_dir: Path,
     icon_collections_dir: Path,
 ) -> Image.Image:
-    """Render a container child, substituting a visible failure marker when its column is too narrow.
+    """Render a container child (with its padding) and substitute a visible marker if too narrow.
 
     A data-bearing child (QR/barcode/image) handed a column too narrow to draw its content would
     otherwise vanish silently — a QR clips, a barcode/image collapses to a blank strip — while the
@@ -953,29 +1047,39 @@ def _guarded_child_strip(
     zero-height strips, so without this a too-narrow image/barcode inside a column would be filtered
     away with no marker. QR clipping is predicted from its fixed size (it never blanks); barcode and
     image are detected by the blank strip their own renderers return when the column collapses.
+
+    The child's padding is applied here via :func:`_apply_padding`, so it works identically on row and
+    column children. The too-narrow guard is evaluated against the padding-inset *content* width — the
+    width the child actually draws into — not the raw column width.
     """
-    if (
-        isinstance(child, QRElement)
-        and RowElement._child_has_content(child, resolved)
-        and width
-        < child._px(child.size) + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
-    ):
-        return _failure_placeholder(
-            width, child._px(child.size), child._canvas_mode, child._bg, child._ink
-        )
-    strip = child.render(width, resolved, fonts_dir, icons_dir, icon_collections_dir)
-    if (
-        isinstance(child, BarcodeElement | ImageElement)
-        and RowElement._child_has_content(child, resolved)
-        and strip.height == 0
-    ):
-        marker_h = (
-            child._px(child.height)
-            if isinstance(child, BarcodeElement)
-            else child._px(ROW_FAILURE_PLACEHOLDER_HEIGHT)
-        )
-        return _failure_placeholder(width, marker_h, child._canvas_mode, child._bg, child._ink)
-    return strip
+
+    def _render(content_width: int) -> Image.Image:
+        if (
+            isinstance(child, QRElement)
+            and RowElement._child_has_content(child, resolved)
+            and content_width
+            < child._px(child.size) + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
+        ):
+            return _failure_placeholder(
+                content_width, child._px(child.size), child._canvas_mode, child._bg, child._ink
+            )
+        strip = child.render(content_width, resolved, fonts_dir, icons_dir, icon_collections_dir)
+        if (
+            isinstance(child, BarcodeElement | ImageElement)
+            and RowElement._child_has_content(child, resolved)
+            and strip.height == 0
+        ):
+            marker_h = (
+                child._px(child.height)
+                if isinstance(child, BarcodeElement)
+                else child._px(ROW_FAILURE_PLACEHOLDER_HEIGHT)
+            )
+            return _failure_placeholder(
+                content_width, marker_h, child._canvas_mode, child._bg, child._ink
+            )
+        return strip
+
+    return _apply_padding(child, width, _render)
 
 
 # ── Row container ────────────────────────────────────────────────────────────────
@@ -1361,6 +1465,12 @@ def build_element(spec: dict[str, Any], scale: int = 1, red_active: bool = False
     # A template must never override the scale factor or the engine-controlled red flag.
     filtered.pop("scale", None)
     filtered.pop("_red_active", None)
+    # Expand the CSS-style `padding` shorthand + any longhand overrides into the four concrete side
+    # fields, so every element carries resolved padding_{top,right,bottom,left} regardless of the form
+    # the author used. (`padding` itself is not a dataclass field, so the filter above already drops it.)
+    pt, pr, pb, pl = _resolve_padding(spec)
+    filtered["padding_top"], filtered["padding_right"] = pt, pr
+    filtered["padding_bottom"], filtered["padding_left"] = pb, pl
     if scale != 1:
         filtered["scale"] = scale
     # Container elements (row/column) carry a list of child specs; build them recursively at the same

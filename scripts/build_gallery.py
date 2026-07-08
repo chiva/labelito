@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
 import os
 import shlex
 import sys
@@ -215,13 +216,44 @@ class GalleryBuildError(RuntimeError):
     """
 
 
-def build(out_dir: Path) -> list[dict[str, Any]]:
+# The renderer degrades an unresolvable icon to a BLANK strip and only logs a warning
+# (``IconElement._load_icon`` in app/render/elements.py) — the right call at print time, where a
+# label short one glyph beats a failed job. In THIS build the same degradation ships a broken
+# showcase image that nobody notices: collection icons are excluded from the boot scan by design
+# (``engine.missing_custom_icons`` skips them), so the render-time warning is the only signal.
+# Capturing those warnings is also the least invasive strict seam: it sees every blank-icon cause
+# (missing file, unknown collection, unsafe name, corrupt bytes) without duplicating the element's
+# resolution rules. Every such warning is prefixed ``icon:`` on the elements module's logger.
+_ICON_WARNING_LOGGER = "app.render.elements"
+_ICON_WARNING_PREFIX = "icon:"
+
+
+class _IconWarningCapture(logging.Handler):
+    """Collects the renderer's blank-icon warnings emitted while one template preview renders."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if message.startswith(_ICON_WARNING_PREFIX):
+            self.messages.append(message)
+
+
+def build(out_dir: Path, *, strict_icons: bool = True) -> list[dict[str, Any]]:
     """Render every registered template into ``out_dir/assets/samples`` and write ``manifest.json``.
 
     Returns the manifest (list of per-template records), sorted by media size then name for a stable
     gallery order. Raises :class:`GalleryBuildError` if any shipped template or translation catalog
     fails to load (fail closed, so a broken template fails the deploy instead of vanishing from the
     showcase), and propagates any render exception for the same reason.
+
+    With ``strict_icons`` (the default, and what the CLI/CI deploy runs) the build also fails when
+    any preview rendered a BLANK icon strip — a missing/unresolvable icon that the runtime render
+    path deliberately degrades to a warning (see :class:`_IconWarningCapture`). Pass
+    ``strict_icons=False`` only where the icon collections are legitimately absent (the unit-test
+    environment, which does not run ``scripts/fetch-icons.sh``).
     """
     names = sorted(app_main.registry.load_all())
     if app_main.registry.errors:
@@ -238,15 +270,35 @@ def build(out_dir: Path) -> list[dict[str, Any]]:
     samples_dir.mkdir(parents=True, exist_ok=True)
 
     entries: list[dict[str, Any]] = []
+    blank_icon_reports: list[str] = []
+    icon_logger = logging.getLogger(_ICON_WARNING_LOGGER)
     for name in names:
         tmpl = app_main.registry.get(name)
         if tmpl is None:  # pragma: no cover - names() and get() come from the same registry
             continue
         fields = _fields_for(tmpl)
-        png = app_main._render_template_preview(tmpl, fields, SAMPLE_LANGUAGE, now=SAMPLE_NOW)
+        capture = _IconWarningCapture()
+        icon_logger.addHandler(capture)
+        try:
+            png = app_main._render_template_preview(tmpl, fields, SAMPLE_LANGUAGE, now=SAMPLE_NOW)
+        finally:
+            icon_logger.removeHandler(capture)
+        blank_icon_reports.extend(f"{name}: {message}" for message in capture.messages)
         (samples_dir / f"{name}.png").write_bytes(png)
         image_rel = f"{SAMPLES_SUBDIR.as_posix()}/{name}.png"
         entries.append(_entry(tmpl, image_rel, fields))
+
+    # Every template is rendered before failing so ONE build reports every broken icon, not just the
+    # first. Raised before the manifest is written: a strict build never leaves a manifest behind
+    # that references blank showcase images.
+    if strict_icons and blank_icon_reports:
+        raise GalleryBuildError(
+            "template preview(s) rendered with blank icon strip(s):\n  "
+            + "\n  ".join(blank_icon_reports)
+            + "\nA blank icon ships a broken showcase image, so the gallery build fails closed "
+            "(the print-time renderer still degrades gracefully). Fix the template's icon "
+            "name/collection, or run scripts/fetch-icons.sh if the icon collections are missing."
+        )
 
     # Die-cut labels (fixed height) lead the gallery, grouped by width then height; continuous tape
     # (height_px is None) forms the bulk at the end. ``height_px is None`` is False (0) for die-cut and

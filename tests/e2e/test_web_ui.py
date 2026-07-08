@@ -29,6 +29,10 @@ SAMPLE_TEMPLATE = "title-subtitle"
 # (templates/62-image.yaml, name: image) — used to drive the file-upload UI.
 IMAGE_TEMPLATE = "image"
 
+# A shipped template that uses the {{seq}} auto-numbering token (templates/62-numbered-bin.yaml,
+# name: numbered-bin) — drives the sequence (batch) controls on the Print page.
+SEQ_TEMPLATE = "numbered-bin"
+
 
 def _png_bytes(color: int, size: tuple[int, int] = (4, 4)) -> bytes:
     """A distinct grayscale PNG so two uploads have different base64 payloads."""
@@ -141,6 +145,72 @@ def test_print_dry_run_round_trip(authed_page: Page) -> None:
     assert body["job_id"]
 
     # The sticky success banner survives the post-print preview refresh.
+    expect(authed_page.locator(".status.ok")).to_be_visible()
+
+
+def test_seq_template_shows_sequence_controls_and_hides_copies(authed_page: Page) -> None:
+    """Selecting a {{seq}} template swaps the Copies stepper for the Auto-number (sequence) panel —
+    the two are mutually exclusive server-side, so the UI never shows both."""
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    expect(authed_page.locator("#copies-field")).to_be_hidden()
+    # Switching back to a plain template restores Copies and hides the sequence panel.
+    _select_template(authed_page, SAMPLE_TEMPLATE)
+    expect(authed_page.locator("#copies-field")).to_be_visible()
+    expect(authed_page.locator("#sequence-field")).to_be_hidden()
+
+
+def test_seq_template_previews_first_item_without_error(authed_page: Page) -> None:
+    """A {{seq}} template previews the first item from the UI (the Print page sends the auto-number
+    controls as a `sequence` on /preview) — no 422, and the preview image renders. Fields are filled
+    first: a preview with an empty required field 422s on the missing field, unrelated to sequence."""
+    import json as _json
+
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/preview") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("button.btn-preview")
+
+    response = resp_info.value
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent.get("sequence"), "the preview payload must carry the sequence spec"
+    assert sent["copies"] == 1, "copies is pinned to 1 for a sequence template"
+    assert response.status == 200, f"seq preview must not 422 with fields filled: {response.status}"
+    expect(authed_page.locator("#preview-section")).to_be_visible()
+    assert authed_page.locator(".status.err").count() == 0
+
+
+def test_seq_template_print_sends_sequence_spec(authed_page: Page) -> None:
+    """Printing a {{seq}} template (dry-run) sends a `sequence` object built from the Auto-number
+    controls, with copies pinned to 1 — the batch path the API-only feature now exposes in the UI."""
+    import json as _json
+
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    authed_page.fill("#seq-count", "5")
+    authed_page.fill("#seq-start", "10")
+    authed_page.fill("#seq-padding", "3")
+    authed_page.check("#dry-run")
+
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/print") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("button.btn-print")
+
+    response = resp_info.value
+    assert response.status == 200, f"Expected 200, got {response.status}"
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent["sequence"] == {"start": 10, "count": 5, "step": 1, "padding": 3}
+    assert sent["copies"] == 1, "copies must be pinned to 1 (mutually exclusive with sequence)"
+    body = response.json()
+    assert body["dry_run"] is True
+    assert body["template"] == SEQ_TEMPLATE
     expect(authed_page.locator(".status.ok")).to_be_visible()
 
 
@@ -965,6 +1035,51 @@ def test_studio_image_field_renders_picker_and_previews(authed_page: Page) -> No
     authed_page.wait_for_function(
         "() => { const i = document.getElementById('preview-img'); return i && i.naturalWidth > 0; }"
     )
+
+
+def test_studio_seq_template_shows_controls_and_previews_first_item(authed_page: Page) -> None:
+    """The Template Studio reveals its Auto-number controls for a {{seq}} draft and previews the
+    FIRST item — a {{seq}} draft is no longer preview-blind in the editor. Toggling the YAML back to
+    a non-seq layout hides the controls again."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#yaml")).to_be_visible()
+
+    seq_yaml = (
+        "name: draft-seq\n"
+        "description: seq draft\n"
+        'label: "62"\n'
+        "rotate: 0\n"
+        "layout:\n"
+        '  - {type: title, text: "Box {{seq}}"}\n'
+    )
+    authed_page.fill("#yaml", seq_yaml)
+
+    # The auto-number panel appears (uses_seq from the parse round-trip) and the draft renders.
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    authed_page.fill("#seq-start", "5")
+    authed_page.fill("#seq-padding", "3")
+
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/preview/draft") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.fill("#seq-count", "12")  # any auto-number edit re-previews
+
+    response = resp_info.value
+    import json as _json
+
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent.get("sequence"), "the draft preview payload must carry the sequence spec"
+    assert response.status == 200, f"seq draft must preview, not 422: {response.status}"
+    authed_page.wait_for_function(
+        "() => { const i = document.getElementById('preview-img'); return i && i.naturalWidth > 0; }"
+    )
+
+    # Switching to a non-seq layout hides the controls again.
+    authed_page.fill(
+        "#yaml",
+        'name: d2\ndescription: plain\nlabel: "62"\nlayout:\n  - {type: title, text: "Static"}\n',
+    )
+    expect(authed_page.locator("#sequence-field")).to_be_hidden()
 
 
 def test_status_banner_does_not_execute_injected_markup(authed_page: Page) -> None:

@@ -169,6 +169,18 @@ def test_list_templates_reports_image_fields(client: TestClient) -> None:
     assert by_name["simple"]["fields"]["image_fields"] == []
 
 
+def test_list_templates_reports_uses_seq(client: TestClient) -> None:
+    """Each template flags whether it uses the {{seq}} auto-numbering token, so the Print page can
+    reveal the sequence controls (and hide the copies stepper) instead of letting the print 422."""
+    import app.main as main_mod
+
+    _write_seq_template(main_mod)  # installs "seq-guard" (layout references {{seq}})
+    by_name = {t["name"]: t for t in client.get("/templates").json()}
+    assert by_name["seq-guard"]["uses_seq"] is True
+    # A plain template reports False, not a missing key.
+    assert by_name["simple"]["uses_seq"] is False
+
+
 def test_list_templates_includes_continuous_media(client: TestClient) -> None:
     """Each template carries its required media (Step 6) so the UI can badge compatibility.
 
@@ -2503,6 +2515,56 @@ def test_sequence_basic_dry_run(client: TestClient) -> None:
     assert record.sequence.padding == 3
 
 
+def test_preview_seq_template_with_sequence_renders_first_item(client: TestClient) -> None:
+    """A {{seq}} template previews the FIRST item when the request carries a sequence spec.
+
+    The Print page sends the auto-number controls as a `sequence` on /preview so the live preview
+    shows a real numbered label (item at `start`) rather than 422ing — count is irrelevant to a
+    single-item preview, only start/step/padding shape the rendered number.
+    """
+    import app.main as main_mod
+
+    _write_seq_template(main_mod)
+    resp = client.post(
+        "/preview",
+        json={
+            "template": "seq-guard",
+            "fields": {},
+            "sequence": {"count": 25, "start": 7, "step": 1, "padding": 3},
+        },
+    )
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert resp.headers["content-type"] == "image/png"
+    img = Image.open(io.BytesIO(resp.content))
+    assert img.width > 0 and img.height > 0
+
+
+def test_preview_seq_template_without_sequence_is_422(client: TestClient) -> None:
+    """A {{seq}} template previewed WITHOUT a sequence spec is still rejected — {{seq}} would resolve
+    to "" and show a blank-numbered label the user could approve."""
+    import app.main as main_mod
+
+    _write_seq_template(main_mod)
+    resp = client.post("/preview", json={"template": "seq-guard", "fields": {}})
+    assert resp.status_code == 422
+    assert "sequence" in resp.json()["detail"].lower()
+
+
+def test_preview_non_seq_template_ignores_stray_sequence(client: TestClient) -> None:
+    """A sequence spec on a non-{{seq}} template's preview is inert (rendered normally), not an error:
+    the reciprocal check is skipped in preview so the Print page never has to strip a stale spec."""
+    resp = client.post(
+        "/preview",
+        json={
+            "template": "simple",
+            "fields": {"title": "Hello"},
+            "sequence": {"count": 3, "start": 1},
+        },
+    )
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert resp.headers["content-type"] == "image/png"
+
+
 def test_sequence_sends_one_label_at_a_time(client: TestClient) -> None:
     """A sequence print (non-dry-run) must drive the driver ONCE PER LABEL.
 
@@ -3661,6 +3723,41 @@ def test_preview_draft_blank_required_field_is_422(client: TestClient) -> None:
     assert resp.json()["detail"]["missing_required"] == ["title"]
 
 
+_DRAFT_SEQ_YAML = """\
+name: draft-seq
+description: A draft that auto-numbers
+label: "62"
+rotate: 0
+layout:
+  - {type: title, text: "Box {{seq}}"}
+"""
+
+
+def test_preview_draft_seq_with_sequence_renders_first_item(client: TestClient) -> None:
+    """A {{seq}} draft previews its FIRST item when a sequence spec is supplied — the studio sends the
+    auto-number controls as a `sequence`, exactly like the Print page's /preview."""
+    resp = client.post(
+        "/preview/draft",
+        json={
+            "yaml": _DRAFT_SEQ_YAML,
+            "fields": {},
+            "sequence": {"count": 20, "start": 3, "step": 1, "padding": 3},
+        },
+    )
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert resp.headers["content-type"] == "image/png"
+    img = Image.open(io.BytesIO(resp.content))
+    assert img.width > 0 and img.height > 0
+
+
+def test_preview_draft_seq_without_sequence_is_422(client: TestClient) -> None:
+    """A {{seq}} draft previewed WITHOUT a sequence spec is still rejected — {{seq}} would render "" and
+    the studio would present a blank-numbered draft as valid."""
+    resp = client.post("/preview/draft", json={"yaml": _DRAFT_SEQ_YAML, "fields": {}})
+    assert resp.status_code == 422
+    assert "sequence" in str(resp.json()["detail"]).lower()
+
+
 def test_preview_draft_honors_default_dither(client: TestClient) -> None:
     """Regression: /preview/draft must inherit DEFAULT_DITHER like /preview, not hardcode dither=False.
 
@@ -3770,6 +3867,18 @@ layout:
     resp = client.post("/templates/parse", json={"yaml": _DRAFT_YAML})
     assert resp.status_code == 200
     assert resp.json()["fields"]["image_fields"] == []
+
+
+def test_templates_parse_reports_uses_seq(client: TestClient) -> None:
+    """The Studio's parse endpoint flags a {{seq}} draft so the editor reveals its auto-number
+    controls (seq is a computed token, absent from required/optional — this is the only signal)."""
+    resp = client.post("/templates/parse", json={"yaml": _DRAFT_SEQ_YAML})
+    assert resp.status_code == 200
+    assert resp.json()["uses_seq"] is True
+    # A draft without {{seq}} reports False, not a missing key.
+    resp = client.post("/templates/parse", json={"yaml": _DRAFT_YAML})
+    assert resp.status_code == 200
+    assert resp.json()["uses_seq"] is False
 
 
 def test_template_field_contract_image_fields_defaults_empty() -> None:

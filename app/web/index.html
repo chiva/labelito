@@ -16,6 +16,13 @@
     details.section { margin-top: 16px; }
     details.section .section-body { display: flex; flex-direction: column; gap: 10px; }
     #threshold { max-width: 110px; }
+    /* Auto-numbering (sequence) controls — a compact 4-up grid of small number inputs shown only
+       for a {{seq}} template. flex:1 lets it take the copies slot's width in the options-row. */
+    .seq-field { flex: 1; min-width: 0; }
+    .seq-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .seq-cell { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 600; color: var(--ink3); text-transform: uppercase; letter-spacing: 0.03em; }
+    .seq-cell .input { max-width: 100%; }
+    #seq-hint { margin-top: 6px; }
     /* Threshold renders as one compact row (label · input · hint) — the B/W group subtitle already
        explains what the cutoff does, so the field only needs the blank-means-default reminder. */
     .threshold-row { flex-direction: row; align-items: center; gap: 10px; }
@@ -125,13 +132,29 @@
           <div id="fields-container"></div>
 
           <div class="options-row">
-            <div class="field">
+            <div class="field" id="copies-field">
               <span class="field-label" id="copies-label">Copies</span>
               <div class="stepper">
                 <button type="button" id="copies-minus" aria-label="Fewer copies">&minus;</button>
                 <input type="number" id="copies" value="1" min="1" max="10" aria-labelledby="copies-label">
                 <button type="button" id="copies-plus" aria-label="More copies">+</button>
               </div>
+            </div>
+            <!-- Shown only for a template that uses the {{ '{{seq}}' }} auto-numbering token
+                 (currentTemplate().uses_seq): syncSequenceForTemplate() toggles this against
+                 #copies-field — the two are mutually exclusive server-side (sequence drives the item
+                 count; copies > 1 is a 422). buildPayload() sends a `sequence` object from these when
+                 visible. Bounds mirror SequenceSpec (models.py): count 1-500 (required), start
+                 ±1e9, step 1-1e6, padding 0-32. -->
+            <div class="field seq-field" id="sequence-field" style="display:none">
+              <span class="field-label">Auto-number <code>{{ '{{seq}}' }}</code></span>
+              <div class="seq-grid">
+                <label class="seq-cell">Count<input type="number" id="seq-count" class="input" value="10" min="1" max="500"></label>
+                <label class="seq-cell">Start<input type="number" id="seq-start" class="input" value="1" min="-1000000000" max="1000000000"></label>
+                <label class="seq-cell">Step<input type="number" id="seq-step" class="input" value="1" min="1" max="1000000"></label>
+                <label class="seq-cell">Pad<input type="number" id="seq-padding" class="input" value="0" min="0" max="32"></label>
+              </div>
+              <div class="hint" id="seq-hint">Prints a batch, one numbered label per item — preview shows the first.</div>
             </div>
             <label class="check-label">
               <input type="checkbox" id="dry-run">
@@ -670,6 +693,7 @@
       saveFields();
       updateMediaBadge();
       syncRedToggleForTemplate();
+      syncSequenceForTemplate();
       clearPreviewForSwitch();  // drop the previous template's label before the new one renders
       doPreview();
     }
@@ -839,6 +863,7 @@
       if (selectionChanged) renderFields();
       updateMediaBadge();
       syncRedToggleForTemplate();
+      syncSequenceForTemplate();
       if (selectionChanged) { clearPreviewForSwitch(); doPreview(); }
     }
 
@@ -859,6 +884,61 @@
       if (defaultHint) defaultHint.style.display = supported ? '' : 'none';
       if (disabledHint) disabledHint.style.display = supported ? 'none' : '';
       if (rollNote) rollNote.style.display = supported ? '' : 'none';
+    }
+
+    // Reveal the auto-numbering (sequence) controls and hide the Copies stepper for a {{seq}}
+    // template — and vice-versa. The two are mutually exclusive server-side (sequence drives the
+    // item count; a sequence with copies > 1 is a 422), so the UI never shows both at once.
+    // Re-evaluated on every template pick since uses_seq is per-template. Copies is reset to a valid
+    // value when hidden so a stale value can't ride into a later non-seq payload (buildPayload also
+    // pins copies=1 for a seq template, so a hidden Copies value never reaches the wire either way).
+    function syncSequenceForTemplate() {
+      const usesSeq = !!currentTemplate().uses_seq;
+      const seqField = document.getElementById('sequence-field');
+      const copiesField = document.getElementById('copies-field');
+      if (seqField) seqField.style.display = usesSeq ? '' : 'none';
+      if (copiesField) copiesField.style.display = usesSeq ? 'none' : '';
+      if (usesSeq) clampSequence(); else clampCopies();
+      updatePrintLabel();
+    }
+
+    // Clamp each auto-number input into its SequenceSpec bound (models.py), falling back to the
+    // default when the field is blank/non-numeric so buildPayload always sends a valid spec (count
+    // is required, ge=1 — an empty count would 422 the preview/print).
+    function clampSequence() {
+      const clamp = (id, lo, hi, dflt) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const v = parseInt(el.value, 10);
+        el.value = Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
+      };
+      clamp('seq-count', 1, 500, 10);
+      clamp('seq-start', -1000000000, 1000000000, 1);
+      clamp('seq-step', 1, 1000000, 1);
+      clamp('seq-padding', 0, 32, 0);
+    }
+
+    // "first..last" for a sequence spec, each zero-padded like format_seq (str(value).zfill(padding)
+    // in Python) — mirrors the History page's batch range label. last = start + (count-1)*step.
+    function seqRangeLabel(spec) {
+      const pad = (n) => {
+        const s = String(Math.abs(n)).padStart(spec.padding || 0, '0');
+        return n < 0 ? `-${s}` : s;
+      };
+      const last = spec.start + (spec.count - 1) * spec.step;
+      return spec.count > 1 ? `${pad(spec.start)}..${pad(last)}` : pad(spec.start);
+    }
+
+    // Build the `sequence` object from the auto-number controls (clamped first). count drives the
+    // batch size; start/step/padding shape each {{seq}} value (start + index*step, zero-padded).
+    function currentSequenceSpec() {
+      clampSequence();
+      return {
+        start: parseInt(document.getElementById('seq-start').value, 10) || 0,
+        count: parseInt(document.getElementById('seq-count').value, 10) || 1,
+        step: parseInt(document.getElementById('seq-step').value, 10) || 1,
+        padding: parseInt(document.getElementById('seq-padding').value, 10) || 0,
+      };
     }
 
     // Legend explaining the dimmed cards, shown only when at least one bundled example is visible.
@@ -1030,7 +1110,7 @@
 
     function buildPayload(extra = {}) {
       const t = currentTemplate();
-      return {
+      const payload = {
         template: selectedTemplateName,
         // gatherFields() is text-only (so image blobs are never persisted to localStorage); merge
         // the base64 for any image fields here so both /preview and /print carry it.
@@ -1049,6 +1129,14 @@
         },
         ...extra,
       };
+      // A {{seq}} template drives its item count from the sequence spec and rejects copies > 1
+      // (mutually exclusive, server 422). Attach the spec and pin copies=1 so both /preview (renders
+      // item #start) and /print (renders the whole batch) carry a valid, non-conflicting request.
+      if (t && t.uses_seq) {
+        payload.copies = 1;
+        payload.sequence = currentSequenceSpec();
+      }
+      return payload;
     }
 
     // Flatten a /preview failure into ONE human sentence — never the raw JSON body, never the HTTP
@@ -1257,7 +1345,13 @@
             /* storage disabled — nothing persisted, so nothing to mark consumed */
           }
         }
-        showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · copies: ${json.copies}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
+        // A sequence batch reports copies:1 in the response (one printer job per numbered label), so
+        // describe the batch from the spec the client sent — e.g. "×40 (001..040)" — instead of the
+        // misleading "copies: 1". Plain prints keep the copies readout.
+        const countLabel = payload.sequence
+          ? `sequence: ×${payload.sequence.count} (${seqRangeLabel(payload.sequence)})`
+          : `copies: ${json.copies}`;
+        showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · ${countLabel}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
         await doPreview();
         // Open the fast-poll bridge so the card tracks the print→idle transition at ~1s instead of the
         // 4s base cadence. On SNMP, re-tick the poller now (schedule(0)) and let isBusy hold the fast
@@ -1285,6 +1379,12 @@
           red: red ? red.checked : false,
           dither: document.getElementById('dither').checked,
           threshold: document.getElementById('threshold').value,
+          // Auto-number controls (raw strings, like copies/threshold) so a session's chosen batch
+          // shape round-trips. Only meaningful for {{seq}} templates; harmless to persist otherwise.
+          seq_start: document.getElementById('seq-start').value,
+          seq_count: document.getElementById('seq-count').value,
+          seq_step: document.getElementById('seq-step').value,
+          seq_padding: document.getElementById('seq-padding').value,
         }));
       } catch (e) {
         /* storage disabled — the option changes still apply for this page view */
@@ -1315,7 +1415,12 @@
       if (red && typeof saved.red === 'boolean') red.checked = saved.red;
       if (typeof saved.dither === 'boolean') document.getElementById('dither').checked = saved.dither;
       if (typeof saved.threshold === 'string') document.getElementById('threshold').value = saved.threshold;
+      if (typeof saved.seq_start === 'string') document.getElementById('seq-start').value = saved.seq_start;
+      if (typeof saved.seq_count === 'string') document.getElementById('seq-count').value = saved.seq_count;
+      if (typeof saved.seq_step === 'string') document.getElementById('seq-step').value = saved.seq_step;
+      if (typeof saved.seq_padding === 'string') document.getElementById('seq-padding').value = saved.seq_padding;
       clampCopies();
+      clampSequence();
       updatePrintLabel();
       syncThresholdToggledByDither();
     }
@@ -1331,6 +1436,14 @@
       const label = document.getElementById('print-label');
       if (document.getElementById('dry-run').checked) {
         label.textContent = 'Dry run';
+        return;
+      }
+      // A {{seq}} template prints a batch of `count` distinct numbered labels — reflect the count
+      // from the auto-number control, not the (hidden, pinned-to-1) Copies stepper.
+      const t = currentTemplate();
+      if (t && t.uses_seq) {
+        const c = parseInt(document.getElementById('seq-count').value, 10) || 1;
+        label.textContent = `Print ${c} labels`;
         return;
       }
       const n = parseInt(document.getElementById('copies').value, 10) || 1;
@@ -1384,6 +1497,14 @@
     document.getElementById('high-res').addEventListener('change', () => { saveOptions(); schedulePreview(); });
     const redToggle = document.getElementById('red');
     if (redToggle) redToggle.addEventListener('change', () => { saveOptions(); schedulePreview(); });  // absent on non-two-color models
+    // Auto-number inputs: reflect the batch count in the button label and re-preview item #start.
+    // start/step/padding change the previewed number; count only changes the label (the preview
+    // renders the first item regardless) — all four re-preview for simplicity, sending a valid spec.
+    for (const id of ['seq-start', 'seq-count', 'seq-step', 'seq-padding']) {
+      document.getElementById(id).addEventListener('input', () => {
+        clampSequence(); updatePrintLabel(); saveOptions(); schedulePreview();
+      });
+    }
 
     // Disable Print while an image read is in flight (fired by the shared image widget), so doPrint —
     // which snapshots the payload synchronously — can never run before the chosen image is committed

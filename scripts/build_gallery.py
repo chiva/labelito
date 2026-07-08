@@ -49,6 +49,7 @@ if str(_REPO_ROOT) not in sys.path:
 from app import main as app_main  # noqa: E402  (env must be set before app import)
 from app.loader import Template  # noqa: E402
 from app.media import MEDIA_TYPE_CONTINUOUS, required_media_for  # noqa: E402
+from app.render.engine import format_seq, uses_seq  # noqa: E402
 
 # Default output root: the tracked static site. Previews land under ``<OUT>/assets/samples``.
 DEFAULT_OUT_DIR = _REPO_ROOT / "site"
@@ -62,6 +63,11 @@ SAMPLE_LANGUAGE = "en"
 # A FIXED render moment so re-runs are byte-reproducible (tests can assert; CI deploys don't churn).
 # Auto-dated templates ({{date}}, {{date+6m}}) resolve against this instant.
 SAMPLE_NOW = datetime(2026, 1, 15, 9, 30, 0)
+
+# A {{seq}} template's showcase renders the first item of a sample batch so the preview reads like a
+# real numbered label ("001") instead of a blank {{seq}}.
+SAMPLE_SEQ_START = 1
+SAMPLE_SEQ_PADDING = 3
 
 # A small bundled PNG, base64-encoded on demand, for the API-only ``image`` template's ``image``
 # field (the element base64-decodes fields[field] — see app/render/elements.py ImageElement).
@@ -113,6 +119,7 @@ SAMPLES: dict[str, dict[str, Any]] = {
         "contents": "Cables; Adapters; Chargers; Batteries",
         "qr": "https://inv.example/box/7",
     },
+    "numbered-bin": {"title": "Parts drawer", "contents": "M3 screws"},
     "two-column": {
         "left_title": "Groceries",
         "left_items": "Milk; Eggs; Bread; Butter",
@@ -285,11 +292,19 @@ def build(out_dir: Path, *, strict_icons: bool = True) -> list[dict[str, Any]]:
             if tmpl is None:  # pragma: no cover - names() and get() come from the same registry
                 continue
             fields = _fields_for(tmpl)
+            # A {{seq}} template resolves {{seq}} to "" without a value, showcasing a blank-numbered
+            # label. Render the first item of a sample batch (start=1, padding=3 → "001") so the
+            # gallery preview reads like a real print — mirrors what /preview shows for item #start.
+            seq = (
+                format_seq(SAMPLE_SEQ_START, 0, 1, SAMPLE_SEQ_PADDING)
+                if uses_seq(tmpl.layout)
+                else ""
+            )
             capture = _IconWarningCapture()
             icon_logger.addHandler(capture)
             try:
                 png = app_main._render_template_preview(
-                    tmpl, fields, SAMPLE_LANGUAGE, now=SAMPLE_NOW
+                    tmpl, fields, SAMPLE_LANGUAGE, now=SAMPLE_NOW, seq=seq
                 )
             finally:
                 icon_logger.removeHandler(capture)

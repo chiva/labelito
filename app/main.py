@@ -970,6 +970,7 @@ def _render_template_preview(
     *,
     dither: bool | None = None,
     threshold: float | None = None,
+    seq: str = "",
 ) -> bytes:
     """Render a resolved :class:`Template` to a preview PNG.
 
@@ -983,6 +984,12 @@ def _render_template_preview(
     draft still renders byte-identically to ``/preview`` of the same YAML+fields called with no options
     overridden — including when ``DEFAULT_DITHER`` is on. High-res and two-color (red) are never
     applied here regardless of request/template — those remain print-only.
+
+    ``seq`` is the pre-formatted ``{{seq}}`` value for the single item being previewed (default ""
+    for a non-sequence template). The /preview route computes it from the request's ``sequence``
+    spec (item at ``start``) so a ``{{seq}}`` template previews its first label instead of a
+    blank-numbered one; passing "" for a ``{{seq}}`` template is rejected upstream by
+    :func:`_validate_sequence_matches_template`, never rendered blank here.
 
     Rotation display parity: for a die-cut right-angle rotation the compose canvas is already swapped
     to the readable landscape orientation. The driver still rotates the raster by the full
@@ -1003,6 +1010,7 @@ def _render_template_preview(
         preview_rotate,
         language,
         now=now,
+        seq=seq,
         valign=tmpl.valign,
     )
     img = _preview_bw_convert(
@@ -1023,12 +1031,13 @@ def _render_preview(
     *,
     dither: bool | None = None,
     threshold: float | None = None,
+    seq: str = "",
 ) -> bytes:
     tmpl = registry.get(template_name)
     if tmpl is None:
         raise HTTPException(404, f"Template {template_name!r} not found")
     return _render_template_preview(
-        tmpl, fields, language, now=now, dither=dither, threshold=threshold
+        tmpl, fields, language, now=now, dither=dither, threshold=threshold, seq=seq
     )
 
 
@@ -1801,6 +1810,7 @@ def list_templates() -> list[TemplateInfo]:
             ),
             media=_template_media(t.label),
             is_example=t.is_example,
+            uses_seq=uses_seq(t.layout),
         )
         for t in registry.all()
     ]
@@ -1883,11 +1893,22 @@ def get_template_source(name: str) -> TemplateSourceResponse:
 async def preview(request: PrintRequest, download: bool = False) -> Response:
     tmpl = _resolve_template(request.template, request.fields)
 
-    # A preview request carries no sequence object, so a {{seq}} template would resolve {{seq}} to
-    # "" and render a blank-numbered raster a user could approve. Reject it (see the helper) rather
-    # than let the user OK a label that prints differently than it previews.
-    # preview=True skips the reciprocal check: a non-seq template with no sequence is fine.
-    _validate_sequence_matches_template(tmpl, has_sequence=False, preview=True)
+    # A {{seq}} template must be previewed WITH a sequence spec, else {{seq}} resolves to "" and the
+    # raster shows a blank-numbered label a user could approve. When the request carries a sequence
+    # the forward check passes and the preview renders the first item (start) below; without one it
+    # 422s (see the helper). preview=True skips the reciprocal check, so a non-seq template with a
+    # stray sequence still previews normally (the sequence is simply ignored for a non-seq layout).
+    has_sequence = request.sequence is not None
+    _validate_sequence_matches_template(tmpl, has_sequence=has_sequence, preview=True)
+    # Preview the first label of the batch: {{seq}} resolves to item 0 (the `start` value). count
+    # is irrelevant to a single-item preview; only start/step/padding shape the rendered number.
+    # Empty for a non-seq template (uses_seq gates it so a stray sequence on a non-seq layout is
+    # inert), matching the print path's seq="" for non-sequence renders.
+    preview_seq = (
+        format_seq(request.sequence.start, 0, request.sequence.step, request.sequence.padding)
+        if request.sequence is not None and uses_seq(tmpl.layout)
+        else ""
+    )
     # /preview never actually renders with high_res (see _render_template_preview — the preview is
     # a fixed pre-driver render, not the print raster), but the option is still rejected up front so
     # a client discovers an unsupported combination before submitting the real /print.
@@ -1916,6 +1937,7 @@ async def preview(request: PrintRequest, download: bool = False) -> Response:
         language,
         dither=effective_dither,
         threshold=effective_threshold,
+        seq=preview_seq,
     )
     headers = (
         {"Content-Disposition": f'attachment; filename="{tmpl.name}.png"'} if download else None
@@ -2404,17 +2426,26 @@ async def preview_draft(request: DraftPreviewRequest) -> Response:
             },
         )
 
-    # A draft with a {{seq}} layout but no sequence object would render {{seq}} to "" — reject it
-    # exactly like /preview does for a saved {{seq}} template (forward direction only; preview
-    # carries no sequence object).
-    _validate_sequence_matches_template(tmpl, has_sequence=False, preview=True)
+    # A {{seq}} draft previews its first item when a sequence spec is supplied (the studio sends one,
+    # exactly like the Print page's /preview); without one it 422s — {{seq}} would render "" and the
+    # studio would present a blank-numbered draft as valid. Forward direction only (preview=True): a
+    # stray sequence on a non-seq draft is inert.
+    has_sequence = request.sequence is not None
+    _validate_sequence_matches_template(tmpl, has_sequence=has_sequence, preview=True)
+    preview_seq = (
+        format_seq(request.sequence.start, 0, request.sequence.step, request.sequence.padding)
+        if request.sequence is not None and uses_seq(tmpl.layout)
+        else ""
+    )
     # Same input caps as /preview and /print — reuse the shared validators verbatim so a draft
     # cannot smuggle an oversized image/text field or an unbounded field count past the guards.
     _validate_image_fields(tmpl, request.fields)
     _validate_text_fields(tmpl, request.fields)
     language = request.language or settings.default_language
     # Same event-loop offload as /preview: the draft render is the same blocking PIL work.
-    png = await run_in_threadpool(_render_template_preview, tmpl, request.fields, language)
+    png = await run_in_threadpool(
+        _render_template_preview, tmpl, request.fields, language, seq=preview_seq
+    )
     return Response(content=png, media_type="image/png")
 
 
@@ -2445,6 +2476,9 @@ async def parse_template(request: TemplateParseRequest) -> TemplateParseResponse
             optional=tmpl.optional_fields,
             image_fields=sorted(_image_field_names(tmpl.layout)),
         ),
+        # Lets the studio reveal its sequence controls for a {{seq}} draft (seq is a computed token,
+        # so it never appears in required/optional — this is the only signal the form has).
+        uses_seq=uses_seq(tmpl.layout),
     )
 
 
@@ -2825,17 +2859,21 @@ def _validate_sequence_matches_template(
     ``seq`` is a COMPUTED_TOKEN so the loader never declares it as a required field — the forward
     check catches what the field-presence check misses.  The reciprocal check closes the inverse gap.
 
-    Pass ``preview=True`` from the /preview route: preview never carries a sequence object, so only
-    the forward direction is meaningful there; a non-seq template previews normally.
+    Pass ``preview=True`` from the /preview route: only the forward direction is meaningful there.
+    A /preview MAY now carry a ``sequence`` (the Print page sends one for a {{seq}} template so the
+    first item renders) — when it does, ``has_sequence`` is True and the forward check passes; when
+    it does not, the forward check still 422s (a {{seq}} template cannot preview blank). Skipping the
+    reciprocal keeps a stray ``sequence`` on a non-seq preview inert (rendered normally, spec ignored)
+    rather than an error.
     """
     template_uses_seq = uses_seq(tmpl.layout)
     if not has_sequence and template_uses_seq:
         raise HTTPException(
             422,
             f"Template {tmpl.name!r} uses the {{{{seq}}}} auto-numbering token; a `sequence` spec "
-            "is required. Submit /print with a `sequence` object (start/count/step/padding) so each "
-            "label gets a distinct number. /preview cannot render a {{seq}} template — preview a "
-            "non-sequence template, or use /print with a sequence to print the batch.",
+            "is required. Submit /print or /preview with a `sequence` object "
+            "(start/count/step/padding) so each label gets a distinct number — /print renders the "
+            "whole batch, /preview renders the first item (at `start`).",
         )
     if not preview and has_sequence and not template_uses_seq:
         raise HTTPException(
@@ -3059,6 +3097,10 @@ async def web_ui(request: Request) -> HTMLResponse:
             # True when this is a bundled example (not from the user's templates_dir). Drives the
             # muted "example" card styling + the Customize deep-link in the picker.
             "is_example": t.is_example,
+            # True when the layout uses the {{seq}} auto-numbering token. Reveals the sequence
+            # controls (start/count/step/padding) and hides the copies stepper on the Print page —
+            # such a template needs a `sequence` spec and rejects copies > 1 (mutually exclusive).
+            "uses_seq": uses_seq(t.layout),
         }
         for t in registry.all()
     ]

@@ -107,6 +107,44 @@ jobs:
       - name: Verify icon collections
         run: uv run pytest -m icons -v
 
+  e2e:
+    name: E2E (browser + API)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Non-blocking while the suite proves itself in CI — flip to blocking once it is stable.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      # The harness's live uvicorn server renders real previews, so it needs the same fonts as
+      # the test matrix.
+      - name: Install system fonts
+        run: sudo apt-get install -y fonts-dejavu-core
+      # `test` supplies httpx2 (the e2e api_client fixture); `e2e` supplies pytest-playwright
+      # (an opt-in group — see dependency-groups in pyproject.toml).
+      - run: uv sync --group test --group e2e
+      - name: Get Playwright version
+        id: playwright-version
+        run: |
+          echo "version=$(uv run python -c "from importlib.metadata import version; print(version('playwright'))")" >> "$GITHUB_OUTPUT"
+      # The chromium download is ~170 MB; cache it keyed on the playwright version so it is only
+      # re-fetched when the dependency bumps.
+      - name: Cache Playwright browsers
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+      # On a cache hit the browser download is skipped; --with-deps still installs the system
+      # libraries chromium needs on the runner.
+      - name: Install Playwright chromium
+        run: uv run playwright install --with-deps chromium
+      - name: Run e2e suite
+        run: uv run pytest --e2e -m e2e -q
+
   docker:
     name: Docker smoke test
     runs-on: ubuntu-latest
@@ -131,6 +169,13 @@ jobs:
             -H "Authorization: Bearer ci-smoke-token" \
             -d '{"template":"simple-text","fields":{"text":"CI Smoke"}}' \
             --output /dev/null
+          # Exercise the real (non-dry-run) send path in the built image: /print against the
+          # file:// transport must write raster bytes to the sink, not just return 200.
+          curl --fail -X POST http://localhost:8765/print \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ci-smoke-token" \
+            -d '{"template":"simple-text","fields":{"text":"CI Smoke"}}'
+          docker exec label-test sh -c 'test -s /tmp/output.bin'
           docker stop label-test
       # When the app crashes on startup the smoke test only sees "connection refused",
       # which says nothing about the cause. Dump the container's stdout/stderr on failure

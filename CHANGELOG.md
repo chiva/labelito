@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.6.0](https://github.com/chiva/labelito/compare/v0.5.0...v0.6.0) (2026-07-08)
+
+
+### Features
+
+* add downloadable brand-asset kit and fix light-card mark ([#43](https://github.com/chiva/labelito/issues/43)) ([2a79b62](https://github.com/chiva/labelito/commit/2a79b62c0f136593893539e76752a422727d11b8))
+* bigger centered die-cut address labels + template valign ([#31](https://github.com/chiva/labelito/issues/31)) ([192b8d8](https://github.com/chiva/labelito/commit/192b8d8666f260acadca75ea7f86d5be70387ec5))
+* landscape die-cut address labels for 17x54 and 29x90 ([#28](https://github.com/chiva/labelito/issues/28)) ([6d6868a](https://github.com/chiva/labelito/commit/6d6868a53baafec1cdfdb4e21325ae69dbaf2e76))
+* sequence (auto-numbering) batches in the web UI ([#41](https://github.com/chiva/labelito/issues/41)) ([8d9eb78](https://github.com/chiva/labelito/commit/8d9eb78ad19e22f202a0f5e103ae84c821c35659))
+* unified CSS-style per-side padding for every element ([#34](https://github.com/chiva/labelito/issues/34)) ([462d7b0](https://github.com/chiva/labelito/commit/462d7b08bab2383608c7839f7cbc43ada22ccedb))
+* web UI image upload for label image fields ([#29](https://github.com/chiva/labelito/issues/29)) ([ffe50d2](https://github.com/chiva/labelito/commit/ffe50d23bfe9fc76ad908f13ff5b668edf2ddc22))
+
+
+### Bug Fixes
+
+* give gallery label paper a gray backing for contrast ([#44](https://github.com/chiva/labelito/issues/44)) ([9e5a93d](https://github.com/chiva/labelito/commit/9e5a93dbf42bf6be50761f97be1713fed5092da1))
+* production-audit batch 1 — data-dir fail-fast, e2e in CI, /print smoke test ([#35](https://github.com/chiva/labelito/issues/35)) ([be32081](https://github.com/chiva/labelito/commit/be32081151eff13bb36758b1890cf105d990ee9f))
+* production-audit batch 2 — preview 422s + threadpool, padding degradation, history versioning, /readyz healthchecks ([#37](https://github.com/chiva/labelito/issues/37)) ([1d48616](https://github.com/chiva/labelito/commit/1d4861614edde4051081cf57b541f39fac37487e))
+* production-audit batch 4 — lifespan, LOG_LEVEL, load-time media check, strict gallery icons, threadpool lookups, network coverage ([#38](https://github.com/chiva/labelito/issues/38)) ([1acf398](https://github.com/chiva/labelito/commit/1acf39882ddcc6c6378c11af08f8fa9f592efd4a))
+* unify home/gallery header nav and improve gallery discoverability ([#42](https://github.com/chiva/labelito/issues/42)) ([bbc3538](https://github.com/chiva/labelito/commit/bbc353821f518bfeddcbeb16736d10b202bde08d))
+
+
+### Documentation
+
+* record the latch-gate blind spot and the deferred observability counter ([#40](https://github.com/chiva/labelito/issues/40)) ([9128018](https://github.com/chiva/labelito/commit/9128018b7c7f694237cea466fe862632f62dfbb5))
+
 ## [0.5.0](https://github.com/chiva/labelito/compare/v0.4.0...v0.5.0) (2026-07-06)
 
 

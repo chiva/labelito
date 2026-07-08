@@ -2016,7 +2016,10 @@ async def print_label(request: PrintRequest) -> PrintResponse:
     # print), not a retry: reject it with 409 rather than silently returning the old job.
     async with _print_lock:
         if request.idempotency_key:
-            prior = _find_idempotent_job(request.idempotency_key)
+            # Threadpool because the store method is sync SQLite behind a thread lock: run on the
+            # loop it could block behind a concurrent save() from a threadpooled print. Still
+            # inside _print_lock — the lookup-before-print ordering is what closes the retry race.
+            prior = await run_in_threadpool(_find_idempotent_job, request.idempotency_key)
             if prior is not None:
                 if prior.request_fingerprint != fingerprint:
                     raise HTTPException(
@@ -2063,7 +2066,10 @@ async def print_label(request: PrintRequest) -> PrintResponse:
     },
 )
 async def reprint(job_id: str) -> PrintResponse:
-    record = _load_job(job_id)
+    # Threadpool because the store read is sync SQLite behind a thread lock: run on the loop it
+    # could block behind a concurrent save() from a threadpooled print (the sync-def history
+    # routes get this for free from FastAPI's own threadpool dispatch).
+    record = await run_in_threadpool(_load_job, job_id)
     if record is None:
         raise HTTPException(404, f"Job {job_id!r} not found in history")
     if record.status == "failed":

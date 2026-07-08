@@ -903,6 +903,42 @@ def test_idempotency_key_dedupes_retry(client: TestClient) -> None:
     assert main_mod._driver.render_payload.call_count == sends  # nothing re-sent
 
 
+def test_history_lookups_run_off_the_event_loop(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sync SQLite reads in the async handlers — the idempotency lookup inside ``_print_lock``
+    and /reprint's record load — are offloaded to the threadpool, so a store read contending with
+    a concurrent threadpooled save() blocks a worker thread, never the event loop. Asserted via
+    the calling thread: a threadpool worker has no running asyncio loop, the loop thread does."""
+    import asyncio
+
+    import app.main as main_mod
+    from app.models import PrintJobRecord
+
+    on_loop: list[bool] = []
+
+    def _spying(real: object) -> object:
+        def spy(arg: str) -> PrintJobRecord | None:
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(True)
+            except RuntimeError:
+                on_loop.append(False)
+            return real(arg)  # type: ignore[operator]
+
+        return spy
+
+    monkeypatch.setattr(main_mod, "_find_idempotent_job", _spying(main_mod._find_idempotent_job))
+    monkeypatch.setattr(main_mod, "_load_job", _spying(main_mod._load_job))
+
+    body = {"template": "simple", "fields": {"title": "X"}, "idempotency_key": "off-loop-1"}
+    first = client.post("/print", json=body)
+    assert first.status_code == 200
+    assert client.post("/print", json=body).status_code == 200  # dedup path hits the lookup too
+    assert client.post(f"/reprint/{first.json()['job_id']}").status_code == 200
+    assert on_loop == [False, False, False]  # every lookup ran in a worker, never on the loop
+
+
 def test_concurrent_same_key_prints_once(client: TestClient) -> None:
     """Two same-key requests racing in together must produce exactly one physical send.
 

@@ -779,6 +779,55 @@ async def test_startup_memory_history_ignores_unusable_data_dir(
     assert not data_dir.exists()
 
 
+# ── Lifespan: startup/shutdown wired through FastAPI(lifespan=...), not @app.on_event ──────────
+def test_app_registers_no_deprecated_on_event_handlers() -> None:
+    """The lifecycle must run through the lifespan parameter alone: the deprecated ``@app.on_event``
+    registries stay empty, so a future Starlette that removes the legacy API cannot silently skip
+    the fail-closed startup checks (auth opt-out, history-store swap)."""
+    import app.main as main_mod
+
+    assert main_mod.app.router.on_startup == []
+    assert main_mod.app.router.on_shutdown == []
+
+
+def test_lifespan_runs_startup_before_serving_and_shutdown_on_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Booting the app runs startup() before the first request is served and shutdown() when
+    serving ends — the exact semantics the on_event handlers had. The bodies are stubbed (the
+    lifespan resolves them by name at run time) so the test asserts pure wiring/ordering."""
+    import app.main as main_mod
+
+    calls: list[str] = []
+
+    async def fake_startup() -> None:
+        calls.append("startup")
+
+    async def fake_shutdown() -> None:
+        calls.append("shutdown")
+
+    monkeypatch.setattr(main_mod, "startup", fake_startup)
+    monkeypatch.setattr(main_mod, "shutdown", fake_shutdown)
+    with TestClient(main_mod.app) as booted:
+        assert calls == ["startup"]  # ran before serving, exactly once
+        assert booted.get("/livez").status_code == 200
+    assert calls == ["startup", "shutdown"]  # shutdown ran on exit
+
+
+def test_lifespan_startup_failure_aborts_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A startup exception (e.g. the unusable-DATA_DIR RuntimeError) must abort boot through the
+    lifespan — the server never starts serving a half-initialized app."""
+    import app.main as main_mod
+
+    async def failing_startup() -> None:
+        raise RuntimeError("boot failure")
+
+    monkeypatch.setattr(main_mod, "startup", failing_startup)
+    with pytest.raises(RuntimeError, match="boot failure"):
+        with TestClient(main_mod.app):
+            pytest.fail("the app must not serve after a failed startup")
+
+
 # ── Auth: fail closed unless explicitly opted out ────────────────────────────────
 def test_auth_fails_closed_without_token_or_optout(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.main as main_mod

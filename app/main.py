@@ -16,7 +16,8 @@ import re
 import sqlite3
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -361,12 +362,33 @@ except importlib.metadata.PackageNotFoundError:
 # field removal, so the contract number moves per the rule above.
 API_VERSION = 2
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Startup/shutdown lifecycle — the supported replacement for the removed-in-future
+    ``@app.on_event`` API, passed to ``FastAPI(lifespan=...)`` below.
+
+    ``startup()`` runs before the server accepts its first request; an exception there (the
+    fail-closed auth check, the unusable-DATA_DIR RuntimeError) aborts boot instead of serving a
+    half-initialized app. ``shutdown()`` runs when serving ends — in a ``finally`` so a crashed
+    server still closes the history store. The bodies live in the module-level ``startup`` /
+    ``shutdown`` functions (defined later in the module; resolved by name only when the app
+    actually starts) so tests keep driving them directly.
+    """
+    await startup()
+    try:
+        yield
+    finally:
+        await shutdown()
+
+
 app = FastAPI(
     title="labelito",
     version=APP_VERSION,
     description="Self-hosted label printing for Brother QL printers.",
     license_info={"name": "GPL-3.0-or-later"},
     openapi_tags=OPENAPI_TAGS,
+    lifespan=_lifespan,
 )
 
 
@@ -793,8 +815,8 @@ def _warn_missing_custom_icons() -> None:
             )
 
 
-@app.on_event("startup")
 async def startup() -> None:
+    """Boot-time initialization, invoked by ``_lifespan`` before the server accepts requests."""
     global _history
     _history.close()  # release the import-time placeholder before swapping in the configured store
     # Fail closed but legibly: on a fresh Linux clone Docker used to auto-create the ./data
@@ -834,8 +856,8 @@ async def startup() -> None:
         _resolve_transport()(settings.printer_uri)
 
 
-@app.on_event("shutdown")
 async def shutdown() -> None:
+    """Teardown, invoked by ``_lifespan`` when serving ends (even after a crash)."""
     _history.close()
 
 

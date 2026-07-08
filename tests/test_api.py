@@ -8,8 +8,11 @@ import io
 import json
 import logging
 import math
+import os
 import re
+import sqlite3
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from fastapi.testclient import TestClient
@@ -689,6 +692,91 @@ async def test_startup_rejects_invalid_network_uri(
     monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://192.168.1.55")  # no port
     with pytest.raises(ValueError, match="Invalid network printer URI"):
         await main_mod.startup()
+
+
+# ── Startup: unwritable data dir fails legibly (F1 — root-owned ./data bind mount) ──────────────
+_ROOT_BYPASSES_CHMOD = pytest.mark.skipif(
+    os.geteuid() == 0, reason="chmod-based write denial does not apply to root"
+)
+
+
+def _startup_settings_for_file_history(
+    main_mod: ModuleType, tmp_path: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point startup() at HISTORY_MODE=file on ``data_dir`` with auth/transport satisfied."""
+    settings = main_mod.settings
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    monkeypatch.setattr(settings, "history_mode", "file")
+    monkeypatch.setattr(settings, "api_token", None)
+    monkeypatch.setattr(settings, "allow_unauthenticated", True)
+    monkeypatch.setattr(settings, "printer_uri", f"file://{tmp_path / 'out.bin'}")
+
+
+@_ROOT_BYPASSES_CHMOD
+@pytest.mark.asyncio
+async def test_startup_unwritable_data_dir_raises_actionable_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A data dir that exists but is not writable (Docker auto-created ./data as root) must fail
+    startup with one actionable RuntimeError naming the host-side fix, not a raw sqlite traceback."""
+    import app.main as main_mod
+
+    locked = tmp_path / "root-owned-data"
+    locked.mkdir()
+    locked.chmod(0o500)  # r-x: sqlite cannot create history.db inside
+    try:
+        _startup_settings_for_file_history(main_mod, tmp_path, locked, monkeypatch)
+        with pytest.raises(RuntimeError, match=r"chown <uid>:<gid> data") as excinfo:
+            await main_mod.startup()
+    finally:
+        locked.chmod(0o700)  # restore so pytest can clean tmp_path up
+    message = str(excinfo.value)
+    assert str(locked) in message
+    assert "not writable by the container user" in message
+    assert isinstance(excinfo.value.__cause__, OSError | sqlite3.OperationalError)
+
+
+@_ROOT_BYPASSES_CHMOD
+@pytest.mark.asyncio
+async def test_startup_uncreatable_data_dir_raises_actionable_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A data dir that cannot even be created (read-only parent) must hit the same actionable
+    RuntimeError via the mkdir PermissionError branch."""
+    import app.main as main_mod
+
+    parent = tmp_path / "readonly-parent"
+    parent.mkdir()
+    parent.chmod(0o500)  # r-x: mkdir of the child data dir is denied
+    try:
+        _startup_settings_for_file_history(main_mod, tmp_path, parent / "data", monkeypatch)
+        with pytest.raises(RuntimeError, match=r"mkdir -p data") as excinfo:
+            await main_mod.startup()
+    finally:
+        parent.chmod(0o700)  # restore so pytest can clean tmp_path up
+    assert isinstance(excinfo.value.__cause__, PermissionError)
+
+
+@_ROOT_BYPASSES_CHMOD
+@pytest.mark.asyncio
+async def test_startup_memory_history_ignores_unusable_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only file-backed history touches DATA_DIR: memory mode must start even when the
+    directory can neither be created nor written."""
+    import app.main as main_mod
+
+    parent = tmp_path / "readonly-parent"
+    parent.mkdir()
+    parent.chmod(0o500)  # r-x: any mkdir under it would be denied
+    data_dir = parent / "data"
+    try:
+        _startup_settings_for_file_history(main_mod, tmp_path, data_dir, monkeypatch)
+        monkeypatch.setattr(main_mod.settings, "history_mode", "memory")
+        await main_mod.startup()
+    finally:
+        parent.chmod(0o700)  # restore so pytest can clean tmp_path up
+    assert not data_dir.exists()
 
 
 # ── Auth: fail closed unless explicitly opted out ────────────────────────────────

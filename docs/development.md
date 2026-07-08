@@ -89,9 +89,9 @@ env-var list.
 Tiers, controlled by markers declared in `pyproject.toml` (`hardware`, `e2e`, `slow`):
 
 ```bash
-uv run pytest -m "not hardware"     # default suite — what CI runs; mocks the printer
+uv run pytest -m "not hardware and not icons"  # what the CI test matrix runs; mocks the printer (icons run in a dedicated CI job)
 uv run pytest                       # also runs hardware-marked tests (needs a real printer)
-uv run pytest --e2e -m e2e          # browser+API end-to-end (needs: uv run playwright install chromium)
+uv run pytest --e2e -m e2e          # browser+API end-to-end (needs: uv run playwright install chromium); runs in CI as a non-blocking job
 ```
 
 - **`hardware`** — touches a real printer (or live SNMP). Deselected by default; run on demand when a

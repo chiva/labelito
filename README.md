@@ -91,6 +91,11 @@ open http://localhost:8765          # web UI (or just visit it in a browser)
 curl -s http://localhost:8765/health | python -m json.tool
 ```
 
+> **Linux hosts:** the container writes print history to the bind-mounted `./data` as uid `1000`
+> by default. The repo ships `data/` pre-created so it's owned by whoever cloned it — if that
+> isn't uid 1000, either `chown 1000:1000 data` or run with your own ids:
+> `UID=$(id -u) GID=$(id -g) docker compose up -d`.
+
 > **Finding your printer's address.** For network models (`-W` / `-NW` / `-NWB`), use the IP from the
 > printer's config printout or your router's DHCP table, with port `9100`: `tcp://<printer-ip>:9100`.
 > **Pin it with a DHCP reservation** (or use a `tcp://BRWxxxxxx.local:9100` hostname) so a reboot

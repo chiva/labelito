@@ -160,7 +160,9 @@ original request); see [known limitations](known-limitations.md).
   `user: "${UID:-1000}:${GID:-1000}"`. The only path written at runtime is `./data` (the history DB),
   so that host directory must be writable by the chosen uid — uid 1000 matches the image default. To
   run as the invoking host user instead: `UID=$(id -u) GID=$(id -g) docker compose up` (or set
-  `UID`/`GID` in `.env`), and `chown ./data` to that uid.
+  `UID`/`GID` in `.env`), and `chown ./data` to that uid. A fresh clone ships `data/` pre-created
+  (via `data/.gitkeep`) so Docker never auto-creates it root-owned; if ownership is still wrong,
+  startup fails fast with an actionable message instead of a permission traceback.
 - **Fonts.** The image installs DejaVu via the `fonts-dejavu-core` apt package (at a system path
   *outside* the `fonts/` volume), so rendering works even if you mount an empty `FONTS_DIR`. The
   `fonts/` volume is a **DejaVu override slot**, not a general font store: the renderer loads

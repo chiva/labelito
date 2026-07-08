@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.config import Settings
+from app.config import LOG_LEVEL_NAMES, Settings
 
 
 # ── SNMP settings: defaults ──────────────────────────────────────────────────────
@@ -148,6 +148,34 @@ def test_metrics_path_rejects_non_literal_characters() -> None:
     for bad in ("/a?b=c", "/a#frag", "/a b", "/a//b"):
         with pytest.raises(ValidationError):
             Settings(metrics_path=bad)
+
+
+# ── Logging (LOG_LEVEL) ────────────────────────────────────────────────────────────
+def test_log_level_default_info() -> None:
+    """Out of the box the app logs at INFO, matching the previously hardcoded basicConfig level."""
+    assert Settings().log_level == "INFO"
+
+
+def test_log_level_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LOG_LEVEL selects the level and is normalized to the canonical upper-case name, so a
+    lower-case value in a .env file works unchanged."""
+    monkeypatch.setenv("LOG_LEVEL", "debug")
+    assert Settings().log_level == "DEBUG"
+
+
+def test_log_level_accepts_every_standard_name() -> None:
+    """All five canonical python level names load, whatever their case."""
+    for name in LOG_LEVEL_NAMES:
+        assert Settings(log_level=name).log_level == name
+        assert Settings(log_level=name.lower()).log_level == name
+
+
+def test_log_level_invalid_rejected_at_load() -> None:
+    """An unknown level name must fail at Settings construction (fail fast at boot), never reach
+    logging.basicConfig where it would raise a bare ValueError deep inside logging."""
+    for bad in ("VERBOSE", "TRACE", "NOTSET", "20", ""):
+        with pytest.raises(ValidationError, match="not a valid logging level"):
+            Settings(log_level=bad)
 
 
 # ── Example dirs mirror their primary dir unless set explicitly ────────────────────

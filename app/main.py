@@ -104,7 +104,9 @@ from app.transports.usb import (
 )
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+# Level is env-driven (LOG_LEVEL, default INFO) — validated and normalized to a canonical level
+# name at settings load, so the string is always one basicConfig accepts.
+logging.basicConfig(level=settings.log_level)
 
 # ── Prometheus metrics ─────────────────────────────────────────────────────────
 LABELS_PRINTED = Counter("labels_printed_total", "Total labels printed", ["template", "dry_run"])

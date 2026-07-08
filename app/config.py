@@ -6,6 +6,11 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Canonical python logging level names accepted by LOG_LEVEL (the aliases WARN/FATAL and the
+# NOTSET pseudo-level are deliberately excluded: documenting one spelling per level keeps the
+# setting unambiguous, and NOTSET would silently defer to the root logger's default).
+LOG_LEVEL_NAMES: tuple[str, ...] = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -185,6 +190,28 @@ class Settings(BaseSettings):
                 "or fragment) — it is mounted as a FastAPI route verbatim"
             )
         return path
+
+    # Root log level for the process, applied by app.main's logging.basicConfig at import. Standard
+    # python level names (LOG_LEVEL_NAMES), case-insensitive; an unknown name fails at settings load
+    # so a typo'd LOG_LEVEL aborts boot instead of silently logging at the hardcoded default.
+    log_level: str = "INFO"
+
+    @field_validator("log_level")
+    @classmethod
+    def _normalize_log_level(cls, value: str) -> str:
+        """Normalize to the canonical upper-case level name and reject unknown levels.
+
+        The value is handed verbatim to ``logging.basicConfig(level=...)``, which raises a
+        ``ValueError`` deep inside logging on an unknown name — validating here surfaces the
+        mistake as a legible settings error at startup, consistent with the other settings.
+        """
+        level = value.strip().upper()
+        if level not in LOG_LEVEL_NAMES:
+            raise ValueError(
+                f"LOG_LEVEL {value!r} is not a valid logging level; choose one of "
+                f"{', '.join(LOG_LEVEL_NAMES)} (case-insensitive)"
+            )
+        return level
 
     # Render limits for continuous labels
     min_length_px: int = 200

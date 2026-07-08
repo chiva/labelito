@@ -1,0 +1,11 @@
+/* Shared top nav — used by index.html and gallery.html (brand.html has its own, unrelated nav).
+   Relies on the color/font custom properties each page defines in its own :root block. */
+.nav{position:sticky;top:0;z-index:40;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;row-gap:10px;padding:16px clamp(18px,5vw,64px);background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line);}
+.nav-brand{display:flex;align-items:center;gap:12px;text-decoration:none;}
+.nav-brand .wordmark{font-weight:800;font-size:20px;letter-spacing:-0.03em;}
+.nav-right{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:20px;row-gap:10px;}
+.nav-tagline{font-family:var(--mono);font-size:12px;color:var(--ink3);white-space:nowrap;}
+.nav-link{text-decoration:none;font-size:14px;font-weight:600;color:var(--ink2);white-space:nowrap;}
+.nav-link:hover,.nav-link[aria-current]{color:var(--ink);}
+.btn{text-decoration:none;border-radius:12px;font-weight:700;display:inline-flex;align-items:center;gap:9px;cursor:pointer;border:0;font-family:inherit;white-space:nowrap;}
+.btn-nav{background:var(--blue);color:#fff;border-radius:10px;padding:10px 18px;font-size:14px;box-shadow:0 4px 14px rgba(4,120,237,.35);gap:8px;}

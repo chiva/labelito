@@ -14,22 +14,19 @@ The wordmark is outlined to paths so the assets render identically without the I
 installed. Geometry is instantiated from the variable font at wght=800 (opsz left at its
 default 14, matching the site's @font-face which pins only weight).
 
-Dependencies (install into a throwaway venv):
-
-    python3 -m venv .venv && .venv/bin/pip install fonttools brotli cairosvg
-
-`brotli` is required for fonttools to read the .woff2 source. PNG rasterization uses cairosvg;
-`inkscape --export-type=png -w <W> <in.svg> -o <out.png>` is an equivalent fallback.
+Dependencies are the pinned ``brand-assets`` group in pyproject.toml (fonttools + brotli;
+cairosvg is already a core dependency). ``brotli`` is required for fonttools to read the .woff2
+source. PNG rasterization uses cairosvg; ``inkscape --export-type=png -w <W> <in.svg> -o
+<out.png>`` is an equivalent fallback.
 
 Usage:
 
-    .venv/bin/python scripts/build-brand-assets.py
+    uv run --group brand-assets python scripts/build-brand-assets.py
 
 Re-running overwrites site/assets/brand/** deterministically.
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import cairosvg
@@ -113,8 +110,8 @@ def build_wordmark() -> Wordmark:
     glyphset = inst.getGlyphSet()
     hmtx = inst["hmtx"]
 
-    # Flip the font's y-up outlines into SVG y-down as we draw.
-    flip = (1, 0, 0, -1, 0, 0)
+    # Each glyph is drawn through a per-glyph transform that shifts it by the running x cursor and
+    # flips the font's y-up outlines into SVG y-down (see the offset tuple in the loop below).
     svg_pen = SVGPathPen(glyphset)
     bounds_pen = BoundsPen(glyphset)
     tracking = TRACKING_EM * upem

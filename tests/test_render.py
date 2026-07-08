@@ -7,6 +7,7 @@ import base64
 import io
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image, ImageChops
@@ -15,6 +16,7 @@ from app.render.elements import (
     ROW_MIN_FLEX_WIDTH,
     BoxElement,
     ColumnElement,
+    ElementBase,
     IconElement,
     LineElement,
     ListElement,
@@ -230,6 +232,88 @@ def test_padding_scales_with_high_res(engine: RenderEngine) -> None:
     [sb] = engine._render_elements([base], [{}], CANVAS_W)
     [sp] = engine._render_elements([padded], [{}], CANVAS_W)
     assert sp.height == sb.height + 40  # (10 + 10) * scale 2
+
+
+def test_padding_on_squeezed_row_child_degrades_instead_of_raising(engine: RenderEngine) -> None:
+    """Horizontal padding wider than a squeezed row column (over-wide fixed sibling leaves the flex
+    child only the 24px minimum) drops the padding and degrades like a padless narrow column — a
+    cosmetic `padding` on a row cell must not turn a valid template into a 500 at print time."""
+    el = build_element(
+        {
+            "type": "row",
+            "children": [
+                {"type": "text", "text": "wide", "width": CANVAS_W},  # squeezes the flex sibling
+                {"type": "text", "text": "hi", "padding_left": 20, "padding_right": 20},
+            ],
+        }
+    )
+    [strip] = engine._render_elements([el], [{"__children__": [{}, {}]}], CANVAS_W)
+    assert strip.width == CANVAS_W
+    assert strip.height > 0  # the whole row still renders; nothing raised
+
+
+def test_padding_on_squeezed_column_matches_padless_degradation(engine: RenderEngine) -> None:
+    """A padded data-bearing child in an exhausted flex column degrades byte-identically to the
+    padless child's narrow-column behaviour (the unaffordable padding is dropped, not clamped to a
+    sliver), so the existing placeholder/blank-strip guarantees carry over unchanged."""
+
+    def _row(child_extra: dict[str, Any]) -> ElementBase:
+        return build_element(
+            {
+                "type": "row",
+                "children": [
+                    {"type": "text", "text": "label", "width": CANVAS_W},
+                    {"type": "image", "field": "photo", **child_extra},
+                ],
+            }
+        )
+
+    res = [{"__children__": [{}, {"photo": _sample_png_b64()}]}]
+    [padless] = engine._render_elements([_row({})], res, CANVAS_W)
+    [padded] = engine._render_elements(
+        [_row({"padding_left": 20, "padding_right": 20})], res, CANVAS_W
+    )
+    assert list(padded.getdata()) == list(padless.getdata())
+
+
+def test_padding_on_nested_column_child_in_squeezed_row_degrades(engine: RenderEngine) -> None:
+    """The degradation also holds one nesting level down: a padded text inside a column that sits
+    in a squeezed row cell goes through the same shared _guarded_child_strip path and must render
+    without raising, not 500."""
+    el = build_element(
+        {
+            "type": "row",
+            "children": [
+                {"type": "text", "text": "wide", "width": CANVAS_W},  # squeezes the column sibling
+                {
+                    "type": "column",
+                    "children": [
+                        {"type": "text", "text": "hi", "padding_left": 20, "padding_right": 20}
+                    ],
+                },
+            ],
+        }
+    )
+    res = [{"__children__": [{}, {"__children__": [{}]}]}]
+    [strip] = engine._render_elements([el], res, CANVAS_W)
+    assert strip.width == CANVAS_W
+    assert strip.height > 0  # nothing raised anywhere in the nested chain
+
+
+def test_padding_over_cap_on_top_level_container_still_raises(engine: RenderEngine) -> None:
+    """The child-level degradation must not soften the top-level contract: an element whose OWN
+    horizontal padding exceeds the full-width canvas is a template-authoring error and still fails
+    loudly (companion to test_padding_horizontal_exceeds_width_raises, here on a container)."""
+    el = build_element(
+        {
+            "type": "row",
+            "padding_left": 350,
+            "padding_right": 350,
+            "children": [{"type": "text", "text": "hi"}],
+        }
+    )
+    with pytest.raises(ValueError, match="no content width"):
+        engine._render_elements([el], [{"__children__": [{}]}], CANVAS_W)
 
 
 def test_spacer_element_exact_height(

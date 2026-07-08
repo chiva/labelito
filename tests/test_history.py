@@ -12,7 +12,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.history import NullHistoryStore, SqliteHistoryStore, build_history_store
+from app.history import (
+    HISTORY_FORMAT_VERSION,
+    NullHistoryStore,
+    SqliteHistoryStore,
+    build_history_store,
+)
 from app.models import PrintJobRecord
 
 
@@ -185,6 +190,105 @@ def test_pruned_job_is_unreachable() -> None:
             s.save(_record(f"job-{i}"))
         assert s.get("job-0") is None  # oldest pruned away
         assert s.get("job-4") is not None
+    finally:
+        s.close()
+
+
+# ── Format versioning: unreadable rows degrade to misses, never 500s ──────────────
+
+
+def _insert_raw_row(
+    store: SqliteHistoryStore,
+    *,
+    job_id: str,
+    record_json: str,
+    format_version: int | None,
+    key: str | None = None,
+) -> None:
+    """Bypass save() to plant a row as a corrupted/foreign writer would leave it."""
+    store._conn.execute(
+        "INSERT INTO jobs (job_id, idempotency_key, status, record, format_version) "
+        "VALUES (?, ?, 'printed', ?, ?)",
+        (job_id, key, record_json, format_version),
+    )
+    store._conn.commit()
+
+
+def test_corrupted_row_is_skipped_not_raised(
+    store: SqliteHistoryStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A row whose JSON no longer validates is a logged miss on every read path."""
+    store.save(_record("job-good"))
+    _insert_raw_row(
+        store,
+        job_id="job-bad",
+        record_json='{"not": "PAYLOAD-MUST-NOT-LEAK"}',
+        format_version=HISTORY_FORMAT_VERSION,
+        key="k-bad",
+    )
+
+    with caplog.at_level("WARNING", logger="app.history"):
+        assert store.get("job-bad") is None
+        assert store.find_idempotent("k-bad") is None  # dedup miss, not a 500
+        assert [r.job_id for r in store.recent(10)] == ["job-good"]
+        assert [r.job_id for r in store.page(offset=0, limit=10)] == ["job-good"]
+    assert any("job-bad" in m for m in caplog.messages)  # skip is observable, once per read
+    # The warning names locations/error types only — row payload stays out of the log.
+    assert not any("PAYLOAD-MUST-NOT-LEAK" in m for m in caplog.messages)
+
+
+def test_future_format_version_row_is_skipped(
+    store: SqliteHistoryStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A valid record written by a newer format (downgrade scenario) is skipped, not trusted."""
+    store.save(_record("job-old"))
+    _insert_raw_row(
+        store,
+        job_id="job-future",
+        record_json=_record("job-future", key="k-future").model_dump_json(),
+        format_version=HISTORY_FORMAT_VERSION + 1,
+        key="k-future",
+    )
+
+    with caplog.at_level("WARNING", logger="app.history"):
+        assert store.get("job-future") is None
+        assert store.find_idempotent("k-future") is None
+        assert [r.job_id for r in store.recent(10)] == ["job-old"]
+    assert any("format_version" in m and "job-future" in m for m in caplog.messages)
+
+
+def test_legacy_db_without_version_column_migrates(tmp_path: Path) -> None:
+    """Opening a pre-versioning history.db adds the column; old rows read as version 1."""
+    db = tmp_path / "history.db"
+    legacy = sqlite3.connect(str(db))
+    legacy.execute(
+        "CREATE TABLE jobs ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, "
+        "idempotency_key TEXT, status TEXT NOT NULL, record TEXT NOT NULL)"
+    )
+    legacy.execute(
+        "INSERT INTO jobs (job_id, idempotency_key, status, record) VALUES (?, ?, ?, ?)",
+        (
+            "job-legacy",
+            "k-legacy",
+            "printed",
+            _record("job-legacy", key="k-legacy").model_dump_json(),
+        ),
+    )
+    legacy.commit()
+    legacy.close()
+
+    s = SqliteHistoryStore(str(db), keep=1000, prune_at=1500)
+    try:
+        got = s.get("job-legacy")  # NULL format_version → treated as version 1
+        assert got is not None and got.job_id == "job-legacy"
+        assert s.find_idempotent("k-legacy") is not None
+
+        s.save(_record("job-new"))  # new writes are stamped with the current version
+        (stamped,) = s._conn.execute(
+            "SELECT format_version FROM jobs WHERE job_id = 'job-new'"
+        ).fetchone()
+        assert stamped == HISTORY_FORMAT_VERSION
     finally:
         s.close()
 

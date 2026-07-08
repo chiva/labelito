@@ -416,15 +416,30 @@ Element padding (`padding_left`/`padding_right`, or the `padding` shorthand) is 
 load time (each ≤ `MAX_ELEMENT_DIMENSION`), but the *sum* is **not** validated against the label's
 printable width when a template is saved or parsed — so a schema-valid template can still request
 more horizontal padding than the tape is wide (e.g. `padding_left: 350` + `padding_right: 350` on a
-696 px 62 mm label, or a smaller value on a narrow 12/29 mm roll or inside a narrow row column). Such
-a template **saves and parses successfully**, then `render`/`preview`/`print` raises a clear
-`ValueError` ("padding_left (…) + padding_right (…) leaves no content width on a Npx canvas") which
-the print path surfaces as a `500` render error.
+696 px 62 mm label, or a smaller value on a narrow 12/29 mm roll). Such a template **saves and
+parses successfully**, then `render`/`preview`/`print` raises a clear `ValueError` ("padding_left
+(…) + padding_right (…) leaves no content width on a Npx canvas") which the print path surfaces as
+a `500` render error. This hard failure applies only to **top-level elements** measured against the
+full-width canvas — where an over-cap padding sum is unambiguously a template-authoring error.
 
-**Why this is acceptable here:** the failure is **loud and named** (never a silently blank label —
-the original clamp-to-1px behaviour was removed), and it surfaces the instant the author previews the
-template, which in the single-author Studio workflow is immediately. The author sees the exact
-padding values and the canvas width and reduces them.
+**Container children degrade instead of raising.** A `row`/`column` child whose *column* ends up
+narrower than its horizontal padding sum (an over-wide fixed sibling, a tight flex share, a narrow
+roll squeezing the whole row) does **not** raise: the unaffordable horizontal padding is dropped and
+the child falls back to the exact padless narrow-column handling — a visible crossed-box marker for
+data-bearing children (QR/barcode/image), a clipped or blank strip otherwise; vertical padding bands
+are kept. Rationale: the squeeze is a *layout outcome*, not an authoring error — a padless child in
+the same squeezed column already degrades gracefully, so cosmetic padding must not convert that
+graceful degradation into a hard `500` at print time. Dropping the padding (rather than clamping the
+content to a 1px sliver) keeps the degraded content or failure marker visible at the full column
+width — the clamp-to-sliver behaviour is exactly the silently-blank render the top-level
+`ValueError` exists to prevent.
+
+**Why this is acceptable here:** the top-level failure is **loud and named** (never a silently blank
+label — the original clamp-to-1px behaviour was removed), and it surfaces the instant the author
+previews the template, which in the single-author Studio workflow is immediately. The author sees
+the exact padding values and the canvas width and reduces them. The container-child degradation is
+equally visible on the previewed label (missing padding / crossed box in the squeezed column) while
+keeping the rest of the label printable.
 
 **Why it isn't validated at save time:** the printable width depends on the resolved driver/label
 geometry (per-model `dots_printable`), the template's `rotate` (die-cut media swaps width/height), and

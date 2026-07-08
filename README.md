@@ -33,7 +33,7 @@ curl -X POST http://localhost:8765/print \
 
 ## What you get
 
-- **Runs in Docker** — one `docker compose up`, non-root, `/health` for your stack's health checks.
+- **Runs in Docker** — one `docker compose up`, non-root, `/health` + `/livez`/`/readyz` probes for your stack's health checks.
 - **Home Assistant–ready** — a plain HTTP API, so a `rest_command` (or voice intent) prints a label. [Jump to the HA setup ↓](#home-assistant)
 - **Web UI** — pick a template, fill the fields, see a live preview, hit print — at `http://<host>:8765`.
 - **YAML templates** — drop a `.yaml` into `templates/`, hot-reload with `POST /reload`. No rebuild.
@@ -62,14 +62,14 @@ services:
       MODEL: QL-810W
       PRINTER_URI: tcp://192.168.1.100:9100   # transport inferred from the scheme (tcp/usb/file)
       HISTORY_MODE: file                       # durable reprint/dedup on ./data
-      # No default secret ships — the app refuses to start (see app/main.py) unless ONE is set:
-      #   put API_TOKEN=<your-secret> in a .env file, OR set ALLOW_UNAUTHENTICATED=true for a trusted LAN.
-      # Both pass through with safe empty/false defaults so the unauthenticated path actually works;
-      # enforcement is the app's job, not the compose interpolation's.
-      API_TOKEN: ${API_TOKEN:-}
-      ALLOW_UNAUTHENTICATED: ${ALLOW_UNAUTHENTICATED:-false}
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')"]
+      # No default secret ships — `docker compose up` fails fast (the `${VAR:?msg}` interpolation)
+      # unless API_TOKEN is set, e.g. in a .env file beside the compose file (auto-loaded).
+      # To run without auth on a trusted LAN instead: comment out the API_TOKEN line and
+      # uncomment ALLOW_UNAUTHENTICATED below.
+      API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set ALLOW_UNAUTHENTICATED=true}
+      # ALLOW_UNAUTHENTICATED: "true"  # run open (trusted intranet only)
+    healthcheck:  # dependency-aware readiness; printer reachability deliberately excluded
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/readyz')"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -84,7 +84,9 @@ git clone https://github.com/chiva/labelito && cd labelito
 cp docker-compose.yml docker-compose.override.yml
 # edit MODEL / PRINTER_URI in the override, then:
 
-echo "API_TOKEN=$(openssl rand -hex 16)" > .env   # or set ALLOW_UNAUTHENTICATED=true for a trusted LAN
+# Required: compose refuses to start without a token. To run open on a trusted LAN instead,
+# comment out API_TOKEN in the compose file and uncomment ALLOW_UNAUTHENTICATED (see above).
+echo "API_TOKEN=$(openssl rand -hex 16)" > .env
 docker compose up -d
 
 open http://localhost:8765          # web UI (or just visit it in a browser)

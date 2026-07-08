@@ -991,6 +991,8 @@ def _apply_padding(
     el: ElementBase,
     available_width: int,
     render_fn: Callable[[int], Image.Image],
+    *,
+    container_child: bool = False,
 ) -> Image.Image:
     """Render ``el`` into a padding-inset width and wrap the result with its per-side padding.
 
@@ -1001,19 +1003,38 @@ def _apply_padding(
     four default to 0, so an element with no padding renders byte-identically (``render_fn`` gets the
     full ``available_width`` and no band is added).
 
-    Raises ``ValueError`` when horizontal padding leaves no content width — a schema-valid but
-    unrenderable request (see docs/known-limitations.md); failing loudly beats clamping to a 1px
-    sliver and printing a silently blank label. A zero-height (blank/absent) render is returned as-is
-    so callers keep dropping it without reserving a padding band.
+    When horizontal padding leaves no content width — a schema-valid but unrenderable request (see
+    docs/known-limitations.md) — the outcome depends on who is rendering:
+
+    - **Top-level element** (``container_child=False``, the engine's full-width canvas): raise
+      ``ValueError``. The padding sum exceeding the label's printable width is a template-authoring
+      error; failing loudly beats clamping to a 1px sliver and printing a silently blank label.
+    - **Container child** (``container_child=True``, via :func:`_guarded_child_strip`): the padding
+      is unaffordable only because the *column* got squeezed (an over-wide fixed sibling, tight
+      flex), which is a layout outcome, not an authoring error — a padless child in the same column
+      already degrades gracefully. Drop the horizontal padding and hand the child the raw column
+      width, falling through to that exact padless narrow-column handling (visible crossed-box
+      marker for data-bearing children, blank strip otherwise). Clamping the padding to leave a
+      1px content sliver instead would reproduce the silently-blank render the top-level
+      ``ValueError`` exists to prevent.
+
+    A zero-height (blank/absent) render is returned as-is so callers keep dropping it without
+    reserving a padding band.
     """
     left, right = el._px(el.padding_left), el._px(el.padding_right)
     if left or right:
         content_width = available_width - left - right
         if content_width < 1:
-            raise ValueError(
-                f"padding_left ({el.padding_left}) + padding_right ({el.padding_right}) leaves no "
-                f"content width on a {available_width}px canvas; reduce the horizontal padding"
-            )
+            if not container_child:
+                raise ValueError(
+                    f"padding_left ({el.padding_left}) + padding_right ({el.padding_right}) leaves "
+                    f"no content width on a {available_width}px canvas; reduce the horizontal "
+                    f"padding"
+                )
+            # Squeezed container child: degrade to the padless narrow-column behaviour (see
+            # docstring) instead of turning a layout squeeze into a hard render error.
+            left = right = 0
+            content_width = available_width
     else:
         # No horizontal padding: hand the element the width verbatim (which may legitimately be 0 for
         # an over-narrow row column) so the existing narrow-column handling is preserved unchanged.
@@ -1050,7 +1071,9 @@ def _guarded_child_strip(
 
     The child's padding is applied here via :func:`_apply_padding`, so it works identically on row and
     column children. The too-narrow guard is evaluated against the padding-inset *content* width — the
-    width the child actually draws into — not the raw column width.
+    width the child actually draws into — not the raw column width. ``container_child=True`` makes an
+    unaffordable horizontal padding sum (a squeezed column) drop the padding and fall back to this
+    padless narrow-column handling instead of raising the top-level over-cap ``ValueError``.
     """
 
     def _render(content_width: int) -> Image.Image:
@@ -1079,7 +1102,7 @@ def _guarded_child_strip(
             )
         return strip
 
-    return _apply_padding(child, width, _render)
+    return _apply_padding(child, width, _render, container_child=True)
 
 
 # ── Row container ────────────────────────────────────────────────────────────────

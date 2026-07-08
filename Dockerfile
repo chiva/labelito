@@ -97,8 +97,12 @@ USER app
 
 EXPOSE 8765
 
+# /readyz is dependency-aware (templates loaded, transport resolvable, history store open; 503 when
+# not serving) and unauthenticated, unlike /health which returns ok unconditionally. It deliberately
+# does NOT probe the printer — a transient printer blip must not mark the container unhealthy
+# (see the /readyz docstring in app/main.py).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8765/readyz')"
 
 # Single worker is intentional — do NOT add --workers N. Print serialization (_print_lock) is an
 # in-process asyncio.Lock and retry de-duplication runs against an in-process history store (a

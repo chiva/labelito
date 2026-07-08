@@ -1054,6 +1054,32 @@ def test_multipart_missing_template_rejected(client: TestClient) -> None:
     assert resp.status_code == 422
 
 
+def test_multipart_malformed_fields_json_rejected(client: TestClient) -> None:
+    """Malformed fields_json is a clean 422 (guarded json.loads), not an unhandled 500."""
+    resp = client.post(
+        "/preview/multipart", data={"template": "simple", "fields_json": "{not json"}
+    )
+    assert resp.status_code == 422
+    assert "fields_json" in resp.json()["detail"]
+
+
+def test_multipart_non_dict_fields_json_with_image_rejected(client: TestClient) -> None:
+    """Valid-but-non-dict fields_json (e.g. a list) with an image upload must 422, not 500.
+
+    Without the isinstance guard, `fields["image"] = ...` on a parsed list raises TypeError → 500.
+    """
+    src = Image.new("L", (80, 80), 0)
+    buf = io.BytesIO()
+    src.save(buf, format="PNG")
+    resp = client.post(
+        "/preview/multipart",
+        data={"template": "image-test", "fields_json": "[]"},
+        files={"image": ("upload.png", buf.getvalue(), "image/png")},
+    )
+    assert resp.status_code == 422
+    assert "JSON object" in resp.json()["detail"]
+
+
 def test_multipart_rejects_non_image_content_type(client: TestClient) -> None:
     resp = client.post(
         "/preview/multipart",

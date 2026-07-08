@@ -971,17 +971,24 @@
     // Clamp each auto-number input into its SequenceSpec bound (models.py), falling back to the
     // default when the field is blank/non-numeric so buildPayload always sends a valid spec (count
     // is required, ge=1 — an empty count would 422 the preview/print).
+    // Read one auto-number input clamped into its SequenceSpec bound (models.py), defaulting a
+    // blank/non-numeric field — PURE: returns a number and never touches the DOM, so a partial entry
+    // the user is mid-typing (e.g. a lone "-" toward a negative start) is not rewritten under them.
+    function clampSeqValue(id, lo, hi, dflt) {
+      const el = document.getElementById(id);
+      if (!el) return dflt;
+      const v = parseInt(el.value, 10);
+      return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
+    }
+
+    // Normalize the DISPLAYED input values into their bounds — writes to the DOM, so only call it on
+    // commit (change/blur) or when revealing the panel, never on every keystroke (that would rewrite
+    // a partial entry the moment it is typed).
     function clampSequence() {
-      const clamp = (id, lo, hi, dflt) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        const v = parseInt(el.value, 10);
-        el.value = Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
-      };
-      clamp('seq-count', 1, 500, 10);
-      clamp('seq-start', -1000000000, 1000000000, 1);
-      clamp('seq-step', 1, 1000000, 1);
-      clamp('seq-padding', 0, 32, 0);
+      document.getElementById('seq-count').value = clampSeqValue('seq-count', 1, 500, 10);
+      document.getElementById('seq-start').value = clampSeqValue('seq-start', -1000000000, 1000000000, 1);
+      document.getElementById('seq-step').value = clampSeqValue('seq-step', 1, 1000000, 1);
+      document.getElementById('seq-padding').value = clampSeqValue('seq-padding', 0, 32, 0);
     }
 
     // "first..last" for a sequence spec, each zero-padded like format_seq (str(value).zfill(padding)
@@ -998,12 +1005,13 @@
     // Build the `sequence` object from the auto-number controls (clamped first). count drives the
     // batch size; start/step/padding shape each {{seq}} value (start + index*step, zero-padded).
     function currentSequenceSpec() {
-      clampSequence();
+      // Reads CLAMPED values WITHOUT mutating the inputs, so the payload is always valid even while a
+      // field shows a partial entry the user is mid-typing.
       return {
-        start: parseInt(document.getElementById('seq-start').value, 10) || 0,
-        count: parseInt(document.getElementById('seq-count').value, 10) || 1,
-        step: parseInt(document.getElementById('seq-step').value, 10) || 1,
-        padding: parseInt(document.getElementById('seq-padding').value, 10) || 0,
+        start: clampSeqValue('seq-start', -1000000000, 1000000000, 1),
+        count: clampSeqValue('seq-count', 1, 500, 10),
+        step: clampSeqValue('seq-step', 1, 1000000, 1),
+        padding: clampSeqValue('seq-padding', 0, 32, 0),
       };
     }
 
@@ -1630,12 +1638,20 @@
     // clear userOverride and mark this batch submitted — letting a later roll-driven refocus replace
     // the selected template/form out from under the newer batch edits.
     for (const id of ['seq-start', 'seq-count', 'seq-step', 'seq-padding']) {
-      document.getElementById(id).addEventListener('input', () => {
+      const seqEl = document.getElementById(id);
+      // Mark the form dirty + re-preview on input, but do NOT clamp here: clamping rewrites the DOM
+      // and would wipe a partial entry mid-keystroke (a lone "-" toward a negative start snapping to
+      // the default). The payload stays valid because buildPayload → currentSequenceSpec reads
+      // clamped values purely. saveOptions persists the raw text, matching copies/threshold.
+      seqEl.addEventListener('input', () => {
         userOverride = true;
         formRevision++;
         try { templateStore.removeItem(SUBMITTED_KEY); } catch (e) { /* storage disabled */ }
-        clampSequence(); updatePrintLabel(); saveOptions(); schedulePreview();
+        updatePrintLabel(); saveOptions(); schedulePreview();
       });
+      // Normalize the displayed value only once the user commits (blur / Enter / spinner step), so
+      // the field ends up showing exactly what will print.
+      seqEl.addEventListener('change', () => { clampSequence(); updatePrintLabel(); saveOptions(); });
     }
 
     // Disable Print while an image read is in flight (fired by the shared image widget) — so doPrint,

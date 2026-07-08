@@ -401,30 +401,35 @@
       if (draftUsesSeq) clampSequence();
     }
 
-    // Clamp each auto-number input into its SequenceSpec bound (models.py), defaulting a blank/
-    // non-numeric field so the preview payload always carries a valid spec.
-    function clampSequence() {
-      const clamp = (id, lo, hi, dflt) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        const v = parseInt(el.value, 10);
-        el.value = Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
-      };
-      clamp('seq-count', 1, 500, 10);
-      clamp('seq-start', -1000000000, 1000000000, 1);
-      clamp('seq-step', 1, 1000000, 1);
-      clamp('seq-padding', 0, 32, 0);
+    // Read one auto-number input clamped into its SequenceSpec bound (models.py), defaulting a
+    // blank/non-numeric field — PURE: returns a number and never touches the DOM, so a partial entry
+    // the user is mid-typing (e.g. a lone "-" toward a negative start) is not rewritten under them.
+    function clampSeqValue(id, lo, hi, dflt) {
+      const el = document.getElementById(id);
+      if (!el) return dflt;
+      const v = parseInt(el.value, 10);
+      return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
     }
 
-    // The `sequence` object sent on /preview/draft — the render uses item 0 (start), so only
-    // start/step/padding shape the previewed number; count rides along for a valid spec.
+    // Normalize the DISPLAYED input values into their bounds — writes to the DOM, so only call it on
+    // commit (change/blur) or when revealing the panel, never on every keystroke (that would rewrite
+    // a partial entry the moment it is typed).
+    function clampSequence() {
+      document.getElementById('seq-count').value = clampSeqValue('seq-count', 1, 500, 10);
+      document.getElementById('seq-start').value = clampSeqValue('seq-start', -1000000000, 1000000000, 1);
+      document.getElementById('seq-step').value = clampSeqValue('seq-step', 1, 1000000, 1);
+      document.getElementById('seq-padding').value = clampSeqValue('seq-padding', 0, 32, 0);
+    }
+
+    // The `sequence` object sent on /preview/draft — reads CLAMPED values WITHOUT mutating the inputs,
+    // so the payload is always valid even while a field shows a partial entry. The render uses item 0
+    // (start), so only start/step/padding shape the previewed number; count rides along for validity.
     function currentSequenceSpec() {
-      clampSequence();
       return {
-        start: parseInt(document.getElementById('seq-start').value, 10) || 0,
-        count: parseInt(document.getElementById('seq-count').value, 10) || 1,
-        step: parseInt(document.getElementById('seq-step').value, 10) || 1,
-        padding: parseInt(document.getElementById('seq-padding').value, 10) || 0,
+        start: clampSeqValue('seq-start', -1000000000, 1000000000, 1),
+        count: clampSeqValue('seq-count', 1, 500, 10),
+        step: clampSeqValue('seq-step', 1, 1000000, 1),
+        padding: clampSeqValue('seq-padding', 0, 32, 0),
       };
     }
 
@@ -1052,11 +1057,16 @@
 
     document.getElementById('yaml').addEventListener('input', debounce(doPreview, 600));
     // Auto-number inputs re-preview the first item (start/step/padding change the drawn number). One
-    // shared debounce so edits across the four inputs coalesce into a single draft render.
+    // shared debounce so edits across the four inputs coalesce into a single draft render. Preview on
+    // `input` (currentSequenceSpec reads clamped values without rewriting the field, so a partial
+    // entry renders without being overwritten mid-keystroke); normalize the displayed value only on
+    // `change` (blur / Enter / spinner step) so the field ends up showing exactly what will print.
     const debouncedSeqPreview = debounce(doPreview, 600);
     for (const id of ['seq-start', 'seq-count', 'seq-step', 'seq-padding']) {
       const el = document.getElementById(id);
-      if (el) el.addEventListener('input', () => { clampSequence(); debouncedSeqPreview(); });
+      if (!el) continue;
+      el.addEventListener('input', debouncedSeqPreview);
+      el.addEventListener('change', () => { clampSequence(); doPreview(); });
     }
 
     // ── Auth: token wiring shared with the other pages (labelito.js#initTokenInput). ──

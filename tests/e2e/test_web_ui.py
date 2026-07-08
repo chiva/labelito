@@ -305,7 +305,9 @@ def test_seq_retry_after_network_error_reuses_idempotency_key(authed_page: Page)
 
     assert len(keys) == 3, f"expected 3 /print attempts, saw {len(keys)}"
     assert keys[0] and keys[0] == keys[1], "a network-error retry must reuse the idempotency key"
-    assert keys[2] and keys[2] != keys[1], "an intentional repeat after success must use a fresh key"
+    assert keys[2] and keys[2] != keys[1], (
+        "an intentional repeat after success must use a fresh key"
+    )
 
 
 def test_seq_large_print_confirms_before_printing(authed_page: Page) -> None:
@@ -427,6 +429,33 @@ def test_seq_edit_marks_form_dirty_like_a_field_edit(authed_page: Page) -> None:
     assert authed_page.evaluate("() => formRevision") > rev_before, (
         "a sequence edit must bump formRevision"
     )
+
+
+def test_seq_inputs_normalize_on_commit_not_while_typing(authed_page: Page) -> None:
+    """Print-page auto-number inputs must not be rewritten mid-keystroke (a lone '-' used to snap to
+    the default, making a negative start un-typeable), while the /print payload stays valid — the
+    same deferral the studio uses. Clamping happens on `change` (blur/Enter/spinner), not `input`."""
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+    start = authed_page.locator("#seq-start")
+    count = authed_page.locator("#seq-count")
+
+    # Clearing a field stays empty on the input path; the payload still reads a clamped value.
+    count.fill("")
+    assert count.input_value() == "", "clearing a field must not snap to the default on input"
+    assert authed_page.evaluate("() => currentSequenceSpec().count") == 10
+    assert count.input_value() == "", "reading the spec must not rewrite the field"
+    count.dispatch_event("change")
+    assert count.input_value() == "10", "a blank field defaults on commit"
+
+    # A negative start is now typeable (a lone '-' is no longer wiped on input).
+    start.fill("")
+    start.focus()
+    authed_page.keyboard.type("-5")
+    assert start.input_value() == "-5", "a negative start must be typeable (not clamped mid-entry)"
+    start.dispatch_event("change")
+    assert start.input_value() == "-5", "an in-bounds negative start is preserved on commit"
 
 
 def test_image_field_renders_file_picker_uploads_and_prints(authed_page: Page) -> None:
@@ -1295,6 +1324,44 @@ def test_studio_seq_template_shows_controls_and_previews_first_item(authed_page:
         'name: d2\ndescription: plain\nlabel: "62"\nlayout:\n  - {type: title, text: "Static"}\n',
     )
     expect(authed_page.locator("#sequence-field")).to_be_hidden()
+
+
+def test_studio_seq_inputs_normalize_on_commit_not_while_typing(authed_page: Page) -> None:
+    """An auto-number input must NOT be rewritten mid-keystroke (that made a negative start
+    un-typeable — a lone "-" snapped straight to the default), yet the preview payload must stay
+    valid throughout. Clamping is deferred to `change` (blur/Enter/spinner); the preview reads
+    clamped values purely, without touching the field."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#yaml")).to_be_visible()
+    authed_page.fill(
+        "#yaml",
+        "name: draft-seq\ndescription: seq\n"
+        'label: "62"\nrotate: 0\nlayout:\n  - {type: title, text: "Box {{seq}}"}\n',
+    )
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    start = authed_page.locator("#seq-start")
+    count = authed_page.locator("#seq-count")
+
+    # Clearing a field stays empty on the INPUT path (previously it snapped to the default the moment
+    # it went blank, so you couldn't clear-to-retype).
+    count.fill("")
+    assert count.input_value() == "", "clearing a field must not snap to the default on input"
+    # ...yet the preview payload is still valid: currentSequenceSpec reads a CLAMPED value without
+    # mutating the field (blank count → default 10), so /preview/draft never sees a broken spec.
+    assert authed_page.evaluate("() => currentSequenceSpec().count") == 10
+    assert count.input_value() == "", "reading the spec must not rewrite the field"
+    # Committing (change / blur / spinner) normalizes the display.
+    count.dispatch_event("change")
+    assert count.input_value() == "10", "a blank field defaults on commit"
+
+    # A negative start is now typeable: a lone '-' used to be wiped on input (parseInt('-') is NaN →
+    # reset to the default), so the next digit produced a positive number. Type it key by key.
+    start.fill("")
+    start.focus()
+    authed_page.keyboard.type("-5")
+    assert start.input_value() == "-5", "a negative start must be typeable (not clamped mid-entry)"
+    start.dispatch_event("change")
+    assert start.input_value() == "-5", "an in-bounds negative start is preserved on commit"
 
 
 def test_status_banner_does_not_execute_injected_markup(authed_page: Page) -> None:

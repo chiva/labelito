@@ -246,6 +246,7 @@ def main() -> None:
     print("PNG assets:")
     rasterize(mark_out, PNG_SIZES_MARK)
     for name in VARIANTS:
+        rasterize(OUT_SVG / f"labelito-wordmark-{name}.svg", PNG_SIZES_LOCKUP)
         for kind in ("horizontal", "stacked"):
             rasterize(OUT_SVG / f"labelito-lockup-{kind}-{name}.svg", PNG_SIZES_LOCKUP)
 

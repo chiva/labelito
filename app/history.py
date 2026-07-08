@@ -63,7 +63,20 @@ def _load_row(job_id: str, record_json: str, format_version: int | None) -> Prin
     try:
         return PrintJobRecord.model_validate_json(record_json)
     except ValidationError as exc:
-        log.warning("Skipping unreadable history row for job %s: %s", job_id, exc)
+        # Log locations and error types only — str(exc) would echo the row's payload (label
+        # field values) into the log via pydantic's input= segments.
+        issues = sorted(
+            {
+                f"{'.'.join(str(part) for part in err['loc']) or '<root>'}: {err['type']}"
+                for err in exc.errors(include_input=False, include_url=False)
+            }
+        )
+        log.warning(
+            "Skipping unreadable history row for job %s: %d validation error(s): %s",
+            job_id,
+            exc.error_count(),
+            "; ".join(issues),
+        )
         return None
 
 

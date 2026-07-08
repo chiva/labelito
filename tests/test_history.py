@@ -222,7 +222,7 @@ def test_corrupted_row_is_skipped_not_raised(
     _insert_raw_row(
         store,
         job_id="job-bad",
-        record_json='{"not": "a record"}',
+        record_json='{"not": "PAYLOAD-MUST-NOT-LEAK"}',
         format_version=HISTORY_FORMAT_VERSION,
         key="k-bad",
     )
@@ -233,6 +233,8 @@ def test_corrupted_row_is_skipped_not_raised(
         assert [r.job_id for r in store.recent(10)] == ["job-good"]
         assert [r.job_id for r in store.page(offset=0, limit=10)] == ["job-good"]
     assert any("job-bad" in m for m in caplog.messages)  # skip is observable, once per read
+    # The warning names locations/error types only — row payload stays out of the log.
+    assert not any("PAYLOAD-MUST-NOT-LEAK" in m for m in caplog.messages)
 
 
 def test_future_format_version_row_is_skipped(

@@ -796,9 +796,21 @@ def _warn_missing_custom_icons() -> None:
 @app.on_event("startup")
 async def startup() -> None:
     global _history
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
     _history.close()  # release the import-time placeholder before swapping in the configured store
-    _history = build_history_store(settings)
+    # Fail closed but legibly: on a fresh Linux clone Docker used to auto-create the ./data
+    # bind-mount source as root, so the non-root container could neither create the data dir nor
+    # open the SQLite history DB — surface the host-side fix instead of a raw traceback.
+    try:
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        _history = build_history_store(settings)
+    except (OSError, sqlite3.OperationalError) as exc:
+        raise RuntimeError(
+            f"Cannot create or open the history database in DATA_DIR {settings.data_dir} "
+            f"(running as uid {os.getuid()}): {exc}. In Docker this usually means the "
+            "bind-mounted ./data directory on the host is missing or not writable by the "
+            "container user — fix it with `mkdir -p data && chown <uid>:<gid> data`, or start "
+            "with matching ids: `UID=$(id -u) GID=$(id -g) docker compose up`."
+        ) from exc
     log.info("History store: mode=%s", settings.history_mode)
     loaded = registry.load_all()
     log.info("Loaded %d templates: %s", len(loaded), loaded)

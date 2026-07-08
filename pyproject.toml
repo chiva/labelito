@@ -50,9 +50,10 @@ license = ["pip-licenses>=5.0.0"]
 # chromium` to download the browser. Used by both `pytest -m e2e` and scripts/dev-harness.py.
 e2e = ["pytest-playwright>=0.5.0"]
 # Provenance tooling for scripts/build-brand-assets.py, which regenerates site/assets/brand/**.
-# fonttools outlines the Inter wordmark to paths; brotli lets fonttools read the .woff2 source.
-# cairosvg (the rasterizer) is already a core runtime dependency above.
-brand-assets = ["fonttools>=4.50.0", "brotli>=1.1.0"]
+# fonttools outlines the Inter wordmark to paths; uharfbuzz shapes the word (applying Inter's
+# kerning so the outlines match the browser-rendered wordmark); brotli lets fonttools read the
+# .woff2 source. cairosvg (the rasterizer) is already a core runtime dependency above.
+brand-assets = ["fonttools>=4.50.0", "uharfbuzz>=0.39.0", "brotli>=1.1.0"]
 dev = [
     "pre-commit>=3.8.0",
     {include-group = "test"},

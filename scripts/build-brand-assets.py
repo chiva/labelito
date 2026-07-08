@@ -12,11 +12,12 @@ Reproducible generator (companion to scripts/fetch-icons.sh). It produces, under
 
 The wordmark is outlined to paths so the assets render identically without the Inter font
 installed. Geometry is instantiated from the variable font at wght=800 (opsz left at its
-default 14, matching the site's @font-face which pins only weight).
+default 14, matching the site's @font-face which pins only weight) and shaped with HarfBuzz so
+glyph positions include Inter's kerning, matching the browser-rendered CSS wordmark.
 
-Dependencies are the pinned ``brand-assets`` group in pyproject.toml (fonttools + brotli;
-cairosvg is already a core dependency). ``brotli`` is required for fonttools to read the .woff2
-source. PNG rasterization uses cairosvg; ``inkscape --export-type=png -w <W> <in.svg> -o
+Dependencies are the pinned ``brand-assets`` group in pyproject.toml (fonttools, uharfbuzz,
+brotli; cairosvg is already a core dependency). ``brotli`` is required for fonttools to read the
+.woff2 source. PNG rasterization uses cairosvg; ``inkscape --export-type=png -w <W> <in.svg> -o
 <out.png>`` is an equivalent fallback.
 
 Usage:
@@ -28,9 +29,11 @@ Re-running overwrites site/assets/brand/** deterministically.
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import cairosvg
+import uharfbuzz as hb
 from fontTools.pens.boundsPen import BoundsPen
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.transformPen import TransformPen
@@ -102,28 +105,47 @@ class Wordmark:
         return self.x1 - self.x0
 
 
+def _shape(inst: TTFont):
+    """Shape WORD with HarfBuzz, returning (glyph_name, x_advance, x_offset, y_offset) per glyph.
+
+    Shaping applies Inter's GPOS kerning (and default ligatures), so the outlined wordmark matches
+    how the browser renders the CSS wordmark rather than naive advance-width placement. HarfBuzz
+    cannot read the source .woff2, so the pinned instance is serialized to a plain sfnt first.
+    """
+    inst.flavor = None
+    sfnt = io.BytesIO()
+    inst.save(sfnt)
+    hb_font = hb.Font(hb.Face(hb.Blob(sfnt.getvalue())))
+    buf = hb.Buffer()
+    buf.add_str(WORD)
+    buf.guess_segment_properties()
+    hb.shape(hb_font, buf)  # default features: kern + standard ligatures, as the browser applies
+    order = inst.getGlyphOrder()
+    return [
+        (order[info.codepoint], pos.x_advance, pos.x_offset, pos.y_offset)
+        for info, pos in zip(buf.glyph_infos, buf.glyph_positions, strict=True)
+    ]
+
+
 def build_wordmark() -> Wordmark:
     font = TTFont(FONT_SRC)
     upem = font["head"].unitsPerEm
     cap = font["OS/2"].sCapHeight
     inst = instantiateVariableFont(font, {"wght": WEIGHT}, inplace=False)
-    cmap = inst.getBestCmap()
     glyphset = inst.getGlyphSet()
-    hmtx = inst["hmtx"]
+    shaped = _shape(inst)
 
-    # Each glyph is drawn through a per-glyph transform that shifts it by the running x cursor and
-    # flips the font's y-up outlines into SVG y-down (see the offset tuple in the loop below).
     svg_pen = SVGPathPen(glyphset)
     bounds_pen = BoundsPen(glyphset)
     tracking = TRACKING_EM * upem
 
     x = 0.0
-    for ch in WORD:
-        gname = cmap[ord(ch)]
-        offset = (1, 0, 0, -1, x, 0)  # translate by x, then flip y
+    for gname, x_advance, x_offset, y_offset in shaped:
+        # Draw each glyph at the shaped pen position, flipping the font's y-up outline to SVG y-down.
+        offset = (1, 0, 0, -1, x + x_offset, -y_offset)
         glyphset[gname].draw(TransformPen(svg_pen, offset))
         glyphset[gname].draw(TransformPen(bounds_pen, offset))
-        x += hmtx[gname][0] + tracking
+        x += x_advance + tracking
 
     xmin, ymin, xmax, ymax = bounds_pen.bounds  # y-down space
     # Normalize so the visual left edge sits at x=0.

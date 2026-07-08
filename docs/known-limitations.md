@@ -90,7 +90,22 @@ the OID. The residual is only an **external** job (or a printer still finishing 
 with an optional-read failure. **Mitigation if it ever matters:** fetch `hrPrinterStatus` (+ console) in
 a dedicated status GET, or promote them to the critical read — both trade a round-trip or some
 fail-open robustness on firmware that does not implement those OIDs. Same root cause as the latch
-guard's fail-open seam; deferred together pending a decision to restructure the SNMP batching.
+guard's fail-open seam; deferred together (decision 2026-07-08) rather than restructuring the SNMP
+batching for a single-printer LAN deployment.
+
+**The same seam silently blinds the latch gate — and today that is unobservable.** The preflight's
+latch gate reads the same two optional-GET fields, so when the optional read drops while the critical
+read succeeds, the gate simply cannot fire: `printer_status`/`console_text` come back absent and a
+latched printer's job goes out as the phantom `200` the gate exists to stop. Unlike full SNMP
+unreachability — which increments `preflight_status_unreachable_total` and logs a warning — this
+partial failure is indistinguishable from "no fault present": no counter, no log line. **First step if
+this is ever revisited (documented deliberately, not applied):** before any batching restructure, add a
+`preflight_latch_unchecked_total` counter (mirroring `preflight_status_unreachable_total`) incremented
+when the critical read succeeded but the latch-signal fields came back absent. It adds no round-trip
+and touches no batching, and it converts the deferral into a measured one: a counter that stays at
+zero validates leaving the seam alone, a climbing one is the evidence that justifies the dedicated
+latch-signal GET. Accepted as-is for this deployment — the exposure requires a latch fault and an
+optional-read drop to coincide in the same preflight.
 
 ## Loaded-roll awareness (media badge + picker size-focus) requires SNMP or USB
 

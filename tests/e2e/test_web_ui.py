@@ -214,6 +214,29 @@ def test_seq_template_print_sends_sequence_spec(authed_page: Page) -> None:
     expect(authed_page.locator(".status.ok")).to_be_visible()
 
 
+def test_seq_edit_marks_form_dirty_like_a_field_edit(authed_page: Page) -> None:
+    """Editing an auto-number control is a new in-progress choice (the number is label content), so
+    it must set userOverride and bump formRevision — the same dirty-state a field edit raises. Without
+    it, a /print completing while the operator edits the next batch could clear the guard and let a
+    roll-driven refocus replace the template out from under the newer edits."""
+    authed_page.goto("/")
+    _select_template(authed_page, SEQ_TEMPLATE)
+    _fill_all_fields(authed_page)
+
+    # Baseline after selecting + filling: capture the revision, then reset the guard as a completed
+    # print would (userOverride=false), and confirm a seq edit re-raises it.
+    rev_before = authed_page.evaluate("() => formRevision")
+    authed_page.evaluate("() => { userOverride = false; }")
+    authed_page.fill("#seq-start", "7")
+
+    assert authed_page.evaluate("() => userOverride") is True, (
+        "a sequence edit must re-raise userOverride"
+    )
+    assert authed_page.evaluate("() => formRevision") > rev_before, (
+        "a sequence edit must bump formRevision"
+    )
+
+
 def test_image_field_renders_file_picker_uploads_and_prints(authed_page: Page) -> None:
     """The Print page renders a file picker (not a text input) for an image field, and an uploaded
     image previews and rides into the /print payload as base64 in fields.image."""

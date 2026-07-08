@@ -1500,8 +1500,16 @@
     // Auto-number inputs: reflect the batch count in the button label and re-preview item #start.
     // start/step/padding change the previewed number; count only changes the label (the preview
     // renders the first item regardless) — all four re-preview for simplicity, sending a valid spec.
+    // These are label CONTENT (they define the printed number/batch), not just print options, so an
+    // edit is a new in-progress choice: mark it dirty exactly like a field edit (userOverride +
+    // formRevision) and drop SUBMITTED_KEY. Otherwise a /print still in flight could, on completion,
+    // clear userOverride and mark this batch submitted — letting a later roll-driven refocus replace
+    // the selected template/form out from under the newer batch edits.
     for (const id of ['seq-start', 'seq-count', 'seq-step', 'seq-padding']) {
       document.getElementById(id).addEventListener('input', () => {
+        userOverride = true;
+        formRevision++;
+        try { templateStore.removeItem(SUBMITTED_KEY); } catch (e) { /* storage disabled */ }
         clampSequence(); updatePrintLabel(); saveOptions(); schedulePreview();
       });
     }

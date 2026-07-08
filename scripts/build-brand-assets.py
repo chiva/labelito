@@ -25,6 +25,7 @@ Usage:
 
 Re-running overwrites site/assets/brand/** deterministically.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -51,7 +52,7 @@ WEIGHT = 800
 TRACKING_EM = -0.035  # matches the on-page wordmark's letter-spacing
 
 # Brand ink colors (from brand.html tokens): --ink for dark backgrounds, near-black for light.
-INK_DARK_BG = "#F4F7FB"   # white ink, sits on dark backgrounds
+INK_DARK_BG = "#F4F7FB"  # white ink, sits on dark backgrounds
 INK_LIGHT_BG = "#0F1621"  # dark ink, sits on light backgrounds
 VARIANTS = {"dark": INK_DARK_BG, "light": INK_LIGHT_BG}
 
@@ -59,10 +60,10 @@ VARIANTS = {"dark": INK_DARK_BG, "light": INK_LIGHT_BG}
 MARK_W, MARK_H = 100.0, 80.0
 
 # Lockup composition, expressed as fractions of the mark height so it scales cleanly.
-CAP_TARGET = 0.50 * MARK_H   # wordmark cap-height in lockup units
-GAP_H = 0.28 * MARK_H        # mark->wordmark gap (horizontal lockup)
-GAP_V = 0.34 * MARK_H        # mark->wordmark gap (stacked lockup)
-PAD = 0.06 * MARK_H          # viewBox padding around composed lockups
+CAP_TARGET = 0.50 * MARK_H  # wordmark cap-height in lockup units
+GAP_H = 0.28 * MARK_H  # mark->wordmark gap (horizontal lockup)
+GAP_V = 0.34 * MARK_H  # mark->wordmark gap (stacked lockup)
+PAD = 0.06 * MARK_H  # viewBox padding around composed lockups
 
 # PNG raster widths (px). Height derives from each SVG's aspect ratio.
 PNG_SIZES_MARK = (256, 512, 1024)
@@ -199,9 +200,8 @@ def lockup_stacked(mark_inner: str, wm: Wordmark, ink: str) -> str:
     left = -PAD
     right = total_w + PAD
 
-    body = (
-        f'  <g transform="translate({_n(mark_x)} 0)">{mark_inner}</g>\n'
-        + _wordmark_group(wm, scale, tx, ty, ink)
+    body = f'  <g transform="translate({_n(mark_x)} 0)">{mark_inner}</g>\n' + _wordmark_group(
+        wm, scale, tx, ty, ink
     )
     return svg_doc((left, top, right - left, bot - top), body, WORD)
 
@@ -237,10 +237,11 @@ def main() -> None:
 
     for name, ink in VARIANTS.items():
         write(OUT_SVG / f"labelito-wordmark-{name}.svg", wordmark_svg(wm, ink))
-        write(OUT_SVG / f"labelito-lockup-horizontal-{name}.svg",
-              lockup_horizontal(mark_inner, wm, ink))
-        write(OUT_SVG / f"labelito-lockup-stacked-{name}.svg",
-              lockup_stacked(mark_inner, wm, ink))
+        write(
+            OUT_SVG / f"labelito-lockup-horizontal-{name}.svg",
+            lockup_horizontal(mark_inner, wm, ink),
+        )
+        write(OUT_SVG / f"labelito-lockup-stacked-{name}.svg", lockup_stacked(mark_inner, wm, ink))
 
     print("PNG assets:")
     rasterize(mark_out, PNG_SIZES_MARK)

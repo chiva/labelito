@@ -2546,6 +2546,88 @@ def test_printer_status_console_not_duplicated_as_error_line(authed_page_snmp: P
     assert authed_page_snmp.locator("#printer-detail .detail-err").count() == 0
 
 
+def test_printer_status_offline_shows_calm_info_notice(authed_page_snmp: Page) -> None:
+    """A printer that is simply off/unreachable is a benign, expected state — it must render as a calm
+    info notice with a plain-language headline and a "what to do" hint, NOT the alarm-red raw-string
+    dump it used to be. The raw diagnostic is preserved (collapsed) under Details → Diagnostic."""
+    import json
+
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=503,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "state": "off",
+                    "uri": "tcp://192.0.2.10:9100",
+                    "reachable": False,
+                    "errors": ["printer SNMP agent did not respond"],
+                }
+            ),
+        ),
+    )
+    authed_page_snmp.goto("/")
+
+    note = authed_page_snmp.locator("#printer-detail .status-note")
+    expect(note).to_be_visible(timeout=8000)
+    # Info severity, not error — a printer being off is not a fault.
+    expect(note).to_have_class(re.compile(r"\bstatus-note--info\b"))
+    assert authed_page_snmp.locator(".status-note--error").count() == 0
+    expect(note.locator(".status-note-title")).to_have_text("Printer offline")
+    expect(note.locator(".status-note-hint")).to_contain_text("turn it on")
+    # The raw backend string is never lost — it lives (collapsed) under Details → Diagnostic.
+    details = authed_page_snmp.locator("#printer-detail details")
+    details.locator("summary").click()
+    expect(details).to_contain_text("Diagnostic: printer SNMP agent did not respond")
+
+
+def test_printer_status_hard_fault_shows_error_notice(authed_page_snmp: Page) -> None:
+    """A genuine device fault (an unrecognised condition string) escalates to the red error notice with
+    a warning icon — the severity system keeps real faults loud while quieting the benign off state."""
+    authed_page_snmp.route(
+        "**/printer/status",
+        lambda route: route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_status_body(
+                media_width_mm=62,
+                media_type="continuous",
+                media_length_mm=None,
+                state="error",
+                errors=["cover open"],
+            ),
+        ),
+    )
+    authed_page_snmp.goto("/")
+
+    note = authed_page_snmp.locator("#printer-detail .status-note")
+    expect(note).to_be_visible(timeout=8000)
+    expect(note).to_have_class(re.compile(r"\bstatus-note--error\b"))
+    expect(note.locator(".status-note-title")).to_have_text("cover open")
+
+
+def test_about_modal_opens_fills_runtime_and_closes(authed_page: Page) -> None:
+    """The nav About button opens the version/about modal: static rows (version, repo, license) are
+    server-rendered, the runtime rows (model/transport/templates) fill from /health on open, and Esc
+    closes it (native <dialog>)."""
+    authed_page.goto("/")
+    dialog = authed_page.locator("#about-dialog")
+    expect(dialog).to_be_hidden()
+
+    authed_page.locator("#about-open").click()
+    expect(dialog).to_be_visible()
+    expect(dialog).to_contain_text("About labelito")
+    expect(dialog.locator("#about-title")).to_be_visible()
+    expect(dialog.locator('a[href="https://github.com/chiva/labelito"]')).to_be_visible()
+    # Runtime rows resolve from /health (real test server), replacing the "…" placeholder.
+    expect(dialog.locator("#about-model")).not_to_have_text("…", timeout=5000)
+    expect(dialog.locator("#about-transport")).not_to_have_text("…")
+
+    authed_page.keyboard.press("Escape")
+    expect(dialog).to_be_hidden()
+
+
 def test_printer_status_details_show_web_ui_link_for_network(authed_page_snmp: Page) -> None:
     """A tcp:// printer gets a Web UI link (http://<host>) in the Details disclosure, built from the
     print URI's host — shown unconditionally (no port-80 probe)."""

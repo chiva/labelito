@@ -357,12 +357,35 @@ except importlib.metadata.PackageNotFoundError:
     # interpreter). A sentinel keeps /health serving rather than failing the import.
     APP_VERSION = "0.0.0+unknown"
 
+
+def _project_url(label: str, default: str) -> str:
+    """Return a ``[project.urls]`` entry from installed package metadata — the same dist metadata
+    source as APP_VERSION — so it stays single-sourced from pyproject.toml. ``Project-URL`` headers
+    read as ``"Label, https://…"``. Falls back to ``default`` for a source checkout with no installed
+    dist, matching APP_VERSION's sentinel posture."""
+    try:
+        meta = importlib.metadata.metadata("labelito")
+    except importlib.metadata.PackageNotFoundError:
+        return default
+    for entry in meta.get_all("Project-URL") or []:
+        name, _, url = str(entry).partition(",")
+        if name.strip().casefold() == label.casefold():
+            return url.strip()
+    return default
+
+
 # Compatibility contract for API consumers (the Home Assistant integration gates on this via
 # /health). Bump ONLY on breaking changes to existing endpoints/fields — additive changes keep
 # the number. Independent of the package version, which release-please bumps every release.
 # v2: dropped the `firmware` field from PrinterStatusResponse (/printer/status) — a breaking
 # field removal, so the contract number moves per the rule above.
 API_VERSION = 2
+
+# Project identity surfaced in the web UI's About modal. The repo URL is single-sourced from
+# pyproject.toml's [project.urls] Homepage (via dist metadata) so the modal can't drift from it; the
+# license mirrors the stable SPDX id. The fallback matches the canonical Homepage for source checkouts.
+REPO_URL = _project_url("Homepage", "https://github.com/chiva/labelito")
+APP_LICENSE = "GPL-3.0-or-later"
 
 
 @asynccontextmanager
@@ -2216,6 +2239,12 @@ def _web_ctx(page: str, request: Request) -> dict[str, Any]:
         "languages": translator.available(),
         "default_language": settings.default_language,
         "asset_v": _ASSET_VERSION,
+        # About-modal identity — static, rendered server-side so the modal opens instantly; the live
+        # runtime rows (model/transport/…) are lazy-fetched from /health by the JS layer.
+        "app_version": APP_VERSION,
+        "api_version": API_VERSION,
+        "repo_url": REPO_URL,
+        "app_license": APP_LICENSE,
     }
 
 

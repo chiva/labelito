@@ -42,11 +42,15 @@
         {% endfor %}
       </select>
     </span>
+    <button id="about-open" class="btn-icon" type="button" title="About labelito" aria-label="About labelito">
+      {{ icon("circle-info") }}
+    </button>
     <button id="theme-toggle" class="btn-icon" type="button" title="Toggle light/dark theme">
       {{ icon("sun", "theme-sun") }}{{ icon("moon", "theme-moon") }}
     </button>
   </div>
 </nav>
+{% include "partials/_about.html" %}
 {# Resolve the label language the moment the select exists — pages fire their initial preview
    from end-of-body scripts, and a persisted choice applied any later (e.g. at DOMContentLoaded)
    would preview in the default language yet print in the saved one. #}

@@ -62,16 +62,37 @@
 
     .printer-detail { font-size: 12.5px; color: var(--ink3); line-height: 1.6; overflow-wrap: anywhere; }
     .printer-detail:empty { display: none; }
-    .printer-detail .detail-err { color: var(--red); }
-    .printer-detail summary { cursor: pointer; font-weight: 600; }
-    .printer-detail details { margin-top: 4px; }
-    /* Indent the disclosure body so it reads as nested under "Details"; bold the label half of each
-       row to separate title from value. */
-    .printer-detail details > div { padding-left: 12px; }
+    /* Detach the notice/Details block from the Media/Console kv rows above — a callout is not just
+       another row, so it needs more than the 11px inter-row gap. */
+    .printer-detail:not(:empty) { margin-top: 7px; }
+    .printer-detail summary { cursor: pointer; font-weight: 600; color: var(--ink2); }
+    .printer-detail summary:hover { color: var(--ink); }
+    /* The disclosure reads as its own sub-section: a hairline rule (the card's --line divider) plus
+       breathing room sets it apart from the notice/kv rows above — whether or not a notice precedes it. */
+    .printer-detail details { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); }
+    /* Bold the label half of each row to separate title from value; give rows vertical rhythm so the
+       list doesn't read as a dump. */
+    .printer-detail details > div { padding-left: 2px; margin-top: 6px; }
     .printer-detail .detail-k { font-weight: 600; color: var(--ink2); }
     .printer-detail details a { color: var(--blue-light); }
     [data-theme="light"] .printer-detail details a { color: var(--blue-deep); }
     .printer-detail code { font-family: var(--font-mono); font-size: 11.5px; }
+
+    /* Severity-aware status notice — replaces the raw errors.join() dump with a callout that
+       carries an icon + plain-language headline + optional "what to do" hint. Three severities:
+       info (benign, e.g. printer simply off), warn (config heads-up), error (genuine fault).
+       Bordered-callout look mirrors #preview-error; the icon inherits the note colour via
+       currentColor (see .icon { fill: currentColor } in app.css), like the toasts do. */
+    .status-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 12px; border: 1px solid transparent; border-radius: 9px; font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+    .status-note .icon { width: 15px; height: 15px; flex: none; margin-top: 2px; }
+    .status-note-title { font-weight: 600; }
+    .status-note-hint { color: var(--ink3); margin-top: 2px; }
+    .status-note-diag { color: var(--ink3); font-family: var(--font-mono); font-size: 11px; margin-top: 4px; }
+    .status-note--info { color: var(--ink2); background: color-mix(in srgb, var(--ink3) 12%, transparent); border-color: color-mix(in srgb, var(--ink3) 26%, transparent); }
+    .status-note--info .icon { color: var(--blue-light); }
+    [data-theme="light"] .status-note--info .icon { color: var(--blue-deep); }
+    .status-note--warn { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); border-color: color-mix(in srgb, var(--amber) 32%, transparent); }
+    .status-note--error { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
 
     #preview-section .paper-frame { min-height: 90px; align-items: center; }
     #preview-dims-size:empty, #preview-dims-media:empty { display: none; }
@@ -491,6 +512,57 @@
       try { return new URL(uri).hostname || null; } catch (e) { return null; }
     }
 
+    // Turn the backend's raw fault strings + printer state into a human notice
+    // {severity, title, hint}. Curated map for the common cases (matched by substring), with a
+    // generic error fallback that surfaces the raw string as the title so nothing is ever hidden.
+    // The raw string is also preserved verbatim under Details → Diagnostic (see renderPrinterStatus).
+    function describeFault(rawErrors, data) {
+      const raw = rawErrors.join('; ');
+      const low = raw.toLowerCase();
+      const unreachable = !(data && data.reachable) || (data && data.state === 'off');
+      if (low.includes('did not respond') && unreachable) {
+        return {severity: 'info', title: 'Printer offline',
+          hint: "Powered off, asleep, or its network agent isn't responding — turn it on or check the connection."};
+      }
+      if (low.includes('in-progress print job') || low.includes('retry shortly')) {
+        return {severity: 'info', title: 'Printer busy',
+          hint: 'A print job is in progress — this clears on its own.'};
+      }
+      // Genuine device fault (cover open, no media, cutter jam, other bit-derived conditions).
+      return {severity: 'error', title: raw, hint: 'Check the printer and try again.'};
+    }
+
+    // Build a .status-note callout. Icon + headline + optional hint + optional monospace diag line.
+    // All text via textContent (SNMP-supplied strings are untrusted — see the XSS note below).
+    // iconNode() (labelito.js) clones the shared inline-SVG icon; the note colour flows to it via
+    // currentColor. Info uses the neutral info glyph; warn/error use the warning triangle.
+    function renderStatusNote(parent, note) {
+      const box = document.createElement('div');
+      box.className = `status-note status-note--${note.severity}`;
+      const ic = iconNode(note.severity === 'info' ? 'circle-info' : 'triangle-exclamation');
+      if (ic) box.appendChild(ic);
+      const body = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'status-note-title';
+      title.textContent = note.title;
+      body.appendChild(title);
+      if (note.hint) {
+        const hint = document.createElement('div');
+        hint.className = 'status-note-hint';
+        hint.textContent = note.hint;
+        body.appendChild(hint);
+      }
+      if (note.diag) {
+        const diag = document.createElement('div');
+        diag.className = 'status-note-diag';
+        diag.textContent = note.diag;
+        body.appendChild(diag);
+      }
+      box.appendChild(body);
+      parent.appendChild(box);
+      return box;
+    }
+
     function renderPrinterStatus(data) {
       printerStatus = data;
       setStateBadge(data.state);
@@ -535,8 +607,11 @@
       // double-rendering as a red error line while leaving real bit-derived faults intact.
       const consoleEcho = data.console_text ? `console: ${data.console_text}` : null;
       const faultErrors = (Array.isArray(data.errors) ? data.errors : []).filter(e => e !== consoleEcho);
+      // The raw joined string is preserved under Details → Diagnostic below; the visible surface is
+      // the human notice, severity-classified so a benign "printer off" doesn't read as a red alarm.
+      const faultDiag = faultErrors.length ? faultErrors.join('; ') : null;
       if (faultErrors.length) {
-        addLine('detail-err').textContent = faultErrors.join('; ');
+        renderStatusNote(detail, describeFault(faultErrors, data));
       }
       // ── Secondary: URI + SNMP identity/inventory behind a disclosure, off by default so they never
       //    crowd the live status. URI is server config (settings.printer_uri); the rest are
@@ -562,6 +637,9 @@
           secondary.push(['Labels printed (lifetime)', String(data.label_lifecount)]);
         }
       }
+      // Raw fault string kept for debugging, tucked inside the (collapsed) disclosure so it never
+      // clutters the card but is always one click away.
+      if (faultDiag) secondary.push(['Diagnostic', faultDiag, true]);
       if (secondary.length) {
         const det = document.createElement('details');
         det.open = printerDetailsOpen;
@@ -622,7 +700,10 @@
         const data = await res.json().catch(() => null);
         if (!data) {
           setStateBadge('off', 'Unknown');
-          document.getElementById('printer-detail').replaceChildren();
+          const detail = document.getElementById('printer-detail');
+          detail.replaceChildren();
+          renderStatusNote(detail, {severity: 'info', title: 'Status unavailable',
+            hint: 'The printer status response was empty or unreadable — try refreshing.'});
           hideConsoleRow();
           printerStatus = null;
           rebuildTemplatePicker();
@@ -630,15 +711,15 @@
         }
         renderPrinterStatus(data);
       } catch (e) {
-        // Includes AbortError when the fetch times out — treat any failure as unreachable.
+        // Includes AbortError when the fetch times out — this is labelito (the app server) not
+        // responding, distinct from the printer being unreachable, so the notice says so.
         setStateBadge('off', 'Unreachable');
         const detail = document.getElementById('printer-detail');
         detail.replaceChildren();
         hideConsoleRow();
-        const div = document.createElement('div');
-        div.className = 'detail-err';
-        div.textContent = `Network error: ${e.message}`;
-        detail.appendChild(div);
+        renderStatusNote(detail, {severity: 'error', title: "Can't reach labelito",
+          hint: "The app server didn't respond. Check that the service is running.",
+          diag: `Network error: ${e.message}`});
         printerStatus = null;
         rebuildTemplatePicker();
       } finally {

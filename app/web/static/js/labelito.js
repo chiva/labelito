@@ -630,6 +630,53 @@ function resetImageFields() {
   imageFieldGen.clear();
 }
 
+/* ── About modal ────────────────────────────────────────────────────────────────
+ * Static rows are server-rendered (see partials/_about.html); the runtime rows are filled
+ * once from GET /health the first time the modal opens. /health is unauthenticated, so no
+ * token header is needed. Failure degrades to "unavailable" rather than blocking the modal,
+ * and only a success latches so a transient failure retries on the next open.
+ */
+let aboutRuntimeLoaded = false;
+async function loadAboutRuntime() {
+  if (aboutRuntimeLoaded) return;
+  const set = (id, value) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = value; // /health is app-config, but keep textContent for consistency
+    el.classList.remove('muted');
+  };
+  try {
+    const res = await fetch(api('/health'), {headers: {Accept: 'application/json'}});
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    set('about-model', data.model || 'unknown');
+    set('about-transport', data.transport || 'unknown');
+    set('about-templates', data.template_count != null ? String(data.template_count) : 'unknown');
+    aboutRuntimeLoaded = true;
+  } catch (e) {
+    for (const id of ['about-model', 'about-transport', 'about-templates']) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = 'unavailable';
+    }
+  }
+}
+
+function initAbout() {
+  const dlg = document.getElementById('about-dialog');
+  const openBtn = document.getElementById('about-open');
+  const closeBtn = document.getElementById('about-close');
+  if (!dlg || !openBtn) return;
+  openBtn.addEventListener('click', () => {
+    dlg.showModal(); // native modal → Esc-to-close + backdrop come for free
+    loadAboutRuntime();
+  });
+  if (closeBtn) closeBtn.addEventListener('click', () => dlg.close());
+  // A click landing on the dialog element itself (its backdrop/padding, not the content) closes it.
+  dlg.addEventListener('click', (e) => {
+    if (e.target === dlg) dlg.close();
+  });
+}
+
 /* ── Init ─────────────────────────────────────────────────────────────────────
  * The shared head loads this script before <body> exists, so nav wiring waits for the
  * DOM. Pages' own inline scripts (end of body) run before this fires; anything they
@@ -638,4 +685,5 @@ function resetImageFields() {
  */
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+  initAbout();
 });

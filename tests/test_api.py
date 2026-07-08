@@ -569,6 +569,30 @@ def test_web_ui_renders(client: TestClient) -> None:
     assert "labelito" in resp.text
 
 
+def test_about_modal_surfaces_version_and_repo(client: TestClient) -> None:
+    """The nav About modal is server-rendered with the package version, API contract, repo URL, and
+    license from _web_ctx — so the running app tells users what build they are on. The runtime rows
+    (model/transport) are filled client-side from /health, so only the static bits assert here."""
+    import importlib.metadata
+
+    html = client.get("/").text
+    assert 'id="about-dialog"' in html
+    assert 'id="about-open"' in html  # nav trigger present
+    assert importlib.metadata.version("labelito") in html
+    assert "https://github.com/chiva/labelito" in html
+    assert "GPL-3.0-or-later" in html
+
+
+def test_about_modal_present_on_history_page(client: TestClient) -> None:
+    """The About modal ships via the shared nav partial, so it is reachable from every page shell,
+    not just the print page."""
+    import importlib.metadata
+
+    html = client.get("/history").text
+    assert 'id="about-dialog"' in html
+    assert importlib.metadata.version("labelito") in html
+
+
 # ── Reverse-proxy path prefix (PROXY_PATH_HEADER — Home Assistant ingress, nginx sub-path) ──────
 INGRESS_PREFIX = "/api/hassio_ingress/abc123"
 

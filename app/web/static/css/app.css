@@ -660,21 +660,19 @@ input[type="radio"] {
   animation: lbl-spin 0.8s linear infinite;
 }
 
-/* The nav API-token (key) button carries a small amber dot while no token is stored yet, so a
-   first-run visitor on a secured deployment notices where to enter it before hitting a 401.
-   Toggled by syncTokenIndicator() in labelito.js. */
+/* While no API token is stored yet, the nav key button breathes amber so a first-run visitor on a
+   secured deployment is drawn to it before hitting a 401. Toggled by syncTokenIndicator() in
+   labelito.js. */
 .btn-icon.needs-token {
-  position: relative;
+  animation: lbl-breathe 2.4s ease-in-out infinite;
 }
-.btn-icon.needs-token::after {
-  content: "";
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--amber);
+/* Honor reduced-motion: drop the breathing but keep the icon statically amber so it still stands
+   out without animation. */
+@media (prefers-reduced-motion: reduce) {
+  .btn-icon.needs-token {
+    animation: none;
+    color: var(--amber);
+  }
 }
 
 /* ── Inline SVG icons ───────────────────────────────────────────────────────── */

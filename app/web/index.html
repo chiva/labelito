@@ -1417,9 +1417,17 @@
         });
         if (seq !== previewSeq) return; // superseded while in flight — the newer preview owns the UI
         if (!res.ok) {
-          // 401 keeps the shared toast prompt (handleAuthError) — every other preview failure renders
-          // inline in the preview card instead, per the "no toast for preview errors" rule below.
-          if (handleAuthError(res)) return;
+          // A 401 still fires the shared toast + key-icon cue via handleAuthError. But rather than
+          // leave the card blank on a tokenless first load, fall through to the same inline "Preview
+          // unavailable" placeholder as any other failure, with an auth-specific hint beneath it.
+          if (res.status === 401) {
+            handleAuthError(res);
+            if (seq !== previewSeq) return;
+            showPreviewError(window.LABELITO_BASIC_AUTH
+              ? 'Authentication required — reload the page to sign in again.'
+              : 'Add your API token from the key icon (top right) to load the preview.');
+            return;
+          }
           const err = await res.json().catch(() => ({detail: res.statusText}));
           if (seq !== previewSeq) return;
           showPreviewError(previewErrorMessage(res.status, err.detail));

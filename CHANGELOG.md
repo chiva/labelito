@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/chiva/labelito/compare/v0.8.0...v0.8.1) (2026-07-09)
+
+
+### Bug Fixes
+
+* **ui:** drop ellipsis from Printing badge, remove pencil-edit legend hint ([#53](https://github.com/chiva/labelito/issues/53)) ([aac285f](https://github.com/chiva/labelito/commit/aac285fdbf0558d4675d2f093311960735f456a5))
+
 ## [0.8.0](https://github.com/chiva/labelito/compare/v0.7.0...v0.8.0) (2026-07-09)
 
 

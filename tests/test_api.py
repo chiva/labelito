@@ -2814,6 +2814,37 @@ def test_printer_status_locked_snmp_transient_console_stays_printing(
     )
 
 
+def test_printer_status_end_of_print_other_busy_is_printing_not_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verified live 2026-07-09: at the end of a normal print the QL emits one sample of
+    hrPrinterStatus=other(1) + console "BUSY" with the error bitmask still 00 — the SAME two-signal
+    shape as the sticky media-mismatch latch, but transient. It must read as PRINTING, not flash the
+    badge to ERROR: the real latch shows "ERROR" and persists, a transient shows a working console
+    ("BUSY") and clears in ~1s. Tested with NO local lock held so the mapping comes purely from the
+    SNMP signal (an external job / a printer still settling)."""
+    from app.transports.base import PrinterStatus
+    from app.transports.snmp import HR_PRINTER_STATUS_OTHER, PrinterSNMPStatus
+
+    transient = PrinterStatus.from_snmp(
+        PrinterSNMPStatus(
+            reachable=True,
+            media_width_mm=62.0,
+            media_type="continuous",
+            error_state_bits=0,  # bitmask blind to this transition, exactly like the latch
+            printer_status=HR_PRINTER_STATUS_OTHER,  # other(1)
+            console_text="BUSY",  # a transient WORKING console, not the latch's "ERROR"
+            errors=["console: BUSY"],
+        )
+    )
+    _snmp_status_endpoint(monkeypatch, transient)
+
+    data = client.get("/printer/status").json()
+    assert data["state"] == "printing", (
+        "a transient other(1)+BUSY at end-of-print must read as printing, not error"
+    )
+
+
 def test_printer_status_snmp_busy_without_local_lock_is_printing(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

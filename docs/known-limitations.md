@@ -37,9 +37,10 @@ can still slip through. The guard now covers **both** the network+SNMP path and 
 section below), each re-queried under `_print_lock` at pre-flight so the read cannot race the send;
 `file://` is a synthetic-OK debug sink with no printer, and a **network** printer with
 `SNMP_ENABLED=false` has no status channel at all (the silent `:9100` back-channel), so it stays
-unguarded. And because the raster `send()` path is unchanged, a job that passes the pre-flight check
-but is rejected *after* the bytes are sent still reports `None` (unknown) → recorded `printed` — the
-pre-flight check is a backstop in front of that path, not a replacement for it.
+unguarded. And because the raster `send()` path does not read the (silent) back-channel by default
+(see the readback subsection below), a job that passes the pre-flight check but is rejected *after*
+the bytes are sent still reports `None` (unknown) → recorded `printed` — the pre-flight check is a
+backstop in front of that path, not a replacement for it.
 
 **Mitigation if needed later:** poll SNMP during/after the send for a post-print error transition, or
 move to a printer/firmware that returns the `:9100` status frame, so the send path itself can confirm
@@ -47,6 +48,40 @@ the outcome instead of relying on a separate pre-flight read. *(Partially realiz
 the web status card now polls `/printer/status` on a background timer and answers mid-print, so an
 operator sees a post-send fault transition within a poll cycle — but the **recorded job outcome** is
 still the send-path `None`→`printed`, unchanged; this surfaces the transition, it does not gate on it.)*
+
+### The `send()` ESC i S readback is OFF by default over TCP (`network_status_readback`)
+
+`NetworkTransport.send()` *can* read the printer's 32-byte ESC i S status frames back over `:9100`
+after the raster (`_read_status`, draining until completion+ready or the `STATUS_READ_DEADLINE`).
+This is the **same protocol that works over USB**, but on the QL-810W's NIC the TCP channel is silent
+(above) — the readback only ever times out and returns `None`. Worse, it does so **while holding
+`_print_lock`**: for the full `STATUS_READ_DEADLINE` (~10 s) after a job that physically finished in
+~3 s, so `/printer/status` (which maps a held lock → `PRINTING`) pins the **Connection** badge at
+`Printing` for ~10 s, and a back-to-back print queues behind the lock for the same window. Verified
+live 2026-07-09: SNMP `hrPrinterStatus` returns to `idle(3)` in ~3 s, long before the lock releases.
+
+So the readback is gated behind **`NETWORK_STATUS_READBACK`** (`network_status_readback`, default
+**false**). When off, `send()` returns `None` the instant the bytes are sent — the *same* verdict this
+NIC produces after 10 s, minus the wait — so the lock releases in <1 s and the badge tracks SNMP
+`hrPrinterStatus` directly. On this hardware the readback contributes no verdict anyway (SNMP is the
+status/fault channel; the pre-flight is the real fault gate), so nothing is lost. The `_read_status`
+code and its constants are retained: set `NETWORK_STATUS_READBACK=true` only for a *different* network
+printer confirmed to return ESC i S frames over `:9100`. **USB is unaffected** — it uses a separate
+path (`USBTransport`) and answers the readback reliably.
+
+### The QL flashes a transient `other(1)` + `"BUSY"` at end-of-print (not the latch)
+
+Also verified live 2026-07-09: as a normal print finishes, the QL emits **one** SNMP sample of
+`hrPrinterStatus=other(1)` with console `"BUSY"` and the error bitmask still `00`, before settling to
+`idle(3)`/`"READY"`. That signature is *identical* to the sticky media-mismatch latch's two-signal
+gate (`other(1)` + non-`READY` console) — so, left unhandled, a well-formed print made the Connection
+badge flash **Error** for one poll. The distinguishing property is **persistence**: the real latch
+shows `"ERROR"` and stays latched until a device reset; the transient shows a *working* console
+(`"BUSY"`) and clears in ~1 s. The fault gates (`_status_has_hard_fault` and the `/print` pre-flight)
+therefore exclude a small set of transient working console lines (`CONSOLE_TRANSIENT_BUSY`:
+`BUSY`/`PRINTING`/`RECEIVING`/`COOLING`/`FEEDING`) from the latch, and map `other(1)` + such a console
+to `PRINTING` instead — so the badge rides through the transition without an Error flash and a
+back-to-back print in that window is not falsely `409`ed, while a genuine `"ERROR"` latch still faults.
 
 **Verified live (2026-06-30, QL-810W): the post-send media fault is invisible to the error bitmask
 and latches until a manual reset.** Sending a die-cut template to the loaded continuous roll put the

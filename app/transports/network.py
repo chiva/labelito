@@ -56,7 +56,7 @@ class NetworkTransport:
         self._sock: socket.socket | None = None
 
     def send(self, data: bytes) -> PrinterStatus | None:
-        """Send the raster, then read back the printer's status packets and decode them.
+        """Send the raster, then (when enabled) read back the printer's status packets and decode them.
 
         Returns a :class:`PrinterStatus`. ``ok`` is False when the printer reported any error bit
         (no media, cover open, media mismatch, …) so the caller can fail the job instead of
@@ -66,12 +66,26 @@ class NetworkTransport:
         observed we return ``None`` — the bytes were sent but the printer's state is unknown, which
         the caller treats as "no error reported" (backward-compatible with the original
         fire-and-forget behaviour) rather than failing a job that very likely printed.
+
+        The ESC i S readback is trustworthy over USB but NOT over this hardware's :9100 TCP channel:
+        Brother's QL NIC accepts the connection yet never returns a status frame, so ``_read_status``
+        only ever burns ``STATUS_READ_DEADLINE`` and returns ``None`` — while holding ``_print_lock``,
+        which pins ``/printer/status`` at PRINTING for ~10s after the job is physically done. So the
+        readback is gated behind ``settings.network_status_readback`` (OFF by default): when off we
+        return ``None`` the instant the bytes are sent — the *same* verdict this NIC yields after 10s,
+        minus the wait. This mirrors :meth:`query_status`, which dropped its own :9100 read for the
+        same reason. Enable it only for a networked printer that genuinely returns ESC i S frames.
         """
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(self.TIMEOUT)
         try:
             sock.connect((self._host, self._port))
             sock.sendall(data)
+            if not settings.network_status_readback:
+                # This NIC never emits an ESC i S frame over :9100 (see config + query_status);
+                # draining would only burn STATUS_READ_DEADLINE and still return None. SNMP is the
+                # status/fault channel, and the print preflight is the real fault gate before send.
+                return None
             return self._read_status(sock)
         finally:
             sock.close()

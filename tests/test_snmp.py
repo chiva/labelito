@@ -209,6 +209,43 @@ def test_build_status_error_bit_set_populates_errors() -> None:
     )
 
 
+def test_latch_predicates_distinguish_latch_from_transient_and_ready() -> None:
+    """The shared latch/transient predicates (used by the /print preflight and the status badge)
+    must agree: only other(1)+a non-READY, non-transient console is the latch; other(1)+a working
+    console ("BUSY") is transient-busy; and neither fires for READY, a missing console, or a
+    non-other printer_status. Case/whitespace on the console is normalized."""
+    from app.transports.snmp import (
+        HR_PRINTER_STATUS_IDLE,
+        HR_PRINTER_STATUS_OTHER,
+        HR_PRINTER_STATUS_PRINTING,
+        is_latched_fault,
+        is_transient_busy_console,
+    )
+
+    # The real sticky latch: other(1) + "ERROR".
+    assert is_latched_fault(HR_PRINTER_STATUS_OTHER, "ERROR") is True
+    assert is_transient_busy_console(HR_PRINTER_STATUS_OTHER, "ERROR") is False
+
+    # The end-of-print transient: other(1) + "BUSY" (case/whitespace insensitive) — NOT a fault.
+    assert is_latched_fault(HR_PRINTER_STATUS_OTHER, " busy ") is False
+    assert is_transient_busy_console(HR_PRINTER_STATUS_OTHER, " busy ") is True
+
+    # READY, absent/blank console, and non-other statuses fire neither predicate. A blank buffer
+    # matters specifically: _as_str decodes a zero-length OCTET STRING to "" (not None), and an empty
+    # console is the ABSENCE of a fault signal — it must NOT read as the sticky latch.
+    for ps, console in (
+        (HR_PRINTER_STATUS_OTHER, "READY"),
+        (HR_PRINTER_STATUS_OTHER, None),
+        (HR_PRINTER_STATUS_OTHER, ""),
+        (HR_PRINTER_STATUS_OTHER, "   "),
+        (HR_PRINTER_STATUS_PRINTING, "PRINTING"),
+        (HR_PRINTER_STATUS_IDLE, "READY"),
+        (None, "ERROR"),
+    ):
+        assert is_latched_fault(ps, console) is False, (ps, console)
+        assert is_transient_busy_console(ps, console) is False, (ps, console)
+
+
 def test_build_status_ready_console_not_treated_as_error() -> None:
     """A 'READY' console (any case/whitespace) is the happy path and must not add an error."""
     values: dict[str, object] = {

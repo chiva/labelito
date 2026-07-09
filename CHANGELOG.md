@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/chiva/labelito/compare/v0.7.0...v0.8.0) (2026-07-09)
+
+
+### Features
+
+* **ui:** dashed border for example templates + README hero & badges ([#50](https://github.com/chiva/labelito/issues/50)) ([7d55bd8](https://github.com/chiva/labelito/commit/7d55bd8121a6c1bfbe5563be3ed95fd18bf714d9))
+
+
+### Bug Fixes
+
+* **status:** converge Connection badge and stop end-of-print Error flash ([#52](https://github.com/chiva/labelito/issues/52)) ([ae0a477](https://github.com/chiva/labelito/commit/ae0a477693d49c9fabed18271545d56726a2eae8))
+
 ## [0.7.0](https://github.com/chiva/labelito/compare/v0.6.0...v0.7.0) (2026-07-09)
 
 

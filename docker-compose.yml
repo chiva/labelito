@@ -36,6 +36,10 @@ services:
       # `restart: unless-stopped` would otherwise drop duplicate protection on every restart.
       # Set `disabled` to turn off reprint + dedup entirely. See docs/known-limitations.md.
       HISTORY_MODE: file  # durable SQLite at /app/data/history.db
+      # Update check: OFF in the code default (no unsolicited egress from a bare install); enabled
+      # here because Docker Compose is the primary, network-connected deployment. The About modal
+      # then flags a newer release (GitHub release API, cached ~6h). Set "false" for air-gapped hosts.
+      UPDATE_CHECK_ENABLED: "true"
       # HISTORY_KEEP_ENTRIES: "1000"      # rows kept after a prune
       # HISTORY_PRUNE_AT_ENTRIES: "1500"  # prune triggers once the table exceeds this
       # HISTORY_UI: "false"  # hide the /history browse page + list/delete (reprint-by-id still works)

@@ -403,7 +403,8 @@ APP_LICENSE = "GPL-3.0-or-later"
 
 # ── Update check ─────────────────────────────────────────────────────────────────
 # Server-side "is there a newer release?" lookup for the About modal + nav update dot. Gated by
-# settings.update_check_enabled (opt-out). The result is cached process-wide for _UPDATE_CHECK_TTL so
+# settings.update_check_enabled (opt-in; off by default, on in docker-compose). The result is cached
+# process-wide for _UPDATE_CHECK_TTL so
 # many browser opens across the three page shells collapse to at most one GitHub call per interval,
 # and the whole path fails soft — any network/parse error caches a None latest rather than erroring the
 # endpoint. Uses stdlib urllib (no new dependency) inside a threadpool-run sync route so the blocking

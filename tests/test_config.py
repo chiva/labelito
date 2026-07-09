@@ -257,6 +257,15 @@ def test_web_auth_realm_override() -> None:
     assert s.web_auth_realm == "my-printer"
 
 
+def test_web_auth_non_ascii_rejected() -> None:
+    """HTTP Basic can't reliably carry non-ASCII creds — reject at load rather than silently never
+    authenticate (and avoid the compare_digest TypeError trap at runtime)."""
+    with pytest.raises(ValidationError, match="ASCII"):
+        Settings(web_auth_user="me", web_auth_password="päss")
+    with pytest.raises(ValidationError, match="ASCII"):
+        Settings(web_auth_user="usér", web_auth_password="pw")
+
+
 # ── Env-file compatibility across releases ─────────────────────────────────────────
 def test_stale_env_file_keys_are_ignored(tmp_path: Path) -> None:
     """A leftover key from an older release (e.g. the removed LABEL_SIZE) in a user's .env

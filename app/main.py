@@ -932,22 +932,31 @@ def _require_auth_or_optout() -> None:
 
 
 def _bearer_ok(creds: HTTPAuthorizationCredentials | None) -> bool:
-    """True when a bearer credential matches API_TOKEN (constant-time compare)."""
+    """True when a bearer credential matches API_TOKEN (constant-time compare).
+
+    Compares UTF-8 bytes, not str: ``secrets.compare_digest`` raises TypeError on a non-ASCII str,
+    which would turn a non-ASCII API_TOKEN into a 500 instead of a clean 401.
+    """
     if not settings.api_token or creds is None or creds.scheme.lower() != "bearer":
         return False
-    return secrets.compare_digest(creds.credentials, settings.api_token)
+    return secrets.compare_digest(creds.credentials.encode(), settings.api_token.encode())
 
 
 def _basic_ok(creds: HTTPBasicCredentials | None) -> bool:
-    """True when Basic credentials match WEB_AUTH_USER/PASSWORD (constant-time compare).
+    """True when Basic credentials match WEB_AUTH_USER/PASSWORD (constant-time byte compare).
 
     Both comparisons always run (no short-circuit) so a mismatched username cannot be told from a
-    mismatched password by response timing.
+    mismatched password by response timing. Bytes, not str, for the same non-ASCII reason as
+    ``_bearer_ok`` (WEB_AUTH_* is validated ASCII at settings load, but stay crash-proof regardless).
     """
     if not settings.basic_auth_enabled or creds is None:
         return False
-    user_ok = secrets.compare_digest(creds.username, settings.web_auth_user or "")
-    pass_ok = secrets.compare_digest(creds.password, settings.web_auth_password or "")
+    user_ok = secrets.compare_digest(
+        creds.username.encode(), (settings.web_auth_user or "").encode()
+    )
+    pass_ok = secrets.compare_digest(
+        creds.password.encode(), (settings.web_auth_password or "").encode()
+    )
     return user_ok and pass_ok
 
 
@@ -2330,6 +2339,11 @@ def _web_ctx(page: str, request: Request) -> dict[str, Any]:
         # bearer mode: with HTTP Basic auth the browser sends credentials automatically, and in
         # unauthenticated mode there is nothing to enter — both hide the token UI entirely.
         "browser_token_entry": bool(settings.api_token) and not settings.basic_auth_enabled,
+        # Under HTTP Basic auth the browser attaches its credentials to every same-origin fetch
+        # itself. The JS layer must then NOT inject a stored bearer token: an explicit Authorization
+        # header overrides the browser's Basic credential, so a stale localStorage token left over
+        # from a previous bearer deployment would 401 every request with no UI to clear it.
+        "basic_auth": settings.basic_auth_enabled,
     }
 
 

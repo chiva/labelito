@@ -85,6 +85,11 @@ class Settings(BaseSettings):
                 "WEB_AUTH_USER / WEB_AUTH_PASSWORD are set but empty/blank. Provide real "
                 "credentials, or unset both to disable HTTP Basic auth."
             )
+        if not user.isascii() or not password.isascii():
+            raise ValueError(
+                "WEB_AUTH_USER / WEB_AUTH_PASSWORD must be ASCII — HTTP Basic auth cannot reliably "
+                "transport non-ASCII credentials across browsers."
+            )
         return self
 
     @property

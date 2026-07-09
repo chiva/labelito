@@ -25,6 +25,9 @@ const TOKEN_KEY = 'labelito_api_token';
 
 function authHeaders() {
   const headers = { 'Content-Type': 'application/json' };
+  // Under HTTP Basic auth the browser attaches its own credential; injecting a bearer header here
+  // would override it, so a stale token from a prior bearer deployment would 401 every request.
+  if (window.LABELITO_BASIC_AUTH) return headers;
   const token = (localStorage.getItem(TOKEN_KEY) || '').trim();
   if (token) headers['Authorization'] = 'Bearer ' + token;
   return headers;

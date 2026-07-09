@@ -796,6 +796,36 @@ def test_pages_public_in_bearer_mode(client: TestClient, monkeypatch) -> None:
     assert client.get("/").status_code == 200
 
 
+def test_basic_mode_page_signals_browser_to_skip_bearer(client: TestClient, monkeypatch) -> None:
+    """window.LABELITO_BASIC_AUTH gates the JS bearer injection: without it a stale localStorage
+    token would override the browser's Basic credential and 401 every request. Bearer mode must
+    leave it false so the token IS sent."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "tok")
+    bearer_page = client.get("/").text
+    assert "window.LABELITO_BASIC_AUTH = false" in bearer_page
+
+    _enable_basic(main_mod, monkeypatch)
+    basic_page = client.get("/", headers=_basic_header("me", "pw")).text
+    assert "window.LABELITO_BASIC_AUTH = true" in basic_page
+
+
+def test_non_ascii_api_token_mismatch_is_401_not_500(client: TestClient, monkeypatch) -> None:
+    """A non-ASCII API_TOKEN with an ordinary (ASCII) wrong bearer must yield a clean 401, not a
+    compare_digest TypeError → 500. The byte-based compare removes that crash trap. (A non-ASCII
+    bearer can't be sent over HTTP at all — headers are ASCII — so only the mismatch path matters.)"""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "tökèn")
+    resp = client.post(
+        "/preview",
+        json={"template": "simple", "fields": {"title": "x"}},
+        headers={"Authorization": "Bearer nope"},
+    )
+    assert resp.status_code == 401
+
+
 @pytest.mark.asyncio
 async def test_startup_rejects_invalid_network_uri(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

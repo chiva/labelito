@@ -826,9 +826,16 @@ function initCopyConfig() {
     }, 1500);
   };
   btn.addEventListener('click', async () => {
+    // /diagnostics is credential-gated (like GET /templates) — send authHeaders() so bearer callers
+    // attach their token; under Basic auth the browser attaches its own credential automatically.
     let data;
     try {
-      const res = await fetch(api('/diagnostics'), {headers: {Accept: 'application/json'}});
+      const res = await fetch(api('/diagnostics'), {headers: {...authHeaders(), Accept: 'application/json'}});
+      if (res.status === 401) {
+        flash('API token required');
+        syncTokenIndicator(); // nudge toward the key icon rather than a toast hidden behind the modal
+        return;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       data = await res.json();
     } catch (e) {

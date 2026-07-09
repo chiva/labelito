@@ -1783,14 +1783,26 @@ def _auth_mode() -> str:
     return "unauthenticated"
 
 
-@app.get("/diagnostics", response_model=DiagnosticsResponse, tags=["System"])
+@app.get(
+    "/diagnostics",
+    response_model=DiagnosticsResponse,
+    tags=["System"],
+    # check_token (mirrors GET /templates): the snapshot carries deployment reconnaissance — auth
+    # mode, feature toggles, proxy header name, platform, printer config — so require a credential in
+    # BOTH bearer and Basic modes rather than leaking it past a configured login wall. No-op in
+    # unauthenticated mode (nothing to protect). The browser Copy-config fetch sends authHeaders();
+    # under Basic auth the browser attaches its credential automatically.
+    dependencies=[Depends(check_token)],
+    responses={**RESPONSE_401},
+)
 def diagnostics() -> DiagnosticsResponse:
     """Redacted config snapshot for the About modal's "Copy config" button.
 
-    Public and unauthenticated like /health — the About modal lives on the public page shells. Every
-    credential is excluded from DiagnosticsResponse (see its docstring), so this exposes nothing
-    beyond what /health already does; it just adds the misconfiguration-prone toggles that make an
-    issue report actionable (SNMP, history/editor/metrics, auth mode, render defaults).
+    Gated by check_token: credentials excluded from DiagnosticsResponse are never serialized (see its
+    docstring), but the surface still gives useful reconnaissance against a protected deployment, so
+    it must not be readable without the same credential the rest of the protected API requires. In
+    unauthenticated mode check_token allows through and the endpoint is effectively public, matching
+    the deployment's own chosen posture.
     """
     return DiagnosticsResponse(
         version=APP_VERSION,

@@ -147,22 +147,25 @@ def test_diagnostics_reports_config(client: TestClient) -> None:
 def test_diagnostics_redacts_all_secrets(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No credential may ever appear in the snapshot — it is meant to be pasted into a public issue."""
+    """No credential may ever appear in the snapshot — it is meant to be pasted into an issue."""
     import app.main as main_mod
 
+    token = "SECRET-TOKEN-abc123"
     secrets = {
-        "api_token": "SECRET-TOKEN-abc123",
+        "api_token": token,
         "web_auth_user": "SECRET-USER-xyz",
         "web_auth_password": "SECRET-PASS-789",
         "snmp_community": "SECRET-COMMUNITY-qwe",
     }
     for attr, value in secrets.items():
         monkeypatch.setattr(main_mod.settings, attr, value)
-    body = client.get("/diagnostics").text
+    # The endpoint is credential-gated once auth is configured — authenticate with the bearer token.
+    auth = {"Authorization": f"Bearer {token}"}
+    body = client.get("/diagnostics", headers=auth).text
     for value in secrets.values():
         assert value not in body, f"secret leaked into diagnostics: {value}"
     # The keys themselves must not be serialized either.
-    data = client.get("/diagnostics").json()
+    data = client.get("/diagnostics", headers=auth).json()
     for attr in secrets:
         assert attr not in data
 
@@ -176,32 +179,33 @@ def test_diagnostics_redacts_all_secrets(
         ("tok", True, "basic+bearer"),
     ],
 )
-def test_diagnostics_auth_mode(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-    api_token: str | None,
-    basic: bool,
-    expected: str,
+def test_auth_mode(
+    monkeypatch: pytest.MonkeyPatch, api_token: str | None, basic: bool, expected: str
 ) -> None:
     """auth_mode collapses the (token, basic) combination without revealing the credential."""
     import app.main as main_mod
 
     monkeypatch.setattr(main_mod.settings, "api_token", api_token)
-    if basic:
-        monkeypatch.setattr(main_mod.settings, "web_auth_user", "u")
-        monkeypatch.setattr(main_mod.settings, "web_auth_password", "p")
-    else:
-        monkeypatch.setattr(main_mod.settings, "web_auth_user", None)
-        monkeypatch.setattr(main_mod.settings, "web_auth_password", None)
-    assert client.get("/diagnostics").json()["auth_mode"] == expected
+    monkeypatch.setattr(main_mod.settings, "web_auth_user", "u" if basic else None)
+    monkeypatch.setattr(main_mod.settings, "web_auth_password", "p" if basic else None)
+    assert main_mod._auth_mode() == expected
 
 
-def test_diagnostics_needs_no_token(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Public like /health — the About modal is on the public shells, so it must not 401."""
+def test_diagnostics_public_when_unauthenticated(client: TestClient) -> None:
+    """In unauthenticated mode (the default test client) the gate is a no-op — no token needed."""
+    assert client.get("/diagnostics").status_code == 200
+
+
+def test_diagnostics_requires_credential_when_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once a token is configured, the reconnaissance surface must not be readable without it."""
     import app.main as main_mod
 
     monkeypatch.setattr(main_mod.settings, "api_token", "secret-token")
-    assert client.get("/diagnostics").status_code == 200
+    assert client.get("/diagnostics").status_code == 401
+    ok = client.get("/diagnostics", headers={"Authorization": "Bearer secret-token"})
+    assert ok.status_code == 200
 
 
 # ── Kubernetes probes (/livez, /readyz) ──────────────────────────────────────────────────────────

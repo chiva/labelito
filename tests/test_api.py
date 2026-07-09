@@ -62,6 +62,29 @@ def test_is_newer(latest: str | None, current: str, expected: bool) -> None:
     assert main_mod._is_newer(latest, current) is expected
 
 
+def test_latest_release_cached_never_blocks_on_inflight_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller arriving while another holds the refresh lock returns cached data without fetching."""
+    import app.main as main_mod
+
+    main_mod._update_cache.clear()
+    called: list[int] = []
+    monkeypatch.setattr(
+        main_mod, "_fetch_latest_release", lambda slug: called.append(1) or ("v9.9.9", None)
+    )
+    # Simulate an in-flight refresh by holding the lock; the concurrent caller must not block on it
+    # nor perform the blocking GitHub fetch — it returns the (empty) cache immediately.
+    assert main_mod._update_lock.acquire(blocking=False)
+    try:
+        latest, release_url = main_mod._latest_release_cached()
+    finally:
+        main_mod._update_lock.release()
+    assert (latest, release_url) == (None, None)
+    assert called == [], "must not fetch while another caller holds the refresh lock"
+    main_mod._update_cache.clear()
+
+
 def test_update_check_disabled_makes_no_request(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

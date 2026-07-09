@@ -497,25 +497,40 @@ def _fetch_latest_release(slug: str) -> tuple[str | None, str | None]:
     return (tag if isinstance(tag, str) else None, html_url if isinstance(html_url, str) else None)
 
 
-def _latest_release_cached() -> tuple[str | None, str | None]:
-    """Return the cached ``(latest_tag, release_url)``, refreshing when the TTL has elapsed.
+def _cached_release() -> tuple[str | None, str | None]:
+    """The current cached ``(latest_tag, release_url)`` without touching the network."""
+    return _update_cache.get("latest"), _update_cache.get("release_url")  # type: ignore[return-value]
 
-    A single lock serializes the refresh so concurrent modal opens make at most one GitHub call per
-    interval; a stale-but-present entry is still returned if the slug is missing (never happens under
-    the endpoint's own guard, but keeps the helper total)."""
+
+def _latest_release_cached() -> tuple[str | None, str | None]:
+    """Return the cached ``(latest_tag, release_url)``, refreshing at most once per TTL.
+
+    Non-blocking single-flight: on a stale/cold cache exactly ONE caller performs the blocking GitHub
+    fetch (it holds ``_update_lock``); concurrent callers to the public /update-check take the current
+    cached value and return immediately rather than queuing behind the network I/O. This bounds the
+    sync-threadpool workers a slow/offline GitHub lookup can occupy to one, so it can never starve the
+    print/status paths. The update dot is non-critical, so serving a slightly stale/unknown value to
+    the losers of the race is fine. A refresh latches the TTL even on failure so an offline server does
+    not re-fetch on every request."""
     slug = _github_repo_slug()
     if slug is None:
         return None, None
     now = time.monotonic()
-    with _update_lock:
-        fetched = _update_cache.get("fetched_monotonic")
-        if isinstance(fetched, float) and (now - fetched) < _UPDATE_CHECK_TTL:
-            return _update_cache.get("latest"), _update_cache.get("release_url")  # type: ignore[return-value]
+    fetched = _update_cache.get("fetched_monotonic")
+    if isinstance(fetched, float) and (now - fetched) < _UPDATE_CHECK_TTL:
+        return _cached_release()
+    # Stale or cold: try to become the single refresher. If another caller already holds the lock,
+    # don't block on it — return whatever is cached right now (possibly stale/None).
+    if not _update_lock.acquire(blocking=False):
+        return _cached_release()
+    try:
         latest, release_url = _fetch_latest_release(slug)
         _update_cache["fetched_monotonic"] = now
         _update_cache["latest"] = latest
         _update_cache["release_url"] = release_url
         return latest, release_url
+    finally:
+        _update_lock.release()
 
 
 @asynccontextmanager

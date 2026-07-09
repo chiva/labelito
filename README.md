@@ -5,6 +5,12 @@
 <h1 align="center">labelito</h1>
 
 <p align="center">
+  <a href="https://github.com/chiva/labelito/actions/workflows/ci.yml"><img src="https://github.com/chiva/labelito/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/chiva/labelito/releases"><img src="https://img.shields.io/github/v/release/chiva/labelito" alt="Latest release"></a>
+  <a href="https://github.com/chiva/labelito/pkgs/container/labelito"><img src="https://img.shields.io/badge/ghcr.io-chiva%2Flabelito-24292e?logo=docker&logoColor=white" alt="GHCR image"></a>
+</p>
+
+<p align="center">
   <i>labelito</i> · pronounced <b>lah-beh-LEE-toh</b> (Spanish) · IPA <code>/la.be&#712;li.to/</code><br>
   <sub>a Spanish-style diminutive of “label” — “little label”</sub>
 </p>
@@ -39,6 +45,10 @@ curl -X POST http://localhost:8765/print \
 - **YAML templates** — drop a `.yaml` into `templates/`, hot-reload with `POST /reload`. No rebuild.
 - **Auto-dated labels** — `{{date}}` / `{{date+6m}}` resolve at print time, so food-storage labels stamp themselves.
 - **Knows what's loaded** — on network (SNMP) and USB printers it reads the loaded roll and **refuses a wrong-media print** instead of silently failing. [Details ↓](#printer-status--safety)
+
+<p align="center">
+  <img src="docs/screenshots/print-dark.png" alt="labelito Print page — template picker, live label preview, and live printer/media status" width="820">
+</p>
 
 ## Quick start (Docker Compose)
 

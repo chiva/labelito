@@ -48,9 +48,12 @@ services:
       #   comment the line below and set WEB_AUTH_USER/WEB_AUTH_PASSWORD for a browser login wall
       #     (HTTP Basic — protects the whole UI without a reverse proxy), OR
       #   comment the line below and uncomment ALLOW_UNAUTHENTICATED for trusted-intranet open mode.
+      # Over plain HTTP both credentials travel in the clear — the bearer API_TOKEN (Authorization
+      # header) and the Basic WEB_AUTH_* pair alike — so front with TLS or a reverse proxy off a
+      # trusted LAN. ALLOW_UNAUTHENTICATED sends no credential, so this caveat doesn't apply to it.
       # `${VAR:?msg}` makes `docker compose up` fail fast if API_TOKEN is unset or empty.
       API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set WEB_AUTH_USER/PASSWORD or ALLOW_UNAUTHENTICATED=true}
-      # WEB_AUTH_USER: me            # optional HTTP Basic auth (set both; creds sniffable over plain HTTP)
+      # WEB_AUTH_USER: me            # optional HTTP Basic auth (set both)
       # WEB_AUTH_PASSWORD: ${WEB_AUTH_PASSWORD:-}
       # ALLOW_UNAUTHENTICATED: "true"  # run open (trusted intranet / behind an auth proxy only)
     # /readyz is dependency-aware (templates, transport, history store; 503 when not serving) and

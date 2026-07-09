@@ -292,7 +292,7 @@
     const EDITOR_ENABLED = {{ editor_enabled | tojson }};
     // Whether GET /templates/{name}/source is served. The pencil deep-links into /editor?load=<name>,
     // which fetches that route to preload the YAML — so with loading disabled the link would land on a
-    // 404. Gate the pencil (and its legend hint) on EDITOR_ENABLED && TEMPLATES_LOADABLE.
+    // 404. Gate the pencil on EDITOR_ENABLED && TEMPLATES_LOADABLE.
     const TEMPLATES_LOADABLE = {{ templates_loadable | tojson }};
     // Latest /printer/status body, used to compare the loaded roll against each template's required
     // media. Null until the first status arrives (or when the status query fails) → compat unknown.
@@ -475,7 +475,7 @@
     //    Refreshed on load, on demand via the ↻ button, after each print, and by a visible-tab
     //    background poll (see createStatusPoller). Polling lives in the browser by design — the server
     //    intentionally stays stateless per request and avoids a keep-alive task.
-    const STATE_LABELS = {off: 'Off', idle: 'Idle', printing: 'Printing…', error: 'Error'};
+    const STATE_LABELS = {off: 'Off', idle: 'Idle', printing: 'Printing', error: 'Error'};
     const STATE_CLASS = {off: 'state-off', idle: 'state-idle', printing: 'state-printing', error: 'state-error'};
 
     function setStateBadge(state, label) {
@@ -671,7 +671,7 @@
       // In-flight guard: the poll, the ↻ button, and the post-print refresh all funnel through here.
       // A query opens a real socket to the printer, so overlapping calls are wasteful — let the first
       // win. But don't silently DROP a later request (e.g. the post-print reconcile that must clear an
-      // optimistic "Printing…" badge): mark it pending and run exactly one follow-up when this finishes.
+      // optimistic "Printing" badge): mark it pending and run exactly one follow-up when this finishes.
       if (statusInFlight) { statusRefreshPending = true; return; }
       statusInFlight = true;
       try {
@@ -1105,7 +1105,6 @@
       if (!anyExample) { el.style.display = 'none'; return; }
       el.style.display = '';
       el.append('Dashed = bundled example');
-      if (EDITOR_ENABLED && TEMPLATES_LOADABLE) el.append(' — use the pencil to edit any template in the studio.');
     }
 
     // The "Show all sizes" / "Show only matching size" toggle + hidden-count hint in the Template
@@ -1519,8 +1518,8 @@
       const printRevision = formRevision;
       // Optimistic feedback: a print is sub-second and may finish between polls, so reflect the
       // printing state the instant the job is sent. No explicit label — STATE_LABELS.printing is the
-      // single source of truth ("Printing…"), so the optimistic badge and every poll-driven re-render
-      // show identical text (no "Printing…"→"Printing" flicker). The post-print refresh and background
+      // single source of truth ("Printing"), so the optimistic badge and every poll-driven re-render
+      // show identical text (no flicker between differing labels). The post-print refresh and background
       // poll converge the badge back to the printer's real state; failure paths below reconcile it.
       setStateBadge('printing');
       // Latch the in-flight guard for the whole request lifetime — disables the Print button so a
@@ -1541,7 +1540,7 @@
           if (handleAuthError(res)) { refreshPrinterStatus(); return; }
           const err = await res.json().catch(() => ({detail: res.statusText}));
           showStatus(formatError(res.status, err.detail), 'err');
-          refreshPrinterStatus();  // e.g. a 409 fault — show the real state, not a stuck "Printing…"
+          refreshPrinterStatus();  // e.g. a 409 fault — show the real state, not a stuck "Printing"
           return;
         }
         const json = await res.json();

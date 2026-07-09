@@ -286,17 +286,31 @@
   outline-offset: 1px;
 }
 
-/* Bundled examples are visually de-emphasized so the user's own templates stand out. Restored to
-   full strength on hover / focus / selection so interacting with one is never muddy. */
+/* Bundled examples carry a categorical dashed border (reusing the empty-picker "dashed = not your
+   content yet" idiom) so they read as samples even when the whole picker is examples — a fresh
+   install. The opacity de-emphasis is a RELATIVE signal: it only conveys "these are the bundled
+   ones, yours stand out" when the user's own solid-bordered templates sit alongside, so it is gated
+   to `#template-groups.mixed` (set in JS only when both kinds are present). Full strength is restored
+   on hover / focus / selection so interacting with one is never muddy. */
 .tpl-card-example {
-  opacity: 0.68;
+  border-style: dashed;
   background: var(--panel);
 }
 
-.tpl-card-example:hover,
-.tpl-card-example:focus-within,
+#template-groups.mixed .tpl-card-example {
+  opacity: 0.68;
+}
+
+#template-groups.mixed .tpl-card-example:hover,
+#template-groups.mixed .tpl-card-example:focus-within,
 .tpl-card-example.selected {
   opacity: 1;
+}
+
+/* A selected example switches to the solid blue selection border like any other card — a dashed
+   selected card reads as muddy. */
+.tpl-card-example.selected {
+  border-style: solid;
 }
 
 /* One-line key shown above the picker only when a bundled example is visible. */

@@ -488,8 +488,8 @@ class HealthResponse(BaseModel):
     api_version: int  # HTTP API compatibility contract; bumped only on breaking changes
     driver: str
     model: str
-    transport: str
-    uri: str
+    transport: str  # kind only (network/usb/file) — the printer URI is intentionally NOT exposed on
+    # this unauthenticated probe; it lives on the token-protected /printer/status and /diagnostics
     template_count: int
     default_language: str
     languages: list[str]

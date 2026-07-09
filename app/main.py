@@ -392,7 +392,10 @@ def _project_url(label: str, default: str) -> str:
 # the number. Independent of the package version, which release-please bumps every release.
 # v2: dropped the `firmware` field from PrinterStatusResponse (/printer/status) — a breaking
 # field removal, so the contract number moves per the rule above.
-API_VERSION = 2
+# v3: dropped the `uri` field from /health — the printer address is internal topology that does not
+# belong on the unauthenticated health probe (it now lives only on the token-protected
+# /printer/status and the auth-gated /diagnostics). Another breaking field removal → bump.
+API_VERSION = 3
 
 # Project identity surfaced in the web UI's About modal. The repo URL is single-sourced from
 # pyproject.toml's [project.urls] Homepage (via dist metadata) so the modal can't drift from it; the
@@ -1750,9 +1753,9 @@ def health() -> HealthResponse:
         driver=settings.driver,
         model=settings.model,
         transport=infer_transport(settings.printer_uri),
-        # Sanitized: /health is unauthenticated, so never expose userinfo credentials a
-        # tcp://user:pass@host URI could carry. Normal host:port URIs are returned unchanged.
-        uri=_sanitize_printer_uri(settings.printer_uri),
+        # Deliberately NO printer URI here: /health is unauthenticated, and the address is internal
+        # topology (and could carry userinfo creds). It lives on the token-protected /printer/status
+        # and the auth-gated /diagnostics instead. `transport` gives probes the kind without the host.
         template_count=len(registry),
         default_language=settings.default_language,
         languages=translator.available(),

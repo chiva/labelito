@@ -35,7 +35,9 @@ def test_health_reports_version_contract(client: TestClient) -> None:
 
     data = client.get("/health").json()
     assert data["version"] == importlib.metadata.version("labelito")
-    assert data["api_version"] == 2
+    assert data["api_version"] == 3
+    # The printer URI is internal topology and must NOT appear on the unauthenticated health probe.
+    assert "uri" not in data
 
     # The OpenAPI document must report the same release, not a stale hardcode.
     openapi = client.get("/openapi.json").json()
@@ -233,14 +235,18 @@ def test_sanitize_printer_uri(uri: str, expected: str) -> None:
     assert main_mod._sanitize_printer_uri(uri) == expected
 
 
-def test_health_strips_uri_credentials(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """/health is unauthenticated, so a tcp://user:pass@host URI must not leak its userinfo."""
+def test_health_omits_printer_uri(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """/health is unauthenticated and must not expose the printer address at all — not even a
+    sanitized one — so a cred-bearing URI can never leak (no `uri` field; creds absent from body)."""
     import app.main as main_mod
 
     monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://admin:s3cret@printer.local:9100")
     resp = client.get("/health")
-    assert resp.json()["uri"] == "tcp://printer.local:9100"
-    assert "s3cret" not in resp.text
+    data = resp.json()
+    assert "uri" not in data
+    assert "printer.local" not in resp.text and "s3cret" not in resp.text
+    # transport (the benign kind) is still reported for probes.
+    assert data["transport"] == "network"
 
 
 def test_diagnostics_strips_uri_credentials(

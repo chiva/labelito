@@ -187,6 +187,13 @@ class Settings(BaseSettings):
     # proceed), so a tight bound trades a slow printer's status for not stalling the request.
     snmp_timeout: float = Field(default=2.0, gt=0, le=60, allow_inf_nan=False)
 
+    # Update check. When true (default), the About modal reports whether a newer release exists by
+    # querying GitHub's release API server-side (cached ~6h, see _UPDATE_CHECK_TTL in app.main); the
+    # nav info icon shows a small dot when an update is available. This is the one outbound call the
+    # service makes on its own — set UPDATE_CHECK_ENABLED=false for air-gapped/privacy deployments to
+    # stop all GitHub egress (the /update-check endpoint then reports enabled=false and never fetches).
+    update_check_enabled: bool = True
+
     # Reverse-proxy / Home Assistant ingress support. When set (e.g. PROXY_PATH_HEADER=X-Ingress-Path),
     # each request's value of that header becomes the ASGI root_path: generated URLs — page links,
     # static assets, /docs, the OpenAPI servers entry — are prefixed with it, while route matching is

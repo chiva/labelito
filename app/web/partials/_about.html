@@ -3,42 +3,73 @@
   (opened with showModal()) so Esc-to-close and the modal backdrop come for free — mirrors the
   #confirm-dialog pattern in editor.html.
 
+  Rows are grouped by proximity into three labeled sections — Printer (this runtime), Build (the
+  software), Project (links) — rather than interleaving unrelated facts.
+
   Static rows (version/API/repo/license) come from _web_ctx (app/main.py): app_version,
   api_version, repo_url, app_license — rendered server-side so the modal opens fully populated.
   The runtime rows (#about-model / #about-transport / #about-templates) are filled by the JS
   layer from GET /health when the modal first opens; they degrade to "unavailable" on failure.
+  #about-update is filled by initUpdateCheck() from GET /update-check (empty otherwise).
 #}
 {% from "partials/_icons.html" import icon %}
 <dialog id="about-dialog" class="about-dialog" aria-labelledby="about-title">
-  <div class="about-head">
+  <button class="btn-icon about-close" type="button" id="about-close" title="Close" aria-label="Close">{{ icon("xmark") }}</button>
+  <div class="about-brand">
+    <img class="about-logo" src="{{ base_path | default('') }}/favicon.svg" width="64" height="51" alt="" />
     <span class="about-title" id="about-title">About labelito</span>
-    <button class="btn-icon" type="button" id="about-close" title="Close" aria-label="Close">{{ icon("xmark") }}</button>
+    <p class="about-tagline">Self-hosted label printing for Brother QL printers.</p>
   </div>
-  <p class="about-tagline">Self-hosted label printing for Brother QL printers.</p>
-  <dl class="about-list">
-    <div class="about-row">
-      <dt>Version</dt>
-      <dd>{{ app_version }} <span class="muted">(API v{{ api_version }})</span></dd>
-    </div>
-    <div class="about-row">
-      <dt>Model</dt>
-      <dd id="about-model" class="muted">…</dd>
-    </div>
-    <div class="about-row">
-      <dt>Transport</dt>
-      <dd id="about-transport" class="muted">…</dd>
-    </div>
-    <div class="about-row">
-      <dt>Templates</dt>
-      <dd id="about-templates" class="muted">…</dd>
-    </div>
-    <div class="about-row">
-      <dt>Repo</dt>
-      <dd><a href="{{ repo_url }}" target="_blank" rel="noopener noreferrer">{{ repo_url | replace("https://", "") }}</a></dd>
-    </div>
-    <div class="about-row">
-      <dt>License</dt>
-      <dd>{{ app_license }}</dd>
-    </div>
-  </dl>
+
+  <section class="about-group">
+    <h3 class="about-group-label">Printer</h3>
+    <dl class="about-list">
+      <div class="about-row">
+        <dt>Model</dt>
+        <dd id="about-model" class="muted">…</dd>
+      </div>
+      <div class="about-row">
+        <dt>Transport</dt>
+        <dd id="about-transport" class="muted">…</dd>
+      </div>
+      <div class="about-row">
+        <dt>Templates</dt>
+        <dd id="about-templates" class="muted">…</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="about-group">
+    <h3 class="about-group-label">Build</h3>
+    <dl class="about-list">
+      <div class="about-row">
+        <dt>Version</dt>
+        <dd>{{ app_version }} <span class="muted">(API v{{ api_version }})</span><span id="about-update" class="about-update"></span></dd>
+      </div>
+      <div class="about-row">
+        <dt>License</dt>
+        <dd>{{ app_license }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="about-group">
+    <h3 class="about-group-label">Project</h3>
+    <dl class="about-list">
+      <div class="about-row">
+        <dt>Repo</dt>
+        <dd><a href="{{ repo_url }}" target="_blank" rel="noopener noreferrer">{{ repo_url | replace("https://", "") }}</a></dd>
+      </div>
+      <div class="about-row">
+        <dt>Issues</dt>
+        <dd><a href="{{ repo_url }}/issues" target="_blank" rel="noopener noreferrer">Report an issue</a></dd>
+      </div>
+    </dl>
+  </section>
+
+  {# Copies a redacted, credential-free config snapshot (GET /diagnostics) as plain text, to paste
+     into an issue. Inline button feedback — see initCopyConfig() in labelito.js. #}
+  <div class="about-actions">
+    <button class="btn" type="button" id="about-copy-config">Copy config</button>
+  </div>
 </dialog>

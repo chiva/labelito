@@ -675,6 +675,28 @@ input[type="radio"] {
   }
 }
 
+/* A newer release is available: a small STATIC dot on the info button (no pulse). Deliberately blue
+   (an informational, non-warning color) rather than amber/red — an update is a note, not a fault.
+   Toggled by initUpdateCheck() in labelito.js from GET /update-check. */
+.btn-icon.has-update {
+  position: relative;
+}
+.btn-icon.has-update::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--blue-light);
+  /* A ring in the panel color separates the dot from the icon glyph beneath it. */
+  box-shadow: 0 0 0 2px var(--panel);
+}
+[data-theme="light"] .btn-icon.has-update::after {
+  background: var(--blue-deep);
+}
+
 /* ── Inline SVG icons ───────────────────────────────────────────────────────── */
 
 .icon {
@@ -1121,8 +1143,19 @@ dialog::backdrop {
 
 .about-dialog {
   max-width: min(92vw, 420px);
+  /* Anchor the absolutely-positioned close button (the About header is a centered brand block, so
+     the button floats over the top-right rather than sitting in a flex row). */
+  position: relative;
 }
 
+/* The About dialog carries more (grouped rows + the diagnostics values), so it runs a touch wider
+   than the shared base — scoped by id so the token dialog keeps its narrower input-sized width. */
+#about-dialog {
+  max-width: min(94vw, 480px);
+}
+
+/* Shared header row for the token dialog (_token.html still uses .about-head). The About dialog
+   itself now uses the centered .about-brand block below. */
 .about-head {
   display: flex;
   align-items: center;
@@ -1141,6 +1174,69 @@ dialog::backdrop {
   color: var(--ink3);
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* Centered brand block: logo above the title + tagline, at the top of the About dialog. */
+.about-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  margin: 4px 0 18px;
+}
+
+.about-logo {
+  width: 64px;
+  height: auto;
+}
+
+.about-brand .about-tagline {
+  margin: 2px 0 0;
+  max-width: 30ch;
+}
+
+/* Close button floats top-right over the centered brand block. */
+.about-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+.about-group + .about-group {
+  margin-top: 14px;
+}
+
+.about-group-label {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+/* Update-availability note appended to the Version row, filled by initUpdateCheck(). */
+.about-update {
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.about-update a {
+  color: var(--blue-light);
+}
+
+[data-theme="light"] .about-update a {
+  color: var(--blue-deep);
+}
+
+/* Footer action row under the grouped sections (the Copy config button). */
+.about-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
 }
 
 .about-list {

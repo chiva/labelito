@@ -495,6 +495,64 @@ class HealthResponse(BaseModel):
     languages: list[str]
 
 
+class UpdateCheckResponse(BaseModel):
+    """Whether a newer release exists, for the About modal's version row and the nav update dot.
+
+    ``enabled`` mirrors settings.update_check_enabled: when false the server never queries GitHub and
+    the remaining fields are inert (``latest``/``release_url`` None, ``update_available`` false). When
+    enabled, ``latest`` is the newest release tag GitHub reports (None if the lookup failed — the check
+    fails soft rather than erroring), and ``update_available`` is true only when ``latest`` parses to a
+    strictly higher version than ``current`` (the installed package version).
+    """
+
+    enabled: bool
+    current: str  # installed package version (APP_VERSION); the 0.0.0+unknown sentinel never updates
+    latest: str | None  # newest release tag, or None when disabled / the lookup failed
+    update_available: bool
+    release_url: str | None  # link to the newer release, or None when none/unavailable
+
+
+class DiagnosticsResponse(BaseModel):
+    """Redacted config snapshot for the About modal's "Copy config" button (paste into an issue).
+
+    Deliberately excludes every credential — ``api_token``, ``web_auth_password``, ``web_auth_user``,
+    and ``snmp_community`` are never serialized — so the blob is safe to paste into a public issue.
+    It carries the values that most commonly cause misconfiguration reports: the printer address and
+    inferred transport, SNMP on/off, the auth mode (as an enum, never the secret), history/editor/
+    metrics toggles, the loaded-template count, and the render defaults. ``auth_mode`` collapses the
+    (api_token, basic_auth) combination to one of basic / bearer / basic+bearer / unauthenticated.
+    """
+
+    version: str
+    api_version: int
+    driver: str
+    model: str
+    printer_uri: str
+    transport: str
+    snmp_enabled: bool
+    snmp_port: int
+    history_mode: str
+    history_ui: bool
+    editor_enabled: bool
+    templates_writable: bool
+    templates_loadable: bool
+    template_count: int
+    load_examples: bool
+    default_language: str
+    languages: list[str]
+    metrics_enabled: bool
+    proxy_path_header: str | None  # header NAME only (e.g. X-Ingress-Path) — never a credential
+    auth_mode: str
+    default_dither: bool
+    default_threshold: float
+    default_high_res: bool
+    default_red: bool
+    min_length_px: int
+    max_length_px: int
+    python_version: str
+    platform: str
+
+
 class LivenessResponse(BaseModel):
     """Kubernetes liveness probe body — the process is up and serving. No dependencies."""
 

@@ -12,10 +12,15 @@ import io
 import json
 import logging
 import os
+import platform
 import re
 import secrets
 import sqlite3
 import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -64,6 +69,7 @@ from app.loader import (
 from app.media import LoadedMedia, MediaMatch, RequiredMedia, media_matches, required_media_for
 from app.models import (
     CapabilityResponse,
+    DiagnosticsResponse,
     DraftPreviewRequest,
     HealthResponse,
     HistoryPage,
@@ -83,6 +89,7 @@ from app.models import (
     TemplateParseRequest,
     TemplateParseResponse,
     TemplateSourceResponse,
+    UpdateCheckResponse,
 )
 from app.render.engine import (
     RenderEngine,
@@ -392,6 +399,123 @@ API_VERSION = 2
 # license mirrors the stable SPDX id. The fallback matches the canonical Homepage for source checkouts.
 REPO_URL = _project_url("Homepage", "https://github.com/chiva/labelito")
 APP_LICENSE = "GPL-3.0-or-later"
+
+
+# ── Update check ─────────────────────────────────────────────────────────────────
+# Server-side "is there a newer release?" lookup for the About modal + nav update dot. Gated by
+# settings.update_check_enabled (opt-out). The result is cached process-wide for _UPDATE_CHECK_TTL so
+# many browser opens across the three page shells collapse to at most one GitHub call per interval,
+# and the whole path fails soft — any network/parse error caches a None latest rather than erroring the
+# endpoint. Uses stdlib urllib (no new dependency) inside a threadpool-run sync route so the blocking
+# request never touches the event loop.
+_UPDATE_CHECK_TTL = 21600  # 6h — a home print service needs no tighter release-notice latency
+_UPDATE_CHECK_TIMEOUT = 3.0  # seconds; the About modal must not hang on a slow/blocked GitHub
+_update_lock = threading.Lock()
+# Cache entry: {"fetched_monotonic": float, "latest": str | None, "release_url": str | None}
+_update_cache: dict[str, float | str | None] = {}
+
+
+def _github_repo_slug() -> str | None:
+    """Return ``owner/repo`` from REPO_URL, or None when it is not a github.com URL.
+
+    The release lookup only speaks GitHub's API, so a self-hosted/GitLab Homepage (or the source-
+    checkout fallback pointing elsewhere) disables the check rather than querying the wrong host.
+    """
+    parsed = urlparse(REPO_URL)
+    if parsed.hostname not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[0], parts[1]
+    if repo.endswith(".git"):
+        repo = repo[: -len(".git")]
+    return f"{owner}/{repo}"
+
+
+def _parse_version(value: str | None) -> tuple[int, ...] | None:
+    """Parse a version string to a comparable tuple of ints, or None if it is not a real release.
+
+    Strips an optional leading ``v`` and drops any ``+build`` / ``-prerelease`` suffix, then keeps the
+    leading run of dot-separated numeric components (``1.4.0`` → ``(1, 4, 0)``). Returns None for the
+    ``0.0.0+unknown`` source-checkout sentinel (its numeric core is all zeros) and for anything without
+    a numeric core, so an unparseable value never spuriously reads as "an update is available".
+    """
+    if not value:
+        return None
+    core = value.strip().lstrip("vV").split("+", 1)[0].split("-", 1)[0]
+    parts: list[int] = []
+    for segment in core.split("."):
+        if not segment.isdigit():
+            break
+        parts.append(int(segment))
+    if not parts or all(p == 0 for p in parts):
+        return None
+    return tuple(parts)
+
+
+def _is_newer(latest: str | None, current: str | None) -> bool:
+    """True only when ``latest`` parses to a strictly higher version than ``current``.
+
+    Fails closed: if either side is unparseable (None from _parse_version) the answer is False, so a
+    missing/odd tag or the unknown-version sentinel never signals a phantom update.
+    """
+    latest_parsed = _parse_version(latest)
+    current_parsed = _parse_version(current)
+    if latest_parsed is None or current_parsed is None:
+        return False
+    return latest_parsed > current_parsed
+
+
+def _fetch_latest_release(slug: str) -> tuple[str | None, str | None]:
+    """Query GitHub for the latest (non-prerelease, non-draft) release of ``slug``.
+
+    Returns ``(tag_name, html_url)``, or ``(None, None)`` on any failure — a timeout, non-200, or
+    malformed body all degrade to "unknown latest" so the check fails soft. GitHub requires a
+    User-Agent header and returns the newest published, non-prerelease release for this endpoint.
+    """
+    url = f"https://api.github.com/repos/{slug}/releases/latest"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"labelito/{APP_VERSION}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_UPDATE_CHECK_TIMEOUT) as response:
+            if response.status != 200:
+                return None, None
+            payload = json.loads(response.read())
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        log.debug("update check: latest-release lookup failed for %s: %s", slug, exc)
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    tag = payload.get("tag_name")
+    html_url = payload.get("html_url")
+    return (tag if isinstance(tag, str) else None, html_url if isinstance(html_url, str) else None)
+
+
+def _latest_release_cached() -> tuple[str | None, str | None]:
+    """Return the cached ``(latest_tag, release_url)``, refreshing when the TTL has elapsed.
+
+    A single lock serializes the refresh so concurrent modal opens make at most one GitHub call per
+    interval; a stale-but-present entry is still returned if the slug is missing (never happens under
+    the endpoint's own guard, but keeps the helper total)."""
+    slug = _github_repo_slug()
+    if slug is None:
+        return None, None
+    now = time.monotonic()
+    with _update_lock:
+        fetched = _update_cache.get("fetched_monotonic")
+        if isinstance(fetched, float) and (now - fetched) < _UPDATE_CHECK_TTL:
+            return _update_cache.get("latest"), _update_cache.get("release_url")  # type: ignore[return-value]
+        latest, release_url = _fetch_latest_release(slug)
+        _update_cache["fetched_monotonic"] = now
+        _update_cache["latest"] = latest
+        _update_cache["release_url"] = release_url
+        return latest, release_url
 
 
 @asynccontextmanager
@@ -1614,6 +1738,89 @@ def health() -> HealthResponse:
         template_count=len(registry),
         default_language=settings.default_language,
         languages=translator.available(),
+    )
+
+
+@app.get("/update-check", response_model=UpdateCheckResponse, tags=["System"])
+def update_check() -> UpdateCheckResponse:
+    """Report whether a newer release exists (for the About modal + nav update dot).
+
+    Public and unauthenticated like /health — the page shells are public and the dot must render
+    before any token is entered. Sync ``def`` so FastAPI runs it in the threadpool: the underlying
+    GitHub lookup uses blocking urllib and must not stall the event loop. Fails soft — when disabled,
+    or when the lookup fails, ``latest`` is None and ``update_available`` is False.
+    """
+    if not settings.update_check_enabled:
+        return UpdateCheckResponse(
+            enabled=False,
+            current=APP_VERSION,
+            latest=None,
+            update_available=False,
+            release_url=None,
+        )
+    latest, release_url = _latest_release_cached()
+    available = _is_newer(latest, APP_VERSION)
+    return UpdateCheckResponse(
+        enabled=True,
+        current=APP_VERSION,
+        latest=latest,
+        update_available=available,
+        # Only offer a link when there is actually a newer release to point at; fall back to the
+        # generic releases page if GitHub gave a tag but no html_url.
+        release_url=(release_url or f"{REPO_URL}/releases/latest") if available else None,
+    )
+
+
+def _auth_mode() -> str:
+    """Collapse the (api_token, basic auth) settings into one label for diagnostics.
+
+    Never emits a credential — only which scheme(s) are active. Basic and bearer can both be on
+    (protected endpoints accept either), hence the combined ``basic+bearer``."""
+    if settings.basic_auth_enabled:
+        return "basic+bearer" if settings.api_token else "basic"
+    if settings.api_token:
+        return "bearer"
+    return "unauthenticated"
+
+
+@app.get("/diagnostics", response_model=DiagnosticsResponse, tags=["System"])
+def diagnostics() -> DiagnosticsResponse:
+    """Redacted config snapshot for the About modal's "Copy config" button.
+
+    Public and unauthenticated like /health — the About modal lives on the public page shells. Every
+    credential is excluded from DiagnosticsResponse (see its docstring), so this exposes nothing
+    beyond what /health already does; it just adds the misconfiguration-prone toggles that make an
+    issue report actionable (SNMP, history/editor/metrics, auth mode, render defaults).
+    """
+    return DiagnosticsResponse(
+        version=APP_VERSION,
+        api_version=API_VERSION,
+        driver=settings.driver,
+        model=settings.model,
+        printer_uri=settings.printer_uri,
+        transport=infer_transport(settings.printer_uri),
+        snmp_enabled=settings.snmp_enabled,
+        snmp_port=settings.snmp_port,
+        history_mode=settings.history_mode,
+        history_ui=settings.history_ui,
+        editor_enabled=settings.editor_enabled,
+        templates_writable=settings.templates_writable,
+        templates_loadable=settings.templates_loadable,
+        template_count=len(registry),
+        load_examples=settings.load_examples,
+        default_language=settings.default_language,
+        languages=translator.available(),
+        metrics_enabled=settings.metrics_enabled,
+        proxy_path_header=settings.proxy_path_header,
+        auth_mode=_auth_mode(),
+        default_dither=settings.default_dither,
+        default_threshold=settings.default_threshold,
+        default_high_res=settings.default_high_res,
+        default_red=settings.default_red,
+        min_length_px=settings.min_length_px,
+        max_length_px=settings.max_length_px,
+        python_version=platform.python_version(),
+        platform=platform.platform(),
     )
 
 

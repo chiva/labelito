@@ -105,6 +105,10 @@ def _patch_socket(monkeypatch: pytest.MonkeyPatch, fake: _FakeSocket) -> None:
     import app.transports.network as net_mod
 
     monkeypatch.setattr(net_mod.socket, "socket", lambda *a, **k: fake)
+    # These tests exercise the ESC i S readback path (_read_status), which send() only runs when
+    # network_status_readback is enabled. The default is OFF (the QL NIC never answers over TCP —
+    # see test_network_send_skips_readback_by_default), so opt these readback tests in explicitly.
+    monkeypatch.setattr(net_mod.settings, "network_status_readback", True)
 
 
 def _disable_snmp(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -222,6 +226,26 @@ def test_network_uri_invalid_raises_instead_of_defaulting(uri: str) -> None:
 
 
 # ── NetworkTransport reads and decodes the status packet ─────────────────────────
+def test_network_send_skips_readback_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With network_status_readback OFF (the default), send() must transmit the raster and return
+    None immediately WITHOUT touching the back-channel — the QL NIC never answers it over TCP, and
+    draining would only burn STATUS_READ_DEADLINE while holding the print lock. recv must never be
+    called; the socket is still closed."""
+    import app.transports.network as net_mod
+
+    assert net_mod.settings.network_status_readback is False, "default must be off"
+    fake = _FakeSocket(_OK_SEQUENCE)
+    fake.recv = lambda n: pytest.fail("recv must not be called when readback is disabled")  # type: ignore[assignment]
+    monkeypatch.setattr(net_mod.socket, "socket", lambda *a, **k: fake)
+
+    status = NetworkTransport("tcp://192.168.1.50:9100").send(b"RASTER-BYTES")
+
+    assert status is None, "readback off → state unknown (None), the same verdict this NIC yields"
+    assert fake.sent == b"RASTER-BYTES", "the raster must still be sent"
+    assert fake.connected_to == ("192.168.1.50", 9100)
+    assert fake.closed is True, "socket must be closed in the finally block"
+
+
 def test_network_send_returns_ok_status_on_completion_sequence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

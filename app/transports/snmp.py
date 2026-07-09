@@ -133,6 +133,12 @@ HR_PRINTER_ERROR_BITS: tuple[tuple[int, str], ...] = (
 
 # Console text the printer shows when idle/ready; anything else is surfaced as an error string.
 CONSOLE_READY = "READY"
+# Non-READY console lines the QL shows during the normal print cycle (verified live 2026-07-09:
+# end-of-print emits one hrPrinterStatus=other(1) + console "BUSY" sample with the error bitmask
+# still 00). These are transient working states, NOT the sticky media-mismatch latch — that shows
+# console "ERROR" and persists (see docs/known-limitations.md). The status/preflight fault gate must
+# distinguish the two so a normal end-of-print BUSY does not flash the badge to Error / 409 a print.
+CONSOLE_TRANSIENT_BUSY = frozenset({"BUSY", "PRINTING", "RECEIVING", "COOLING", "FEEDING"})
 # hrPrinterStatus (HOST-RESOURCES-MIB hrPrinterStatus) enum values. idle(3) is ready; printing(4) and
 # warmup(5) are the working/transient-busy states; other(1) is what the QL-810W reports for a latched
 # fault that leaves hrPrinterDetectedErrorState at 00 (verified live 2026-06-30). The print preflight

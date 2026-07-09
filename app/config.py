@@ -193,6 +193,16 @@ class Settings(BaseSettings):
     # proceed), so a tight bound trades a slow printer's status for not stalling the request.
     snmp_timeout: float = Field(default=2.0, gt=0, le=60, allow_inf_nan=False)
 
+    # ESC i S status readback on the network (:9100) transport. Brother's QL NIC accepts the TCP
+    # connection but never returns the 32-byte status frame (verified live; same reason query_status
+    # dropped its :9100 read — see docs/known-limitations.md), so a print blocks the whole
+    # STATUS_READ_DEADLINE draining a channel that never answers, holding _print_lock and pinning
+    # /printer/status at PRINTING ~10s after the job is done. OFF by default: on this hardware the
+    # readback yields no verdict anyway (SNMP is the status/fault channel). Set true only for a
+    # networked printer that genuinely returns ESC i S frames over TCP. USB uses a separate path and
+    # is unaffected.
+    network_status_readback: bool = False
+
     # Update check. When true, the About modal reports whether a newer release exists by querying
     # GitHub's release API server-side (cached ~6h, see _UPDATE_CHECK_TTL in app.main); the nav info
     # icon shows a small dot when an update is available. This is the one outbound call the service

@@ -105,6 +105,7 @@ from app.transports.file import FileTransport  # noqa: F401 — registers transp
 from app.transports.network import NetworkTransport  # noqa: F401 — registers transport
 from app.transports.snmp import (
     CONSOLE_READY,
+    CONSOLE_TRANSIENT_BUSY,
     HR_PRINTER_ERROR_BITS,
     HR_PRINTER_STATUS_BUSY,
     HR_PRINTER_STATUS_OTHER,
@@ -808,10 +809,15 @@ def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> No
     # non-READY console line. Gate on BOTH signals so we reject the latch without re-introducing the
     # transient-state false positives gate (1) avoids: idle reads idle(3)/"READY" and PRINTING/WARMUP
     # read printing(4)/warmup(5), so other(1) + a non-READY console uniquely identifies the latch.
+    # One more exclusion: the QL briefly emits other(1) + a transient WORKING console ("BUSY") at the
+    # end of a normal print (verified live 2026-07-09); that is not the latch (which shows "ERROR" and
+    # persists), so exclude CONSOLE_TRANSIENT_BUSY or a back-to-back print catching that ~1s window
+    # would falsely 409.
     if (
         loaded.printer_status == HR_PRINTER_STATUS_OTHER
         and loaded.console_text is not None
         and loaded.console_text.strip().upper() != CONSOLE_READY
+        and loaded.console_text.strip().upper() not in CONSOLE_TRANSIENT_BUSY
     ):
         LABEL_ERRORS.labels(reason="printer_error").inc()
         raise HTTPException(
@@ -2025,9 +2031,12 @@ def _status_has_hard_fault(status: PrinterStatus) -> bool:
     preflight's two gates (see :func:`_raise_if_media_incompatible`) so the status badge and the print
     gate agree on what a "fault" is: (1) a non-zero ``hrPrinterDetectedErrorState`` bitmask, or (2) the
     latch — ``hrPrinterStatus=other(1)`` with a non-``READY`` console. Deliberately does NOT treat a
-    non-READY console alone as a fault: transient display states (PRINTING / RECEIVING / COOLING) are
-    non-READY but normal, so keying off ``status.errors`` (which echoes the console line) would
-    false-alarm mid-print. The error bitmask and hrPrinterStatus ride in ``raw`` (see from_snmp)."""
+    non-READY console alone as a fault: transient display states (PRINTING / RECEIVING / COOLING /
+    BUSY) are non-READY but normal, so keying off ``status.errors`` (which echoes the console line)
+    would false-alarm mid-print. In particular the QL emits one ``other(1)`` + ``"BUSY"`` sample at the
+    end of a normal print (verified live 2026-07-09, bitmask 00), so the latch gate excludes
+    ``CONSOLE_TRANSIENT_BUSY`` — the real latch shows ``"ERROR"`` and persists. The error bitmask and
+    hrPrinterStatus ride in ``raw`` (see from_snmp)."""
     if (status.raw.get("error_state_bits") or 0) != 0:
         return True
     console = status.console_text
@@ -2035,14 +2044,25 @@ def _status_has_hard_fault(status: PrinterStatus) -> bool:
         status.raw.get("printer_status") == HR_PRINTER_STATUS_OTHER
         and console is not None
         and console.strip().upper() != CONSOLE_READY
+        and console.strip().upper() not in CONSOLE_TRANSIENT_BUSY
     )
 
 
 def _status_is_busy(status: PrinterStatus) -> bool:
-    """True when the SNMP read itself reports a working state — hrPrinterStatus printing(4) or
-    warmup(5). Independent of this server's _print_lock so an external job, or a printer still
-    finishing after our send returns, is reported as PRINTING rather than misreported as idle."""
-    return status.raw.get("printer_status") in HR_PRINTER_STATUS_BUSY
+    """True when the SNMP read itself reports a working state — hrPrinterStatus printing(4)/warmup(5),
+    OR the end-of-print transient ``other(1)`` + a working console (``CONSOLE_TRANSIENT_BUSY``, e.g.
+    "BUSY") that :func:`_status_has_hard_fault` already ruled out as a latch. Independent of this
+    server's _print_lock so an external job, or a printer still finishing after our send returns, is
+    reported as PRINTING rather than misreported as idle."""
+    printer_status = status.raw.get("printer_status")
+    if printer_status in HR_PRINTER_STATUS_BUSY:
+        return True
+    console = status.console_text
+    return (
+        printer_status == HR_PRINTER_STATUS_OTHER
+        and console is not None
+        and console.strip().upper() in CONSOLE_TRANSIENT_BUSY
+    )
 
 
 # brother_ql ESC i S phase byte (RESP_PHASE_TYPES): the printer is READY only in 'Waiting to receive';

@@ -475,7 +475,7 @@
     //    Refreshed on load, on demand via the ↻ button, after each print, and by a visible-tab
     //    background poll (see createStatusPoller). Polling lives in the browser by design — the server
     //    intentionally stays stateless per request and avoids a keep-alive task.
-    const STATE_LABELS = {off: 'Off', idle: 'Idle', printing: 'Printing', error: 'Error'};
+    const STATE_LABELS = {off: 'Off', idle: 'Idle', printing: 'Printing…', error: 'Error'};
     const STATE_CLASS = {off: 'state-off', idle: 'state-idle', printing: 'state-printing', error: 'state-error'};
 
     function setStateBadge(state, label) {
@@ -1517,10 +1517,12 @@
       // stale reply won't clear a guard their newer input has re-raised (and won't let the post-print
       // refresh refocus over it).
       const printRevision = formRevision;
-      // Optimistic feedback: a print is sub-second and may finish between polls, so reflect "Printing…"
-      // the instant the job is sent. The post-print refresh and the background poll converge the badge
-      // back to the printer's real state; failure paths below reconcile it so it can never stick.
-      setStateBadge('printing', 'Printing…');
+      // Optimistic feedback: a print is sub-second and may finish between polls, so reflect the
+      // printing state the instant the job is sent. No explicit label — STATE_LABELS.printing is the
+      // single source of truth ("Printing…"), so the optimistic badge and every poll-driven re-render
+      // show identical text (no "Printing…"→"Printing" flicker). The post-print refresh and background
+      // poll converge the badge back to the printer's real state; failure paths below reconcile it.
+      setStateBadge('printing');
       // Latch the in-flight guard for the whole request lifetime — disables the Print button so a
       // double-click can't queue a duplicate job; cleared in finally on every exit path.
       printInFlight = true;

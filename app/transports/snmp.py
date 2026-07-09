@@ -163,10 +163,16 @@ def is_latched_fault(printer_status: object, console_text: str | None) -> bool:
     that is NOT a transient working state (``CONSOLE_TRANSIENT_BUSY``). Shared by the ``/print``
     preflight and the status-badge fault gate so the two cannot drift if the transient list or the
     latch signature changes again. Callers pass the raw ``(printer_status, console_text)`` from
-    whichever shape they hold — ``PrinterSNMPStatus`` fields or ``PrinterStatus.raw``/``console_text``."""
+    whichever shape they hold — ``PrinterSNMPStatus`` fields or ``PrinterStatus.raw``/``console_text``.
+
+    A blank/whitespace console (``_as_str`` decodes a zero-length OCTET STRING to ``""``, not ``None``)
+    is the ABSENCE of a fault signal, not the latch — the real latch shows ``"ERROR"`` — so it returns
+    False rather than faulting on emptiness."""
     if printer_status != HR_PRINTER_STATUS_OTHER or console_text is None:
         return False
     console = console_text.strip().upper()
+    if not console:
+        return False
     return console != CONSOLE_READY and console not in CONSOLE_TRANSIENT_BUSY
 
 

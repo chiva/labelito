@@ -230,10 +230,14 @@ def test_latch_predicates_distinguish_latch_from_transient_and_ready() -> None:
     assert is_latched_fault(HR_PRINTER_STATUS_OTHER, " busy ") is False
     assert is_transient_busy_console(HR_PRINTER_STATUS_OTHER, " busy ") is True
 
-    # READY, absent console, and non-other statuses fire neither predicate.
+    # READY, absent/blank console, and non-other statuses fire neither predicate. A blank buffer
+    # matters specifically: _as_str decodes a zero-length OCTET STRING to "" (not None), and an empty
+    # console is the ABSENCE of a fault signal — it must NOT read as the sticky latch.
     for ps, console in (
         (HR_PRINTER_STATUS_OTHER, "READY"),
         (HR_PRINTER_STATUS_OTHER, None),
+        (HR_PRINTER_STATUS_OTHER, ""),
+        (HR_PRINTER_STATUS_OTHER, "   "),
         (HR_PRINTER_STATUS_PRINTING, "PRINTING"),
         (HR_PRINTER_STATUS_IDLE, "READY"),
         (None, "ERROR"),

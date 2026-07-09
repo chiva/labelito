@@ -221,6 +221,9 @@ def test_auth_mode(
         ("tcp://192.168.1.100:9100", "tcp://192.168.1.100:9100"),  # no userinfo → unchanged
         ("file:///Users/name/out.bin", "file:///Users/name/out.bin"),  # path kept, no userinfo
         ("usb://0x04f9:0x209c", "usb://0x04f9:0x209c"),  # unchanged
+        # Malformed/out-of-range port must NOT raise (urlparse's lazy .port would); creds still stripped.
+        ("tcp://user:pass@host:999999", "tcp://host:999999"),
+        ("tcp://user:pass@host:notaport", "tcp://host:notaport"),
     ],
 )
 def test_sanitize_printer_uri(uri: str, expected: str) -> None:

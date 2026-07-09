@@ -1808,15 +1808,19 @@ def _sanitize_printer_uri(uri: str) -> str:
     credentials — e.g. ``tcp://user:pass@host:9100``. Drop the userinfo unconditionally while keeping
     the scheme, host, port, and path, which are what make a misconfiguration report actionable. A
     ``file://`` path (no userinfo) is returned unchanged; unparseable input is returned as-is rather
-    than raising inside the diagnostics path."""
+    than raising inside the diagnostics/health path."""
     try:
         parsed = urlparse(uri)
+        if "@" not in (parsed.netloc or ""):
+            return uri
+        # Strip userinfo (everything up to the LAST '@'); keep host[:port] verbatim as a string. This
+        # deliberately avoids urlparse's lazy .port property, which raises ValueError on a malformed or
+        # out-of-range port (e.g. tcp://u:p@host:999999) — that must not surface as a 500 on the public
+        # health/diagnostics paths, and userinfo must still be dropped even when the port is invalid.
+        host_port = parsed.netloc.rsplit("@", 1)[-1]
+        return parsed._replace(netloc=host_port).geturl()
     except ValueError:
         return uri
-    if "@" not in (parsed.netloc or "") or not parsed.hostname:
-        return uri
-    netloc = f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
-    return parsed._replace(netloc=netloc).geturl()
 
 
 @app.get(

@@ -58,16 +58,20 @@ function initTokenInput() {
 }
 
 function handleAuthError(res) {
-  if (res.status === 401) {
-    // Point the user at the nav key button rather than force-opening the dialog: a 401 can come
-    // from a background fetch (e.g. the Print page's on-load /printer/status), and a native modal
-    // there would blanket the page and block interaction. The amber "needs-token" dot + this toast
-    // are the non-blocking prompt; the user opens the dialog when ready.
-    showStatus('Authentication required — enter your API token from the key icon.', 'err');
-    syncTokenIndicator();
+  if (res.status !== 401) return false;
+  if (window.LABELITO_BASIC_AUTH) {
+    // Basic mode has no token UI — the browser holds the credential. A 401 here means the login
+    // was dismissed or the cached credential is stale; a reload re-triggers the native prompt.
+    showStatus('Authentication required — reload the page to sign in again.', 'err');
     return true;
   }
-  return false;
+  // Bearer mode: point the user at the nav key button rather than force-opening the dialog. A 401
+  // can come from a background fetch (e.g. the Print page's on-load /printer/status), and a native
+  // modal there would blanket the page. The amber "needs-token" dot + this toast are the
+  // non-blocking prompt; the user opens the dialog when ready.
+  showStatus('Authentication required — enter your API token from the key icon.', 'err');
+  syncTokenIndicator();
+  return true;
 }
 
 /* ── Toasts (formerly the status banner) ──────────────────────────────────────

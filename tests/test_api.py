@@ -818,18 +818,22 @@ def test_basic_mode_rejects_cross_site_unsafe_request(client: TestClient, monkey
 
     _enable_basic(main_mod, monkeypatch)
     body = {"template": "simple", "fields": {"title": "x"}}
-    cross = client.post(
-        "/preview",
-        json=body,
-        headers={**_basic_header("me", "pw"), "Sec-Fetch-Site": "cross-site"},
-    )
-    assert cross.status_code == 403
-    same = client.post(
-        "/preview",
-        json=body,
-        headers={**_basic_header("me", "pw"), "Sec-Fetch-Site": "same-origin"},
-    )
-    assert same.status_code == 200
+    # same-site is refused too: a sibling origin under the same registrable domain shares the
+    # ambient credential.
+    for site in ("cross-site", "same-site"):
+        blocked = client.post(
+            "/preview",
+            json=body,
+            headers={**_basic_header("me", "pw"), "Sec-Fetch-Site": site},
+        )
+        assert blocked.status_code == 403, site
+    for site in ("same-origin", "none"):
+        allowed = client.post(
+            "/preview",
+            json=body,
+            headers={**_basic_header("me", "pw"), "Sec-Fetch-Site": site},
+        )
+        assert allowed.status_code == 200, site
     # No Sec-Fetch-Site header (a scripted client) is allowed — it carries an explicit credential.
     headerless = client.post("/preview", json=body, headers=_basic_header("me", "pw"))
     assert headerless.status_code == 200

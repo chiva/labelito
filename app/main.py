@@ -983,14 +983,19 @@ def _reject_cross_site(request: Request) -> None:
     /reprint/{id}, which take no JSON body and so aren't shielded by the CORS preflight that a
     JSON content-type forces). Bearer/open modes carry no ambient credential, so this engages only
     when Basic auth is on. It keys off Sec-Fetch-Site (sent by all current browsers; reverse-proxy
-    safe, as it describes the origin relationship rather than the Host). Non-browser clients
+    safe, as it describes the origin relationship rather than the Host) and permits only
+    same-origin requests (the UI shares the API's origin) — same-site is refused, as a sibling
+    origin under the same registrable domain shares the ambient credential. Non-browser clients
     (curl/scripts) omit the header and pass through — they present an explicit credential and are
     not a CSRF vector.
     """
     if not settings.basic_auth_enabled or request.method not in _UNSAFE_METHODS:
         return
+    # Only same-origin (the UI is same host:port as its API) and none (a user's own top-level
+    # navigation — typed URL / bookmark) are allowed. same-site is rejected too: a sibling origin
+    # under the same registrable domain shares the ambient credential and could otherwise POST.
     site = request.headers.get("sec-fetch-site")
-    if site is not None and site not in ("same-origin", "same-site", "none"):
+    if site is not None and site not in ("same-origin", "none"):
         raise HTTPException(status_code=403, detail="Cross-site request rejected")
 
 

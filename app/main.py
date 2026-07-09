@@ -972,24 +972,48 @@ def _auth_challenge() -> dict[str, str] | None:
     return None
 
 
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _reject_cross_site(request: Request) -> None:
+    """CSRF guard for state-changing requests under HTTP Basic auth.
+
+    Basic credentials are ambient — the browser attaches them to any same-origin request a page
+    makes — so a cross-site page could drive an unsafe endpoint (e.g. POST /reload or
+    /reprint/{id}, which take no JSON body and so aren't shielded by the CORS preflight that a
+    JSON content-type forces). Bearer/open modes carry no ambient credential, so this engages only
+    when Basic auth is on. It keys off Sec-Fetch-Site (sent by all current browsers; reverse-proxy
+    safe, as it describes the origin relationship rather than the Host). Non-browser clients
+    (curl/scripts) omit the header and pass through — they present an explicit credential and are
+    not a CSRF vector.
+    """
+    if not settings.basic_auth_enabled or request.method not in _UNSAFE_METHODS:
+        return
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site not in ("same-origin", "same-site", "none"):
+        raise HTTPException(status_code=403, detail="Cross-site request rejected")
+
+
 def check_token(
+    request: Request,
     bearer_creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     basic_creds: Annotated[HTTPBasicCredentials | None, Depends(basic)],
 ) -> None:
     """Authorize a protected endpoint: a valid API_TOKEN bearer OR valid HTTP Basic credentials.
 
     No-ops in unauthenticated mode (neither credential configured). The browser supplies Basic
-    automatically once logged in; scripts send the bearer token.
+    automatically once logged in; scripts send the bearer token. State-changing requests are also
+    subjected to the Basic-mode CSRF guard (``_reject_cross_site``).
     """
     if not settings.api_token and not settings.basic_auth_enabled:
         return
-    if _bearer_ok(bearer_creds) or _basic_ok(basic_creds):
-        return
-    raise HTTPException(
-        status_code=401,
-        detail="Invalid or missing credentials",
-        headers=_auth_challenge(),
-    )
+    if not (_bearer_ok(bearer_creds) or _basic_ok(basic_creds)):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing credentials",
+            headers=_auth_challenge(),
+        )
+    _reject_cross_site(request)
 
 
 def _require_web_auth(
@@ -1907,7 +1931,12 @@ def _template_media(label: str) -> TemplateMedia | None:
     )
 
 
-@app.get("/templates", response_model=list[TemplateInfo], tags=["Templates"])
+@app.get(
+    "/templates",
+    response_model=list[TemplateInfo],
+    tags=["Templates"],
+    dependencies=[Depends(_require_web_auth)],
+)
 def list_templates() -> list[TemplateInfo]:
     return [
         TemplateInfo(

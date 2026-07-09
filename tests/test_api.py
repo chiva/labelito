@@ -811,6 +811,62 @@ def test_basic_mode_page_signals_browser_to_skip_bearer(client: TestClient, monk
     assert "window.LABELITO_BASIC_AUTH = true" in basic_page
 
 
+def test_basic_mode_rejects_cross_site_unsafe_request(client: TestClient, monkeypatch) -> None:
+    """Basic credentials are ambient, so a cross-site POST must be refused (CSRF). Same-origin and
+    headerless (curl/scripts) requests still pass."""
+    import app.main as main_mod
+
+    _enable_basic(main_mod, monkeypatch)
+    body = {"template": "simple", "fields": {"title": "x"}}
+    cross = client.post(
+        "/preview",
+        json=body,
+        headers={**_basic_header("me", "pw"), "Sec-Fetch-Site": "cross-site"},
+    )
+    assert cross.status_code == 403
+    same = client.post(
+        "/preview",
+        json=body,
+        headers={**_basic_header("me", "pw"), "Sec-Fetch-Site": "same-origin"},
+    )
+    assert same.status_code == 200
+    # No Sec-Fetch-Site header (a scripted client) is allowed — it carries an explicit credential.
+    headerless = client.post("/preview", json=body, headers=_basic_header("me", "pw"))
+    assert headerless.status_code == 200
+
+
+def test_bearer_mode_does_not_csrf_guard(client: TestClient, monkeypatch) -> None:
+    """The CSRF guard is Basic-only — bearer credentials aren't ambient, so a cross-site header
+    must not block a valid bearer request."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "tok")
+    resp = client.post(
+        "/preview",
+        json={"template": "simple", "fields": {"title": "x"}},
+        headers={"Authorization": "Bearer tok", "Sec-Fetch-Site": "cross-site"},
+    )
+    assert resp.status_code == 200
+
+
+def test_templates_gated_by_login_wall_in_basic_mode(client: TestClient, monkeypatch) -> None:
+    """GET /templates carries the same catalogue the UI shows, so Basic mode's login wall must
+    cover it too — otherwise an unauthenticated peer bypasses the wall by reading it directly."""
+    import app.main as main_mod
+
+    _enable_basic(main_mod, monkeypatch)
+    assert client.get("/templates").status_code == 401
+    assert client.get("/templates", headers=_basic_header("me", "pw")).status_code == 200
+
+
+def test_templates_public_in_bearer_mode(client: TestClient, monkeypatch) -> None:
+    """Bearer mode leaves /templates public (unchanged) — the login wall is Basic-only."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "tok")
+    assert client.get("/templates").status_code == 200
+
+
 def test_non_ascii_api_token_mismatch_is_401_not_500(client: TestClient, monkeypatch) -> None:
     """A non-ASCII API_TOKEN with an ordinary (ASCII) wrong bearer must yield a clean 401, not a
     compare_digest TypeError → 500. The byte-based compare removes that crash trap. (A non-ASCII

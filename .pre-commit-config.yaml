@@ -32,8 +32,11 @@ repos:
         pass_filenames: false
         types_or: [python, pyi]
       - id: uv-lock
-        name: uv lock (keep uv.lock in sync with pyproject.toml)
-        entry: uv lock
+        name: uv lock --check (uv.lock in sync with pyproject.toml)
+        # Non-mutating, identical to CI's `lock` job. A stale lockfile fails the commit with the
+        # same message CI would show, so the local gate and CI can't disagree; the dev re-locks
+        # with `uv lock` explicitly rather than the hook silently rewriting uv.lock mid-commit.
+        entry: uv lock --check
         language: system
         files: ^(pyproject\.toml|uv\.lock)$
         pass_filenames: false

@@ -207,6 +207,18 @@ def test_sanitize_printer_uri(uri: str, expected: str) -> None:
     assert main_mod._sanitize_printer_uri(uri) == expected
 
 
+def test_health_strips_uri_credentials(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/health is unauthenticated, so a tcp://user:pass@host URI must not leak its userinfo."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://admin:s3cret@printer.local:9100")
+    resp = client.get("/health")
+    assert resp.json()["uri"] == "tcp://printer.local:9100"
+    assert "s3cret" not in resp.text
+
+
 def test_diagnostics_strips_uri_credentials(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

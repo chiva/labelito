@@ -1734,7 +1734,9 @@ def health() -> HealthResponse:
         driver=settings.driver,
         model=settings.model,
         transport=infer_transport(settings.printer_uri),
-        uri=settings.printer_uri,
+        # Sanitized: /health is unauthenticated, so never expose userinfo credentials a
+        # tcp://user:pass@host URI could carry. Normal host:port URIs are returned unchanged.
+        uri=_sanitize_printer_uri(settings.printer_uri),
         template_count=len(registry),
         default_language=settings.default_language,
         languages=translator.available(),

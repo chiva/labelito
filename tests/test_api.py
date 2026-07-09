@@ -715,6 +715,87 @@ def test_api_token_valid_passes(client: TestClient, monkeypatch) -> None:
         monkeypatch.setattr(main_mod.settings, "api_token", None)
 
 
+# ── HTTP Basic auth (WEB_AUTH_*): accepted alongside the bearer token ────────────
+def _basic_header(user: str, password: str) -> dict[str, str]:
+    raw = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return {"Authorization": f"Basic {raw}"}
+
+
+def _enable_basic(main_mod, monkeypatch, user: str = "me", password: str = "pw") -> None:
+    monkeypatch.setattr(main_mod.settings, "web_auth_user", user)
+    monkeypatch.setattr(main_mod.settings, "web_auth_password", password)
+
+
+def test_basic_auth_accepted_on_protected_endpoint(client: TestClient, monkeypatch) -> None:
+    import app.main as main_mod
+
+    _enable_basic(main_mod, monkeypatch)
+    resp = client.post(
+        "/preview",
+        json={"template": "simple", "fields": {"title": "Secured"}},
+        headers=_basic_header("me", "pw"),
+    )
+    assert resp.status_code == 200
+
+
+def test_basic_and_bearer_coexist(client: TestClient, monkeypatch) -> None:
+    """With both configured, a protected endpoint accepts either credential."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "tok")
+    _enable_basic(main_mod, monkeypatch)
+    body = {"template": "simple", "fields": {"title": "x"}}
+    assert (
+        client.post("/preview", json=body, headers={"Authorization": "Bearer tok"}).status_code
+        == 200
+    )
+    assert client.post("/preview", json=body, headers=_basic_header("me", "pw")).status_code == 200
+
+
+def test_basic_auth_wrong_creds_401_with_challenge(client: TestClient, monkeypatch) -> None:
+    import app.main as main_mod
+
+    _enable_basic(main_mod, monkeypatch)
+    resp = client.post(
+        "/preview",
+        json={"template": "simple", "fields": {"title": "x"}},
+        headers=_basic_header("me", "wrong"),
+    )
+    assert resp.status_code == 401
+    assert resp.headers.get("WWW-Authenticate") == 'Basic realm="labelito"'
+
+
+def test_bearer_only_401_omits_basic_challenge(client: TestClient, monkeypatch) -> None:
+    """In bearer-only mode a 401 must NOT advertise Basic — otherwise the browser pops a native
+    login dialog for what is actually a bearer token (the JS 401 handler covers that case)."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "tok")
+    resp = client.post("/preview", json={"template": "simple", "fields": {"title": "x"}})
+    assert resp.status_code == 401
+    assert "WWW-Authenticate" not in resp.headers
+
+
+def test_login_wall_gates_pages_when_basic_enabled(client: TestClient, monkeypatch) -> None:
+    """Basic auth is a whole-UI login wall: the page shells 401 (with a challenge) until logged in."""
+    import app.main as main_mod
+
+    _enable_basic(main_mod, monkeypatch)
+    for path in ("/", "/editor", "/history"):
+        unauth = client.get(path)
+        assert unauth.status_code == 401, path
+        assert unauth.headers.get("WWW-Authenticate") == 'Basic realm="labelito"', path
+        assert client.get(path, headers=_basic_header("me", "pw")).status_code == 200, path
+
+
+def test_pages_public_in_bearer_mode(client: TestClient, monkeypatch) -> None:
+    """Bearer mode keeps the shells public so the browser can render its in-page token entry."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "tok")
+    assert client.get("/").status_code == 200
+
+
 @pytest.mark.asyncio
 async def test_startup_rejects_invalid_network_uri(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -887,6 +968,17 @@ def test_auth_allows_when_token_set(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(main_mod.settings, "api_token", "secret")
     monkeypatch.setattr(main_mod.settings, "allow_unauthenticated", False)
+    main_mod._require_auth_or_optout()  # must not raise
+
+
+def test_auth_allows_when_basic_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP Basic auth satisfies the fail-closed startup guard on its own — no API_TOKEN needed."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", None)
+    monkeypatch.setattr(main_mod.settings, "allow_unauthenticated", False)
+    monkeypatch.setattr(main_mod.settings, "web_auth_user", "me")
+    monkeypatch.setattr(main_mod.settings, "web_auth_password", "pw")
     main_mod._require_auth_or_optout()  # must not raise
 
 

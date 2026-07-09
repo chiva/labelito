@@ -1,0 +1,25 @@
+{#
+  API-token entry modal, shared across the three page shells via _nav.html. A native <dialog>
+  (opened with showModal()) so Esc-to-close and the backdrop come for free — mirrors the
+  #about-dialog pattern in _about.html.
+
+  Rendered ONLY when browser_token_entry is true (bearer mode: API_TOKEN set and HTTP Basic auth
+  off). With Basic auth the browser sends credentials automatically and in unauthenticated mode
+  there is nothing to enter, so the whole surface — nav button and dialog — is omitted server-side.
+
+  The token is persisted to localStorage by initTokenInput() (labelito.js), keyed on #api-token;
+  handleAuthError() opens this dialog on a 401 so the prompt appears exactly when a protected call
+  needs it, rather than as a permanent card on every page.
+#}
+{% from "partials/_icons.html" import icon %}
+<dialog id="token-dialog" class="about-dialog" aria-labelledby="token-title">
+  <div class="about-head">
+    <span class="about-title" id="token-title">API token</span>
+    <button class="btn-icon" type="button" id="token-close" title="Close" aria-label="Close">{{ icon("xmark") }}</button>
+  </div>
+  <p class="about-tagline">Needed to print and control the printer from this browser.</p>
+  <div class="field">
+    <input type="password" id="api-token" class="input" placeholder="Bearer token" autocomplete="off">
+    <span class="hint">Saved in this browser only.</span>
+  </div>
+</dialog>

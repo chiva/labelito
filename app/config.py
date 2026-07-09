@@ -52,8 +52,45 @@ class Settings(BaseSettings):
     # Auth
     api_token: str | None = None
     # Explicit opt-in to run protected endpoints without a token (intranet/trusted
-    # networks only). Without either api_token or this flag, the service refuses to start.
+    # networks only). Without any of api_token / web_auth_* / this flag, the service refuses to start.
     allow_unauthenticated: bool = False
+    # Optional HTTP Basic auth for the web UI: when BOTH web_auth_user and web_auth_password are set,
+    # the whole UI (page shells + API) sits behind a native browser login. The browser then re-attaches
+    # its Basic credentials to every same-origin fetch automatically, so no in-page API-token entry is
+    # needed. Protected endpoints accept EITHER these Basic credentials OR the api_token bearer, so
+    # api_token stays available (optional) for scripts/automation. Settable via WEB_AUTH_USER /
+    # WEB_AUTH_PASSWORD; configuring Basic auth satisfies the fail-closed startup guard on its own.
+    web_auth_user: str | None = None
+    web_auth_password: str | None = None
+    # Realm advertised in the WWW-Authenticate challenge (shown in the browser login dialog).
+    web_auth_realm: str = "labelito"
+
+    @model_validator(mode="after")
+    def _validate_web_auth(self) -> "Settings":
+        """Basic auth is both-or-neither and non-blank, mirroring the API_TOKEN startup guard.
+
+        A half-configured pair (only user, or only password) is almost certainly a deployment
+        mistake that would silently leave the UI open; a blank value likewise. Fail fast at load so
+        the operator fixes it, rather than shipping an unintended unauthenticated service.
+        """
+        user = (self.web_auth_user or "").strip()
+        password = (self.web_auth_password or "").strip()
+        if bool(self.web_auth_user) != bool(self.web_auth_password):
+            raise ValueError(
+                "WEB_AUTH_USER and WEB_AUTH_PASSWORD must be set together (both or neither) to "
+                "enable HTTP Basic auth for the web UI."
+            )
+        if self.web_auth_user is not None and (not user or not password):
+            raise ValueError(
+                "WEB_AUTH_USER / WEB_AUTH_PASSWORD are set but empty/blank. Provide real "
+                "credentials, or unset both to disable HTTP Basic auth."
+            )
+        return self
+
+    @property
+    def basic_auth_enabled(self) -> bool:
+        """True when HTTP Basic auth is fully configured (both user and password present)."""
+        return bool(self.web_auth_user and self.web_auth_password)
 
     # Directories
     templates_dir: Path = Path("templates")

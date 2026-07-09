@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import uuid
@@ -36,7 +37,12 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBasic,
+    HTTPBasicCredentials,
+    HTTPBearer,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -887,40 +893,115 @@ async def shutdown() -> None:
 
 
 # ── Auth ────────────────────────────────────────────────────────────────────────
+# Protected endpoints accept EITHER a static bearer token (API_TOKEN, for scripts/automation) OR
+# HTTP Basic credentials (WEB_AUTH_USER/PASSWORD, for the browser). Both schemes use
+# auto_error=False so a missing/other-scheme Authorization header falls through to check_token,
+# which decides across both rather than either scheme 401-ing on its own.
 bearer = HTTPBearer(auto_error=False)
+basic = HTTPBasic(auto_error=False)
 
 
 def _require_auth_or_optout() -> None:
     """Fail closed: an unauthenticated service must be an explicit, conscious choice.
 
     The protected endpoints (/print, /reprint, /reload, /preview) drive a physical printer,
-    so a network-reachable default install must not be open by accident.
+    so a network-reachable default install must not be open by accident. Any one of an API token,
+    HTTP Basic credentials, or the explicit ALLOW_UNAUTHENTICATED opt-out satisfies the guard
+    (WEB_AUTH_* both-or-neither/non-blank validation happens earlier, in Settings).
     """
     if settings.api_token is not None and not settings.api_token.strip():
         raise RuntimeError(
             "API_TOKEN is set but empty/blank. Provide a real secret, or unset it entirely and "
             "set ALLOW_UNAUTHENTICATED=true to run without authentication."
         )
-    if not settings.api_token and not settings.allow_unauthenticated:
+    if (
+        not settings.api_token
+        and not settings.basic_auth_enabled
+        and not settings.allow_unauthenticated
+    ):
         raise RuntimeError(
-            "No API_TOKEN configured. Set API_TOKEN to require authentication, or set "
-            "ALLOW_UNAUTHENTICATED=true to explicitly run without auth "
-            "(intranet/trusted networks only)."
+            "No authentication configured. Set API_TOKEN (bearer) or WEB_AUTH_USER/WEB_AUTH_PASSWORD "
+            "(HTTP Basic) to require authentication, or set ALLOW_UNAUTHENTICATED=true to explicitly "
+            "run without auth (intranet/trusted networks only)."
         )
-    if not settings.api_token:
+    if not settings.api_token and not settings.basic_auth_enabled:
         log.warning(
             "Running WITHOUT authentication (ALLOW_UNAUTHENTICATED=true): any host that can "
             "reach this service can print and control the printer. Trusted intranet use only."
         )
 
 
+def _bearer_ok(creds: HTTPAuthorizationCredentials | None) -> bool:
+    """True when a bearer credential matches API_TOKEN (constant-time compare)."""
+    if not settings.api_token or creds is None or creds.scheme.lower() != "bearer":
+        return False
+    return secrets.compare_digest(creds.credentials, settings.api_token)
+
+
+def _basic_ok(creds: HTTPBasicCredentials | None) -> bool:
+    """True when Basic credentials match WEB_AUTH_USER/PASSWORD (constant-time compare).
+
+    Both comparisons always run (no short-circuit) so a mismatched username cannot be told from a
+    mismatched password by response timing.
+    """
+    if not settings.basic_auth_enabled or creds is None:
+        return False
+    user_ok = secrets.compare_digest(creds.username, settings.web_auth_user or "")
+    pass_ok = secrets.compare_digest(creds.password, settings.web_auth_password or "")
+    return user_ok and pass_ok
+
+
+def _auth_challenge() -> dict[str, str] | None:
+    """WWW-Authenticate header for a 401 — only when Basic auth is on, so the browser prompts.
+
+    In bearer-only mode it is deliberately omitted: a Basic challenge there would pop a native
+    username/password dialog for what is actually a bearer token (the JS layer instead handles that
+    401 by opening the in-page token entry).
+    """
+    if settings.basic_auth_enabled:
+        return {"WWW-Authenticate": f'Basic realm="{settings.web_auth_realm}"'}
+    return None
+
+
 def check_token(
-    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    bearer_creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    basic_creds: Annotated[HTTPBasicCredentials | None, Depends(basic)],
 ) -> None:
-    if not settings.api_token:
+    """Authorize a protected endpoint: a valid API_TOKEN bearer OR valid HTTP Basic credentials.
+
+    No-ops in unauthenticated mode (neither credential configured). The browser supplies Basic
+    automatically once logged in; scripts send the bearer token.
+    """
+    if not settings.api_token and not settings.basic_auth_enabled:
         return
-    if creds is None or creds.credentials != settings.api_token:
-        raise HTTPException(status_code=401, detail="Invalid or missing API token")
+    if _bearer_ok(bearer_creds) or _basic_ok(basic_creds):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail="Invalid or missing credentials",
+        headers=_auth_challenge(),
+    )
+
+
+def _require_web_auth(
+    bearer_creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    basic_creds: Annotated[HTTPBasicCredentials | None, Depends(basic)],
+) -> None:
+    """Login wall for the page shells — enforced ONLY when HTTP Basic auth is enabled.
+
+    In bearer-only or unauthenticated mode this is a no-op so the shells stay publicly reachable
+    (the bearer flow needs a public page to render its in-browser token entry). With Basic auth on,
+    the whole UI sits behind the native browser login.
+    """
+    if not settings.basic_auth_enabled:
+        return
+    if _basic_ok(basic_creds) or _bearer_ok(bearer_creds):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail="Authentication required",
+        headers=_auth_challenge(),
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -2245,13 +2326,21 @@ def _web_ctx(page: str, request: Request) -> dict[str, Any]:
         "api_version": API_VERSION,
         "repo_url": REPO_URL,
         "app_license": APP_LICENSE,
+        # Whether to render the in-browser API-token entry (nav key button + dialog). Only in
+        # bearer mode: with HTTP Basic auth the browser sends credentials automatically, and in
+        # unauthenticated mode there is nothing to enter — both hide the token UI entirely.
+        "browser_token_entry": bool(settings.api_token) and not settings.basic_auth_enabled,
     }
 
 
 # The browse routes list ``_require_history_ui`` *before* ``check_token`` so the visibility gate
 # wins: with HISTORY_UI=false they 404 (route appears absent) rather than 401 (which would reveal a
 # hidden-but-present endpoint). FastAPI resolves a flat dependency list in declaration order.
-@app.get("/history", response_class=HTMLResponse, dependencies=[Depends(_require_history_ui)])
+@app.get(
+    "/history",
+    response_class=HTMLResponse,
+    dependencies=[Depends(_require_history_ui), Depends(_require_web_auth)],
+)
 async def history_page(request: Request) -> HTMLResponse:
     """Browse-history page shell. Public like ``GET /`` — it carries no history data (that is
     fetched client-side from the token-protected ``/history/list``) and must be reachable from a
@@ -3058,7 +3147,11 @@ async def favicon() -> FileResponse:
     return FileResponse(_web_dir / "logo.svg", media_type="image/svg+xml")
 
 
-@app.get("/editor", response_class=HTMLResponse, dependencies=[Depends(_require_editor_enabled)])
+@app.get(
+    "/editor",
+    response_class=HTMLResponse,
+    dependencies=[Depends(_require_editor_enabled), Depends(_require_web_auth)],
+)
 async def editor_page(request: Request) -> HTMLResponse:
     """In-browser YAML template studio.
 
@@ -3096,7 +3189,7 @@ async def editor_page(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, dependencies=[Depends(_require_web_auth)])
 async def web_ui(request: Request) -> HTMLResponse:
     # Same red_labels source the editor route uses (see its comment on why 62red is a geometry-only
     # match, not a definite one) — here it drives the per-template `red` flag below.

@@ -223,6 +223,40 @@ def test_example_dirs_mirror_primary_from_env(monkeypatch: pytest.MonkeyPatch) -
     assert s.example_templates_dir == Path("/mnt/templates")
 
 
+# ── HTTP Basic auth (WEB_AUTH_*) ───────────────────────────────────────────────────
+def test_web_auth_disabled_by_default() -> None:
+    """No WEB_AUTH_* → Basic auth off (and no impact on the bearer/opt-out paths)."""
+    s = Settings(web_auth_user=None, web_auth_password=None)
+    assert s.basic_auth_enabled is False
+
+
+def test_web_auth_both_set_enables_basic() -> None:
+    s = Settings(web_auth_user="me", web_auth_password="pw")
+    assert s.basic_auth_enabled is True
+    assert s.web_auth_realm == "labelito"
+
+
+def test_web_auth_user_only_rejected() -> None:
+    """A half-configured pair is a deployment mistake that would silently leave the UI open."""
+    with pytest.raises(ValidationError, match="both or neither"):
+        Settings(web_auth_user="me", web_auth_password=None)
+
+
+def test_web_auth_password_only_rejected() -> None:
+    with pytest.raises(ValidationError, match="both or neither"):
+        Settings(web_auth_user=None, web_auth_password="pw")
+
+
+def test_web_auth_blank_values_rejected() -> None:
+    with pytest.raises(ValidationError, match="empty/blank"):
+        Settings(web_auth_user="   ", web_auth_password="   ")
+
+
+def test_web_auth_realm_override() -> None:
+    s = Settings(web_auth_user="me", web_auth_password="pw", web_auth_realm="my-printer")
+    assert s.web_auth_realm == "my-printer"
+
+
 # ── Env-file compatibility across releases ─────────────────────────────────────────
 def test_stale_env_file_keys_are_ignored(tmp_path: Path) -> None:
     """A leftover key from an older release (e.g. the removed LABEL_SIZE) in a user's .env

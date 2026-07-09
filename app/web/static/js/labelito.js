@@ -30,23 +30,38 @@ function authHeaders() {
   return headers;
 }
 
-// Wire the page's #api-token input to localStorage. Call from the page script once the
-// input exists. No-op when the page has no token input.
+// Highlight the nav key button while no token is stored, so a first-run visitor on a secured
+// deployment can find the entry before hitting a 401. No-op when the button is absent (Basic-auth
+// and unauthenticated modes render no token UI at all).
+function syncTokenIndicator() {
+  const btn = document.getElementById('token-open');
+  if (!btn) return;
+  const hasToken = !!(localStorage.getItem(TOKEN_KEY) || '').trim();
+  btn.classList.toggle('needs-token', !hasToken);
+}
+
+// Wire the shared #api-token dialog input to localStorage. Call from the page script once the DOM
+// exists. Returns the input, or null when the page renders no token UI (Basic/unauthenticated).
 function initTokenInput() {
   const tokenInput = document.getElementById('api-token');
   if (!tokenInput) return null;
   tokenInput.value = localStorage.getItem(TOKEN_KEY) || '';
-  tokenInput.addEventListener('input', () =>
-    localStorage.setItem(TOKEN_KEY, tokenInput.value.trim()),
-  );
+  syncTokenIndicator();
+  tokenInput.addEventListener('input', () => {
+    localStorage.setItem(TOKEN_KEY, tokenInput.value.trim());
+    syncTokenIndicator();
+  });
   return tokenInput;
 }
 
 function handleAuthError(res) {
   if (res.status === 401) {
-    showStatus('Authentication required — enter your API token below.', 'err');
-    const tokenInput = document.getElementById('api-token');
-    if (tokenInput) tokenInput.focus();
+    // Point the user at the nav key button rather than force-opening the dialog: a 401 can come
+    // from a background fetch (e.g. the Print page's on-load /printer/status), and a native modal
+    // there would blanket the page and block interaction. The amber "needs-token" dot + this toast
+    // are the non-blocking prompt; the user opens the dialog when ready.
+    showStatus('Authentication required — enter your API token from the key icon.', 'err');
+    syncTokenIndicator();
     return true;
   }
   return false;
@@ -677,6 +692,20 @@ function initAbout() {
   });
 }
 
+// API-token dialog — same native-<dialog> pattern as initAbout. Present only in bearer mode (the
+// nav renders the button + dialog under browser_token_entry); a no-op otherwise.
+function initTokenDialog() {
+  const dlg = document.getElementById('token-dialog');
+  const openBtn = document.getElementById('token-open');
+  const closeBtn = document.getElementById('token-close');
+  if (!dlg || !openBtn) return;
+  openBtn.addEventListener('click', () => dlg.showModal());
+  if (closeBtn) closeBtn.addEventListener('click', () => dlg.close());
+  dlg.addEventListener('click', (e) => {
+    if (e.target === dlg) dlg.close();
+  });
+}
+
 /* ── Init ─────────────────────────────────────────────────────────────────────
  * The shared head loads this script before <body> exists, so nav wiring waits for the
  * DOM. Pages' own inline scripts (end of body) run before this fires; anything they
@@ -686,4 +715,5 @@ function initAbout() {
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initAbout();
+  initTokenDialog();
 });

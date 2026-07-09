@@ -252,6 +252,15 @@ def test_web_auth_blank_values_rejected() -> None:
         Settings(web_auth_user="   ", web_auth_password="   ")
 
 
+def test_web_auth_blank_half_rejected() -> None:
+    """A set-but-blank half with the other unset must fail the both-or-neither rule symmetrically —
+    presence (env var supplied), not truthiness, so a blank string no longer reads as 'unset'."""
+    with pytest.raises(ValidationError, match="both or neither"):
+        Settings(web_auth_user=None, web_auth_password="")
+    with pytest.raises(ValidationError, match="both or neither"):
+        Settings(web_auth_user="", web_auth_password=None)
+
+
 def test_web_auth_realm_override() -> None:
     s = Settings(web_auth_user="me", web_auth_password="pw", web_auth_realm="my-printer")
     assert s.web_auth_realm == "my-printer"

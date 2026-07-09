@@ -75,12 +75,18 @@ class Settings(BaseSettings):
         """
         user = (self.web_auth_user or "").strip()
         password = (self.web_auth_password or "").strip()
-        if bool(self.web_auth_user) != bool(self.web_auth_password):
+        # Both-or-neither keys on PRESENCE (is-not-None = env var supplied), not truthiness — otherwise
+        # a set-but-blank half (e.g. WEB_AUTH_PASSWORD= with no WEB_AUTH_USER) reads as "unset" and
+        # slips past this rule, while its mirror is rejected. Presence makes the pair symmetric.
+        user_present = self.web_auth_user is not None
+        password_present = self.web_auth_password is not None
+        if user_present != password_present:
             raise ValueError(
                 "WEB_AUTH_USER and WEB_AUTH_PASSWORD must be set together (both or neither) to "
                 "enable HTTP Basic auth for the web UI."
             )
-        if self.web_auth_user is not None and (not user or not password):
+        # With both supplied, neither may be blank/whitespace — enforced for both fields alike.
+        if user_present and (not user or not password):
             raise ValueError(
                 "WEB_AUTH_USER / WEB_AUTH_PASSWORD are set but empty/blank. Provide real "
                 "credentials, or unset both to disable HTTP Basic auth."
@@ -186,6 +192,15 @@ class Settings(BaseSettings):
     # because the status read sits in the print/preflight path; SNMP unreachable fails open (warn +
     # proceed), so a tight bound trades a slow printer's status for not stalling the request.
     snmp_timeout: float = Field(default=2.0, gt=0, le=60, allow_inf_nan=False)
+
+    # Update check. When true, the About modal reports whether a newer release exists by querying
+    # GitHub's release API server-side (cached ~6h, see _UPDATE_CHECK_TTL in app.main); the nav info
+    # icon shows a small dot when an update is available. This is the one outbound call the service
+    # makes on its own, so it is OFF by default — no GitHub egress from a bare install unless asked.
+    # docker-compose.yml opts in (UPDATE_CHECK_ENABLED=true) since that is the primary, connected
+    # deployment path. Set UPDATE_CHECK_ENABLED=true to enable elsewhere; while off, /update-check
+    # reports enabled=false and never fetches.
+    update_check_enabled: bool = False
 
     # Reverse-proxy / Home Assistant ingress support. When set (e.g. PROXY_PATH_HEADER=X-Ingress-Path),
     # each request's value of that header becomes the ASGI root_path: generated URLs — page links,

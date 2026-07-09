@@ -683,6 +683,20 @@ async function loadAboutRuntime() {
   }
 }
 
+// Close a native <dialog> only on a true backdrop click. A click whose target IS the dialog element
+// can be either the ::backdrop OR the dialog's own padding/margins (e.g. the gaps between the About
+// modal's sections) — both report e.target === dlg. Only the backdrop lies OUTSIDE the dialog's
+// bounding rect, so gate on that; clicking blank space inside the modal must not close it.
+function closeDialogOnBackdropClick(dlg) {
+  dlg.addEventListener('click', (e) => {
+    if (e.target !== dlg) return; // a content element was clicked, not the dialog box itself
+    const r = dlg.getBoundingClientRect();
+    const outside =
+      e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    if (outside) dlg.close();
+  });
+}
+
 function initAbout() {
   const dlg = document.getElementById('about-dialog');
   const openBtn = document.getElementById('about-open');
@@ -693,9 +707,146 @@ function initAbout() {
     loadAboutRuntime();
   });
   if (closeBtn) closeBtn.addEventListener('click', () => dlg.close());
-  // A click landing on the dialog element itself (its backdrop/padding, not the content) closes it.
-  dlg.addEventListener('click', (e) => {
-    if (e.target === dlg) dlg.close();
+  closeDialogOnBackdropClick(dlg);
+}
+
+/* ── Update check ───────────────────────────────────────────────────────────────
+ * Asks the server (GET /update-check, public like /health — no token) whether a newer release
+ * exists. When one does, flags the nav info button with a static dot (.has-update) and fills the
+ * About modal's #about-update note with a link to the release. Fails soft: any error, a disabled
+ * check, or an up-to-date result simply leaves the nav untouched. The server caches the GitHub
+ * lookup, so calling this on every page load is cheap.
+ */
+async function initUpdateCheck() {
+  const openBtn = document.getElementById('about-open');
+  if (!openBtn) return;
+  let data;
+  try {
+    const res = await fetch(api('/update-check'), {headers: {Accept: 'application/json'}});
+    if (!res.ok) return;
+    data = await res.json();
+  } catch (e) {
+    return; // network/parse failure — never block the nav on a version check
+  }
+  if (!data.enabled || data.latest == null) return;
+  const note = document.getElementById('about-update');
+  if (data.update_available) {
+    openBtn.classList.add('has-update');
+    openBtn.title = `About labelito — update available (v${data.latest})`;
+    if (note && data.release_url) {
+      const link = document.createElement('a');
+      link.href = data.release_url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = `v${data.latest} available`;
+      note.replaceChildren(link);
+    }
+  } else if (note) {
+    note.textContent = 'up to date';
+    note.classList.add('muted');
+  }
+}
+
+/* ── Copy config ────────────────────────────────────────────────────────────────
+ * The About modal's "Copy config" button copies a plain-text, credential-free config snapshot
+ * (GET /diagnostics — public, redacted server-side) so a user can paste it straight into a GitHub
+ * issue. buildDiagnosticsText is a pure formatter; copyText handles the plain-HTTP fallback.
+ */
+function buildDiagnosticsText(d) {
+  const bool = (v) => (v ? 'yes' : 'no');
+  const rows = [
+    ['Version', `${d.version} (API v${d.api_version})`],
+    ['Model', d.model],
+    ['Driver', d.driver],
+    ['Printer URI', d.printer_uri],
+    ['Transport', d.transport],
+    ['SNMP', d.snmp_enabled ? `enabled (port ${d.snmp_port})` : 'disabled'],
+    ['Auth mode', d.auth_mode],
+    ['History', `${d.history_mode} (browse UI: ${bool(d.history_ui)})`],
+    ['Editor', bool(d.editor_enabled)],
+    ['Templates writable', bool(d.templates_writable)],
+    ['Templates loadable', bool(d.templates_loadable)],
+    ['Templates loaded', `${d.template_count} (examples: ${bool(d.load_examples)})`],
+    ['Language', `${d.default_language} (available: ${d.languages.join(', ')})`],
+    ['Metrics', bool(d.metrics_enabled)],
+    ['Proxy path header', d.proxy_path_header || '(unset)'],
+    [
+      'Render defaults',
+      `dither=${bool(d.default_dither)} threshold=${d.default_threshold} ` +
+        `high_res=${bool(d.default_high_res)} red=${bool(d.default_red)}`,
+    ],
+    ['Length bounds', `${d.min_length_px}–${d.max_length_px} px`],
+    ['Python', d.python_version],
+    ['Platform', d.platform],
+  ];
+  const width = Math.max(...rows.map(([k]) => k.length));
+  const body = rows.map(([k, v]) => `${(k + ':').padEnd(width + 1)} ${v}`).join('\n');
+  return `labelito diagnostics\n====================\n${body}\n`;
+}
+
+// Copy text to the clipboard, falling back to a hidden-textarea + execCommand for plain-HTTP
+// deployments (navigator.clipboard is undefined outside a secure context). Resolves true on success.
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      /* fall through to the legacy path */
+    }
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+function initCopyConfig() {
+  const btn = document.getElementById('about-copy-config');
+  if (!btn) return;
+  const original = btn.textContent;
+  let resetTimer = null;
+  const flash = (msg) => {
+    btn.textContent = msg;
+    if (resetTimer !== null) clearTimeout(resetTimer);
+    // Inline feedback on the button — a #status-area toast would render BEHIND the modal's top layer.
+    resetTimer = setTimeout(() => {
+      btn.textContent = original;
+      resetTimer = null;
+    }, 1500);
+  };
+  btn.addEventListener('click', async () => {
+    // /diagnostics is credential-gated (like GET /templates) — send authHeaders() so bearer callers
+    // attach their token; under Basic auth the browser attaches its own credential automatically.
+    let data;
+    try {
+      const res = await fetch(api('/diagnostics'), {headers: {...authHeaders(), Accept: 'application/json'}});
+      if (res.status === 401) {
+        // handleAuthError is mode-aware (bearer: light the nav key button; Basic: reload-to-sign-in).
+        // Its #status-area toast renders behind the modal's top layer, so the inline flash is the cue
+        // the user actually sees over the modal — kept mode-neutral to fit both auth modes.
+        handleAuthError(res);
+        flash('Sign-in required');
+        return;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = await res.json();
+    } catch (e) {
+      flash('Couldn’t copy — try again');
+      return;
+    }
+    const ok = await copyText(buildDiagnosticsText(data));
+    flash(ok ? 'Copied ✓' : 'Couldn’t copy — try again');
   });
 }
 
@@ -708,9 +859,7 @@ function initTokenDialog() {
   if (!dlg || !openBtn) return;
   openBtn.addEventListener('click', () => dlg.showModal());
   if (closeBtn) closeBtn.addEventListener('click', () => dlg.close());
-  dlg.addEventListener('click', (e) => {
-    if (e.target === dlg) dlg.close();
-  });
+  closeDialogOnBackdropClick(dlg);
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────────────
@@ -722,5 +871,7 @@ function initTokenDialog() {
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initAbout();
+  initUpdateCheck();
+  initCopyConfig();
   initTokenDialog();
 });

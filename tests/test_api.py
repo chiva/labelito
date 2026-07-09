@@ -35,11 +35,247 @@ def test_health_reports_version_contract(client: TestClient) -> None:
 
     data = client.get("/health").json()
     assert data["version"] == importlib.metadata.version("labelito")
-    assert data["api_version"] == 2
+    assert data["api_version"] == 3
+    # The printer URI is internal topology and must NOT appear on the unauthenticated health probe.
+    assert "uri" not in data
 
     # The OpenAPI document must report the same release, not a stale hardcode.
     openapi = client.get("/openapi.json").json()
     assert openapi["info"]["version"] == data["version"]
+
+
+# ── Update check (/update-check) ──────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    ("latest", "current", "expected"),
+    [
+        ("1.4.1", "1.4.0", True),  # patch bump
+        ("v2.0.0", "1.9.9", True),  # tag with leading v, major bump
+        ("1.4.0", "1.4.0", False),  # identical
+        ("1.3.0", "1.4.0", False),  # older upstream
+        ("1.4.0", "0.0.0+unknown", False),  # source-checkout sentinel never claims an update
+        ("garbage", "1.4.0", False),  # unparseable tag fails closed
+        (None, "1.4.0", False),  # no latest fails closed
+    ],
+)
+def test_is_newer(latest: str | None, current: str, expected: bool) -> None:
+    """Version comparison strips a leading v / build+prerelease suffix and fails closed on junk."""
+    import app.main as main_mod
+
+    assert main_mod._is_newer(latest, current) is expected
+
+
+def test_latest_release_cached_never_blocks_on_inflight_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller arriving while another holds the refresh lock returns cached data without fetching."""
+    import app.main as main_mod
+
+    main_mod._update_cache.clear()
+    called: list[int] = []
+    monkeypatch.setattr(
+        main_mod, "_fetch_latest_release", lambda slug: called.append(1) or ("v9.9.9", None)
+    )
+    # Simulate an in-flight refresh by holding the lock; the concurrent caller must not block on it
+    # nor perform the blocking GitHub fetch — it returns the (empty) cache immediately.
+    assert main_mod._update_lock.acquire(blocking=False)
+    try:
+        latest, release_url = main_mod._latest_release_cached()
+    finally:
+        main_mod._update_lock.release()
+    assert (latest, release_url) == (None, None)
+    assert called == [], "must not fetch while another caller holds the refresh lock"
+    main_mod._update_cache.clear()
+
+
+def test_update_check_disabled_makes_no_request(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With UPDATE_CHECK_ENABLED off, the endpoint reports enabled=false and never touches GitHub."""
+    import app.main as main_mod
+
+    def _fail() -> tuple[str | None, str | None]:
+        raise AssertionError("update check must not fetch when disabled")
+
+    monkeypatch.setattr(main_mod.settings, "update_check_enabled", False)
+    monkeypatch.setattr(main_mod, "_latest_release_cached", _fail)
+    body = client.get("/update-check").json()
+    assert body == {
+        "enabled": False,
+        "current": main_mod.APP_VERSION,
+        "latest": None,
+        "update_available": False,
+        "release_url": None,
+    }
+
+
+def test_update_check_reports_available_update(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A strictly newer upstream tag surfaces update_available with a release link."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "update_check_enabled", True)
+    monkeypatch.setattr(main_mod, "APP_VERSION", "1.0.0")
+    monkeypatch.setattr(
+        main_mod,
+        "_latest_release_cached",
+        lambda: ("v2.0.0", "https://github.com/chiva/labelito/releases/tag/v2.0.0"),
+    )
+    body = client.get("/update-check").json()
+    assert body["enabled"] is True
+    assert body["update_available"] is True
+    assert body["latest"] == "v2.0.0"
+    assert body["release_url"] == "https://github.com/chiva/labelito/releases/tag/v2.0.0"
+
+
+def test_update_check_up_to_date_offers_no_link(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the latest release matches the installed version, no update and no link are offered."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "update_check_enabled", True)
+    monkeypatch.setattr(main_mod, "APP_VERSION", "2.0.0")
+    monkeypatch.setattr(main_mod, "_latest_release_cached", lambda: ("v2.0.0", None))
+    body = client.get("/update-check").json()
+    assert body["update_available"] is False
+    assert body["release_url"] is None
+
+
+def test_update_check_needs_no_token(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Public like /health — the nav dot renders before any token is entered, so it must not 401."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "secret-token")
+    monkeypatch.setattr(main_mod.settings, "update_check_enabled", True)
+    monkeypatch.setattr(main_mod, "_latest_release_cached", lambda: (None, None))
+    assert client.get("/update-check").status_code == 200
+
+
+# ── Diagnostics (/diagnostics) ────────────────────────────────────────────────────────────────────
+def test_diagnostics_reports_config(client: TestClient) -> None:
+    """The snapshot carries the misconfiguration-prone fields the copy button pastes into an issue."""
+    data = client.get("/diagnostics").json()
+    for key in (
+        "model",
+        "printer_uri",
+        "transport",
+        "snmp_enabled",
+        "history_mode",
+        "auth_mode",
+        "template_count",
+        "python_version",
+    ):
+        assert key in data, f"missing diagnostics key: {key}"
+
+
+def test_diagnostics_redacts_all_secrets(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No credential may ever appear in the snapshot — it is meant to be pasted into an issue."""
+    import app.main as main_mod
+
+    token = "SECRET-TOKEN-abc123"
+    secrets = {
+        "api_token": token,
+        "web_auth_user": "SECRET-USER-xyz",
+        "web_auth_password": "SECRET-PASS-789",
+        "snmp_community": "SECRET-COMMUNITY-qwe",
+    }
+    for attr, value in secrets.items():
+        monkeypatch.setattr(main_mod.settings, attr, value)
+    # The endpoint is credential-gated once auth is configured — authenticate with the bearer token.
+    auth = {"Authorization": f"Bearer {token}"}
+    body = client.get("/diagnostics", headers=auth).text
+    for value in secrets.values():
+        assert value not in body, f"secret leaked into diagnostics: {value}"
+    # The keys themselves must not be serialized either.
+    data = client.get("/diagnostics", headers=auth).json()
+    for attr in secrets:
+        assert attr not in data
+
+
+@pytest.mark.parametrize(
+    ("api_token", "basic", "expected"),
+    [
+        (None, False, "unauthenticated"),
+        ("tok", False, "bearer"),
+        (None, True, "basic"),
+        ("tok", True, "basic+bearer"),
+    ],
+)
+def test_auth_mode(
+    monkeypatch: pytest.MonkeyPatch, api_token: str | None, basic: bool, expected: str
+) -> None:
+    """auth_mode collapses the (token, basic) combination without revealing the credential."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", api_token)
+    monkeypatch.setattr(main_mod.settings, "web_auth_user", "u" if basic else None)
+    monkeypatch.setattr(main_mod.settings, "web_auth_password", "p" if basic else None)
+    assert main_mod._auth_mode() == expected
+
+
+@pytest.mark.parametrize(
+    ("uri", "expected"),
+    [
+        ("tcp://user:pass@printer.local:9100", "tcp://printer.local:9100"),  # creds stripped
+        ("tcp://192.168.1.100:9100", "tcp://192.168.1.100:9100"),  # no userinfo → unchanged
+        ("file:///Users/name/out.bin", "file:///Users/name/out.bin"),  # path kept, no userinfo
+        ("usb://0x04f9:0x209c", "usb://0x04f9:0x209c"),  # unchanged
+        # Malformed/out-of-range port must NOT raise (urlparse's lazy .port would); creds still stripped.
+        ("tcp://user:pass@host:999999", "tcp://host:999999"),
+        ("tcp://user:pass@host:notaport", "tcp://host:notaport"),
+    ],
+)
+def test_sanitize_printer_uri(uri: str, expected: str) -> None:
+    """Userinfo credentials are stripped from the printer URI; host/port/path are preserved."""
+    import app.main as main_mod
+
+    assert main_mod._sanitize_printer_uri(uri) == expected
+
+
+def test_health_omits_printer_uri(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """/health is unauthenticated and must not expose the printer address at all — not even a
+    sanitized one — so a cred-bearing URI can never leak (no `uri` field; creds absent from body)."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://admin:s3cret@printer.local:9100")
+    resp = client.get("/health")
+    data = resp.json()
+    assert "uri" not in data
+    assert "printer.local" not in resp.text and "s3cret" not in resp.text
+    # transport (the benign kind) is still reported for probes.
+    assert data["transport"] == "network"
+
+
+def test_diagnostics_strips_uri_credentials(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tcp://user:pass@host printer URI must not leak its credentials into the copied blob."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://admin:s3cret@printer.local:9100")
+    data = client.get("/diagnostics").json()
+    assert data["printer_uri"] == "tcp://printer.local:9100"
+    assert "s3cret" not in client.get("/diagnostics").text
+
+
+def test_diagnostics_public_when_unauthenticated(client: TestClient) -> None:
+    """In unauthenticated mode (the default test client) the gate is a no-op — no token needed."""
+    assert client.get("/diagnostics").status_code == 200
+
+
+def test_diagnostics_requires_credential_when_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once a token is configured, the reconnaissance surface must not be readable without it."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "api_token", "secret-token")
+    assert client.get("/diagnostics").status_code == 401
+    ok = client.get("/diagnostics", headers={"Authorization": "Bearer secret-token"})
+    assert ok.status_code == 200
 
 
 # ── Kubernetes probes (/livez, /readyz) ──────────────────────────────────────────────────────────

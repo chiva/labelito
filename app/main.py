@@ -12,10 +12,15 @@ import io
 import json
 import logging
 import os
+import platform
 import re
 import secrets
 import sqlite3
 import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -64,6 +69,7 @@ from app.loader import (
 from app.media import LoadedMedia, MediaMatch, RequiredMedia, media_matches, required_media_for
 from app.models import (
     CapabilityResponse,
+    DiagnosticsResponse,
     DraftPreviewRequest,
     HealthResponse,
     HistoryPage,
@@ -83,6 +89,7 @@ from app.models import (
     TemplateParseRequest,
     TemplateParseResponse,
     TemplateSourceResponse,
+    UpdateCheckResponse,
 )
 from app.render.engine import (
     RenderEngine,
@@ -385,13 +392,149 @@ def _project_url(label: str, default: str) -> str:
 # the number. Independent of the package version, which release-please bumps every release.
 # v2: dropped the `firmware` field from PrinterStatusResponse (/printer/status) — a breaking
 # field removal, so the contract number moves per the rule above.
-API_VERSION = 2
+# v3: dropped the `uri` field from /health — the printer address is internal topology that does not
+# belong on the unauthenticated health probe (it now lives only on the token-protected
+# /printer/status and the auth-gated /diagnostics). Another breaking field removal → bump.
+API_VERSION = 3
 
 # Project identity surfaced in the web UI's About modal. The repo URL is single-sourced from
 # pyproject.toml's [project.urls] Homepage (via dist metadata) so the modal can't drift from it; the
 # license mirrors the stable SPDX id. The fallback matches the canonical Homepage for source checkouts.
 REPO_URL = _project_url("Homepage", "https://github.com/chiva/labelito")
 APP_LICENSE = "GPL-3.0-or-later"
+
+
+# ── Update check ─────────────────────────────────────────────────────────────────
+# Server-side "is there a newer release?" lookup for the About modal + nav update dot. Gated by
+# settings.update_check_enabled (opt-in; off by default, on in docker-compose). The result is cached
+# process-wide for _UPDATE_CHECK_TTL so
+# many browser opens across the three page shells collapse to at most one GitHub call per interval,
+# and the whole path fails soft — any network/parse error caches a None latest rather than erroring the
+# endpoint. Uses stdlib urllib (no new dependency) inside a threadpool-run sync route so the blocking
+# request never touches the event loop.
+_UPDATE_CHECK_TTL = 21600  # 6h — a home print service needs no tighter release-notice latency
+_UPDATE_CHECK_TIMEOUT = 3.0  # seconds; the About modal must not hang on a slow/blocked GitHub
+_update_lock = threading.Lock()
+# Cache entry: {"fetched_monotonic": float, "latest": str | None, "release_url": str | None}
+_update_cache: dict[str, float | str | None] = {}
+
+
+def _github_repo_slug() -> str | None:
+    """Return ``owner/repo`` from REPO_URL, or None when it is not a github.com URL.
+
+    The release lookup only speaks GitHub's API, so a self-hosted/GitLab Homepage (or the source-
+    checkout fallback pointing elsewhere) disables the check rather than querying the wrong host.
+    """
+    parsed = urlparse(REPO_URL)
+    if parsed.hostname not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[0], parts[1]
+    if repo.endswith(".git"):
+        repo = repo[: -len(".git")]
+    return f"{owner}/{repo}"
+
+
+def _parse_version(value: str | None) -> tuple[int, ...] | None:
+    """Parse a version string to a comparable tuple of ints, or None if it is not a real release.
+
+    Strips an optional leading ``v`` and drops any ``+build`` / ``-prerelease`` suffix, then keeps the
+    leading run of dot-separated numeric components (``1.4.0`` → ``(1, 4, 0)``). Returns None for the
+    ``0.0.0+unknown`` source-checkout sentinel (its numeric core is all zeros) and for anything without
+    a numeric core, so an unparseable value never spuriously reads as "an update is available".
+    """
+    if not value:
+        return None
+    core = value.strip().lstrip("vV").split("+", 1)[0].split("-", 1)[0]
+    parts: list[int] = []
+    for segment in core.split("."):
+        if not segment.isdigit():
+            break
+        parts.append(int(segment))
+    if not parts or all(p == 0 for p in parts):
+        return None
+    return tuple(parts)
+
+
+def _is_newer(latest: str | None, current: str | None) -> bool:
+    """True only when ``latest`` parses to a strictly higher version than ``current``.
+
+    Fails closed: if either side is unparseable (None from _parse_version) the answer is False, so a
+    missing/odd tag or the unknown-version sentinel never signals a phantom update.
+    """
+    latest_parsed = _parse_version(latest)
+    current_parsed = _parse_version(current)
+    if latest_parsed is None or current_parsed is None:
+        return False
+    return latest_parsed > current_parsed
+
+
+def _fetch_latest_release(slug: str) -> tuple[str | None, str | None]:
+    """Query GitHub for the latest (non-prerelease, non-draft) release of ``slug``.
+
+    Returns ``(tag_name, html_url)``, or ``(None, None)`` on any failure — a timeout, non-200, or
+    malformed body all degrade to "unknown latest" so the check fails soft. GitHub requires a
+    User-Agent header and returns the newest published, non-prerelease release for this endpoint.
+    """
+    url = f"https://api.github.com/repos/{slug}/releases/latest"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"labelito/{APP_VERSION}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_UPDATE_CHECK_TIMEOUT) as response:
+            if response.status != 200:
+                return None, None
+            payload = json.loads(response.read())
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        log.debug("update check: latest-release lookup failed for %s: %s", slug, exc)
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    tag = payload.get("tag_name")
+    html_url = payload.get("html_url")
+    return (tag if isinstance(tag, str) else None, html_url if isinstance(html_url, str) else None)
+
+
+def _cached_release() -> tuple[str | None, str | None]:
+    """The current cached ``(latest_tag, release_url)`` without touching the network."""
+    return _update_cache.get("latest"), _update_cache.get("release_url")  # type: ignore[return-value]
+
+
+def _latest_release_cached() -> tuple[str | None, str | None]:
+    """Return the cached ``(latest_tag, release_url)``, refreshing at most once per TTL.
+
+    Non-blocking single-flight: on a stale/cold cache exactly ONE caller performs the blocking GitHub
+    fetch (it holds ``_update_lock``); concurrent callers to the public /update-check take the current
+    cached value and return immediately rather than queuing behind the network I/O. This bounds the
+    sync-threadpool workers a slow/offline GitHub lookup can occupy to one, so it can never starve the
+    print/status paths. The update dot is non-critical, so serving a slightly stale/unknown value to
+    the losers of the race is fine. A refresh latches the TTL even on failure so an offline server does
+    not re-fetch on every request."""
+    slug = _github_repo_slug()
+    if slug is None:
+        return None, None
+    now = time.monotonic()
+    fetched = _update_cache.get("fetched_monotonic")
+    if isinstance(fetched, float) and (now - fetched) < _UPDATE_CHECK_TTL:
+        return _cached_release()
+    # Stale or cold: try to become the single refresher. If another caller already holds the lock,
+    # don't block on it — return whatever is cached right now (possibly stale/None).
+    if not _update_lock.acquire(blocking=False):
+        return _cached_release()
+    try:
+        latest, release_url = _fetch_latest_release(slug)
+        _update_cache["fetched_monotonic"] = now
+        _update_cache["latest"] = latest
+        _update_cache["release_url"] = release_url
+        return latest, release_url
+    finally:
+        _update_lock.release()
 
 
 @asynccontextmanager
@@ -1610,10 +1753,131 @@ def health() -> HealthResponse:
         driver=settings.driver,
         model=settings.model,
         transport=infer_transport(settings.printer_uri),
-        uri=settings.printer_uri,
+        # Deliberately NO printer URI here: /health is unauthenticated, and the address is internal
+        # topology (and could carry userinfo creds). It lives on the token-protected /printer/status
+        # and the auth-gated /diagnostics instead. `transport` gives probes the kind without the host.
         template_count=len(registry),
         default_language=settings.default_language,
         languages=translator.available(),
+    )
+
+
+@app.get("/update-check", response_model=UpdateCheckResponse, tags=["System"])
+def update_check() -> UpdateCheckResponse:
+    """Report whether a newer release exists (for the About modal + nav update dot).
+
+    Public and unauthenticated like /health — the page shells are public and the dot must render
+    before any token is entered. Sync ``def`` so FastAPI runs it in the threadpool: the underlying
+    GitHub lookup uses blocking urllib and must not stall the event loop. Fails soft — when disabled,
+    or when the lookup fails, ``latest`` is None and ``update_available`` is False.
+    """
+    if not settings.update_check_enabled:
+        return UpdateCheckResponse(
+            enabled=False,
+            current=APP_VERSION,
+            latest=None,
+            update_available=False,
+            release_url=None,
+        )
+    latest, release_url = _latest_release_cached()
+    available = _is_newer(latest, APP_VERSION)
+    return UpdateCheckResponse(
+        enabled=True,
+        current=APP_VERSION,
+        latest=latest,
+        update_available=available,
+        # Only offer a link when there is actually a newer release to point at; fall back to the
+        # generic releases page if GitHub gave a tag but no html_url.
+        release_url=(release_url or f"{REPO_URL}/releases/latest") if available else None,
+    )
+
+
+def _auth_mode() -> str:
+    """Collapse the (api_token, basic auth) settings into one label for diagnostics.
+
+    Never emits a credential — only which scheme(s) are active. Basic and bearer can both be on
+    (protected endpoints accept either), hence the combined ``basic+bearer``."""
+    if settings.basic_auth_enabled:
+        return "basic+bearer" if settings.api_token else "basic"
+    if settings.api_token:
+        return "bearer"
+    return "unauthenticated"
+
+
+def _sanitize_printer_uri(uri: str) -> str:
+    """Strip userinfo (``user:pass@``) from a printer URI before it enters the diagnostics blob.
+
+    The Copy-config snapshot is meant to be pasted into a public issue, but ``printer_uri`` can embed
+    credentials — e.g. ``tcp://user:pass@host:9100``. Drop the userinfo unconditionally while keeping
+    the scheme, host, port, and path, which are what make a misconfiguration report actionable. A
+    ``file://`` path (no userinfo) is returned unchanged; unparseable input is returned as-is rather
+    than raising inside the diagnostics/health path."""
+    try:
+        parsed = urlparse(uri)
+        if "@" not in (parsed.netloc or ""):
+            return uri
+        # Strip userinfo (everything up to the LAST '@'); keep host[:port] verbatim as a string. This
+        # deliberately avoids urlparse's lazy .port property, which raises ValueError on a malformed or
+        # out-of-range port (e.g. tcp://u:p@host:999999) — that must not surface as a 500 on the public
+        # health/diagnostics paths, and userinfo must still be dropped even when the port is invalid.
+        host_port = parsed.netloc.rsplit("@", 1)[-1]
+        return parsed._replace(netloc=host_port).geturl()
+    except ValueError:
+        return uri
+
+
+@app.get(
+    "/diagnostics",
+    response_model=DiagnosticsResponse,
+    tags=["System"],
+    # check_token (mirrors GET /templates): the snapshot carries deployment reconnaissance — auth
+    # mode, feature toggles, proxy header name, platform, printer config — so require a credential in
+    # BOTH bearer and Basic modes rather than leaking it past a configured login wall. No-op in
+    # unauthenticated mode (nothing to protect). The browser Copy-config fetch sends authHeaders();
+    # under Basic auth the browser attaches its credential automatically.
+    dependencies=[Depends(check_token)],
+    responses={**RESPONSE_401},
+)
+def diagnostics() -> DiagnosticsResponse:
+    """Redacted config snapshot for the About modal's "Copy config" button.
+
+    Gated by check_token: credentials excluded from DiagnosticsResponse are never serialized (see its
+    docstring), but the surface still gives useful reconnaissance against a protected deployment, so
+    it must not be readable without the same credential the rest of the protected API requires. In
+    unauthenticated mode check_token allows through and the endpoint is effectively public, matching
+    the deployment's own chosen posture.
+    """
+    return DiagnosticsResponse(
+        version=APP_VERSION,
+        api_version=API_VERSION,
+        driver=settings.driver,
+        model=settings.model,
+        # Sanitized: the blob is pasted into public issues, so never surface userinfo credentials
+        # that a tcp://user:pass@host URI could carry. transport is still inferred from the original.
+        printer_uri=_sanitize_printer_uri(settings.printer_uri),
+        transport=infer_transport(settings.printer_uri),
+        snmp_enabled=settings.snmp_enabled,
+        snmp_port=settings.snmp_port,
+        history_mode=settings.history_mode,
+        history_ui=settings.history_ui,
+        editor_enabled=settings.editor_enabled,
+        templates_writable=settings.templates_writable,
+        templates_loadable=settings.templates_loadable,
+        template_count=len(registry),
+        load_examples=settings.load_examples,
+        default_language=settings.default_language,
+        languages=translator.available(),
+        metrics_enabled=settings.metrics_enabled,
+        proxy_path_header=settings.proxy_path_header,
+        auth_mode=_auth_mode(),
+        default_dither=settings.default_dither,
+        default_threshold=settings.default_threshold,
+        default_high_res=settings.default_high_res,
+        default_red=settings.default_red,
+        min_length_px=settings.min_length_px,
+        max_length_px=settings.max_length_px,
+        python_version=platform.python_version(),
+        platform=platform.platform(),
     )
 
 

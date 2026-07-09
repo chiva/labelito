@@ -230,9 +230,7 @@ def test_sanitize_printer_uri(uri: str, expected: str) -> None:
     assert main_mod._sanitize_printer_uri(uri) == expected
 
 
-def test_health_strips_uri_credentials(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_health_strips_uri_credentials(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """/health is unauthenticated, so a tcp://user:pass@host URI must not leak its userinfo."""
     import app.main as main_mod
 

@@ -506,7 +506,7 @@ class UpdateCheckResponse(BaseModel):
     """
 
     enabled: bool
-    current: str  # installed package version (APP_VERSION); the 0.0.0+unknown sentinel never updates
+    current: str  # installed package version; the 0.0.0+unknown sentinel never updates
     latest: str | None  # newest release tag, or None when disabled / the lookup failed
     update_available: bool
     release_url: str | None  # link to the newer release, or None when none/unavailable

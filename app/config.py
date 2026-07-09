@@ -75,12 +75,18 @@ class Settings(BaseSettings):
         """
         user = (self.web_auth_user or "").strip()
         password = (self.web_auth_password or "").strip()
-        if bool(self.web_auth_user) != bool(self.web_auth_password):
+        # Both-or-neither keys on PRESENCE (is-not-None = env var supplied), not truthiness — otherwise
+        # a set-but-blank half (e.g. WEB_AUTH_PASSWORD= with no WEB_AUTH_USER) reads as "unset" and
+        # slips past this rule, while its mirror is rejected. Presence makes the pair symmetric.
+        user_present = self.web_auth_user is not None
+        password_present = self.web_auth_password is not None
+        if user_present != password_present:
             raise ValueError(
                 "WEB_AUTH_USER and WEB_AUTH_PASSWORD must be set together (both or neither) to "
                 "enable HTTP Basic auth for the web UI."
             )
-        if self.web_auth_user is not None and (not user or not password):
+        # With both supplied, neither may be blank/whitespace — enforced for both fields alike.
+        if user_present and (not user or not password):
             raise ValueError(
                 "WEB_AUTH_USER / WEB_AUTH_PASSWORD are set but empty/blank. Provide real "
                 "credentials, or unset both to disable HTTP Basic auth."

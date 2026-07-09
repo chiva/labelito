@@ -1940,7 +1940,11 @@ def _template_media(label: str) -> TemplateMedia | None:
     "/templates",
     response_model=list[TemplateInfo],
     tags=["Templates"],
-    dependencies=[Depends(_require_web_auth)],
+    # check_token (not just _require_web_auth): the catalogue is UI data, so require a credential in
+    # BOTH bearer and Basic modes — _require_web_auth alone is a no-op in bearer-only mode and would
+    # leave the list readable without API_TOKEN. No-op in unauthenticated mode. Browser callers
+    # (history/editor pickers) send authHeaders() and treat a 401 as best-effort (empty list).
+    dependencies=[Depends(check_token)],
 )
 def list_templates() -> list[TemplateInfo]:
     return [

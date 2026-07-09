@@ -863,11 +863,17 @@ def test_templates_gated_by_login_wall_in_basic_mode(client: TestClient, monkeyp
     assert client.get("/templates", headers=_basic_header("me", "pw")).status_code == 200
 
 
-def test_templates_public_in_bearer_mode(client: TestClient, monkeypatch) -> None:
-    """Bearer mode leaves /templates public (unchanged) — the login wall is Basic-only."""
+def test_templates_requires_token_in_bearer_mode(client: TestClient, monkeypatch) -> None:
+    """The catalogue is UI data: bearer mode requires the token (not just the Basic login wall)."""
     import app.main as main_mod
 
     monkeypatch.setattr(main_mod.settings, "api_token", "tok")
+    assert client.get("/templates").status_code == 401
+    assert client.get("/templates", headers={"Authorization": "Bearer tok"}).status_code == 200
+
+
+def test_templates_public_in_unauthenticated_mode(client: TestClient) -> None:
+    """Open mode (the client fixture default) leaves /templates reachable — check_token no-ops."""
     assert client.get("/templates").status_code == 200
 
 

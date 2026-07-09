@@ -50,9 +50,9 @@ services:
       #   comment the line below and uncomment ALLOW_UNAUTHENTICATED for trusted-intranet open mode.
       # `${VAR:?msg}` makes `docker compose up` fail fast if API_TOKEN is unset or empty.
       API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set WEB_AUTH_USER/PASSWORD or ALLOW_UNAUTHENTICATED=true}
-      # WEB_AUTH_USER: me            # optional HTTP Basic auth for the web UI (set both user + password)
+      # WEB_AUTH_USER: me            # optional HTTP Basic auth (set both; creds sniffable over plain HTTP)
       # WEB_AUTH_PASSWORD: ${WEB_AUTH_PASSWORD:-}
-      # ALLOW_UNAUTHENTICATED: "true"  # run open (trusted intranet / behind an auth proxy; creds sniffable over plain HTTP)
+      # ALLOW_UNAUTHENTICATED: "true"  # run open (trusted intranet / behind an auth proxy only)
     # /readyz is dependency-aware (templates, transport, history store; 503 when not serving) and
     # unauthenticated. It deliberately excludes printer reachability — see app/main.py's readyz.
     healthcheck:

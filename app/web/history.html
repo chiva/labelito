@@ -125,7 +125,7 @@
     }
 
     // Load the template→media map once (templates change rarely). Best-effort: on any failure the map
-    // stays empty and no row is size-gated. /templates is unauthenticated but we send the token anyway.
+    // stays empty and no row is size-gated. /templates is token-gated, so send the credential.
     async function loadTemplates() {
       try {
         const res = await fetch(api('/templates'), {headers: authHeaders()});

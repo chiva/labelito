@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.0](https://github.com/chiva/labelito/compare/v0.6.0...v0.7.0) (2026-07-09)
+
+
+### Features
+
+* optional HTTP Basic auth + About modal revamp with update check ([#48](https://github.com/chiva/labelito/issues/48)) ([5cbf0dc](https://github.com/chiva/labelito/commit/5cbf0dc3883d77c8ce76afcb4936307dd88f9ed0))
+* optional HTTP Basic auth + single shared API-token entry ([#47](https://github.com/chiva/labelito/issues/47)) ([2585a8e](https://github.com/chiva/labelito/commit/2585a8edcae65bca81a7d5e7a09fc245c5f2e090))
+* severity-aware printer status notices + About/version modal ([#45](https://github.com/chiva/labelito/issues/45)) ([b97d1bc](https://github.com/chiva/labelito/commit/b97d1bc3304d90a27bfb93c6e17fa2d3d20afa54))
+
 ## [0.6.0](https://github.com/chiva/labelito/compare/v0.5.0...v0.6.0) (2026-07-08)
 
 

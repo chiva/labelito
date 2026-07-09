@@ -3434,7 +3434,7 @@ def test_edit_pencil_on_every_card_deep_links_to_studio(authed_page_examples: Pa
     """Every template card — bundled example AND the user's own — carries a pencil `.tpl-edit`
     deep-link to the studio preloaded with that template, with an accessible name. The example card
     is still visually flagged (`.tpl-card-example`); the user's own is not. The legend explaining the
-    dimming is shown."""
+    dashed marker is shown."""
     authed_page_examples.goto("/")
 
     example_card = authed_page_examples.locator('.tpl-card[data-name="shipped-example"]')
@@ -3442,7 +3442,7 @@ def test_edit_pencil_on_every_card_deep_links_to_studio(authed_page_examples: Pa
     expect(example_card).to_have_count(1)
     expect(user_card).to_have_count(1)
 
-    # The example is muted; the user's own is not.
+    # The example is flagged with the dashed marker; the user's own is not.
     expect(example_card).to_have_class(re.compile(r"\btpl-card-example\b"))
     expect(user_card).not_to_have_class(re.compile(r"\btpl-card-example\b"))
 
@@ -3454,10 +3454,10 @@ def test_edit_pencil_on_every_card_deep_links_to_studio(authed_page_examples: Pa
         assert href is not None and href.endswith(f"/editor?load={name}"), href
         assert edit.get_attribute("aria-label") == f"Edit {name} in Studio"
 
-    # The legend is shown and explains the dimming.
+    # The legend is shown and explains the dashed marker.
     legend = authed_page_examples.locator("#tpl-legend")
     expect(legend).to_be_visible()
-    expect(legend).to_contain_text("Dimmed = bundled example")
+    expect(legend).to_contain_text("Dashed = bundled example")
 
 
 def test_edit_pencil_deep_link_preloads_editor(authed_page_examples: Page) -> None:
@@ -3471,7 +3471,7 @@ def test_edit_pencil_deep_link_preloads_editor(authed_page_examples: Page) -> No
 def test_edit_pencil_hidden_when_templates_not_loadable(authed_page_examples_no_load: Page) -> None:
     """With TEMPLATES_LOADABLE=false the /templates/{name}/source route 404s, so the editor cannot
     preload a template — the print page must therefore hide the per-card `.tpl-edit` pencil on every
-    card and drop the legend's "use the pencil" hint. The dimmed-example legend itself still renders
+    card and drop the legend's "use the pencil" hint. The dashed-example legend itself still renders
     (bundled examples are still present); only the pencil affordance is gated off."""
     authed_page_examples_no_load.goto("/")
 
@@ -3484,8 +3484,8 @@ def test_edit_pencil_hidden_when_templates_not_loadable(authed_page_examples_no_
     # No card — example or user's own — carries the edit pencil.
     expect(authed_page_examples_no_load.locator("a.tpl-edit")).to_have_count(0)
 
-    # The legend still explains the dimming but omits the pencil hint.
+    # The legend still explains the dashed marker but omits the pencil hint.
     legend = authed_page_examples_no_load.locator("#tpl-legend")
     expect(legend).to_be_visible()
-    expect(legend).to_contain_text("Dimmed = bundled example")
+    expect(legend).to_contain_text("Dashed = bundled example")
     expect(legend).not_to_contain_text("pencil")

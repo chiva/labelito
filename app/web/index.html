@@ -902,6 +902,7 @@
       container.replaceChildren();
       let hiddenCount = 0;
       let anyExample = false;
+      let anyUser = false;
       const flatValues = [];
       for (const [key, g] of ordered) {
         if (!visibleKeys.has(key)) { hiddenCount += g.items.length; continue; }
@@ -934,8 +935,11 @@
           flatValues.push(t.name);
           const card = document.createElement('label');
           card.className = 'tpl-card';
-          // Bundled examples are visually muted so the user's own templates stand out.
+          // Bundled examples carry a dashed border so they read as samples; the additional opacity
+          // muting only kicks in when the user's own templates are present too (see the .mixed toggle
+          // after this loop and the .tpl-card-example rules in app.css).
           if (t.is_example) { card.classList.add('tpl-card-example'); anyExample = true; }
+          else { anyUser = true; }
           card.dataset.name = t.name;
           const radio = document.createElement('input');
           radio.type = 'radio';
@@ -986,6 +990,11 @@
         section.appendChild(grid);
         container.appendChild(section);
       }
+
+      // Gate the relative opacity-muting of example cards: it only means "yours stand out" when the
+      // user actually has their own templates too. On an all-examples install the dashed border alone
+      // carries the "sample" signal, and muting the whole picker would just read as disabled.
+      container.classList.toggle('mixed', anyExample && anyUser);
 
       // Apply the selection. The radio 'change' handler only fires on user clicks, so when the
       // selection actually moved (roll-driven refocus, or the old pick is now hidden) re-render
@@ -1087,7 +1096,7 @@
       };
     }
 
-    // Legend explaining the dimmed cards, shown only when at least one bundled example is visible.
+    // Legend explaining the dashed cards, shown only when at least one bundled example is visible.
     // DOM/textContent only (no innerHTML) to keep the XSS discipline of the rest of this file.
     function renderExampleLegend(anyExample) {
       const el = document.getElementById('tpl-legend');
@@ -1095,7 +1104,7 @@
       el.replaceChildren();
       if (!anyExample) { el.style.display = 'none'; return; }
       el.style.display = '';
-      el.append('Dimmed = bundled example');
+      el.append('Dashed = bundled example');
       if (EDITOR_ENABLED && TEMPLATES_LOADABLE) el.append(' — use the pencil to edit any template in the studio.');
     }
 

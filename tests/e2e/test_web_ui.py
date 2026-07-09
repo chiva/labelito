@@ -1562,6 +1562,10 @@ def test_editor_label_reference_refetches_status_on_token_entry(anon_page: Page)
     # Let the tokenless initial /printer/status load settle so the response we capture below is the
     # one the token entry triggers, not the page-load one.
     anon_page.wait_for_load_state("networkidle")
+    # The token input now lives in the shared nav dialog (opened from the key button), not an inline
+    # card — open it before typing.
+    anon_page.click("#token-open")
+    expect(anon_page.locator("#api-token")).to_be_visible()
     with anon_page.expect_response(lambda r: r.url.endswith("/printer/status")) as resp_info:
         anon_page.fill("#api-token", "a-token")  # 'input' → debounced loadLabelReference()
     assert resp_info.value.url.endswith("/printer/status"), (
@@ -2625,6 +2629,27 @@ def test_about_modal_opens_fills_runtime_and_closes(authed_page: Page) -> None:
     expect(dialog.locator("#about-transport")).not_to_have_text("…")
 
     authed_page.keyboard.press("Escape")
+    expect(dialog).to_be_hidden()
+
+
+def test_token_modal_opens_from_nav_and_persists(anon_page: Page) -> None:
+    """The API-token entry is a single shared nav modal (not a per-page card): the key button opens
+    it, typing persists to localStorage, and Esc closes it. Uses anon_page so the key button also
+    carries its "unsaved" hint until a token is entered."""
+    anon_page.goto("/")
+    dialog = anon_page.locator("#token-dialog")
+    key_btn = anon_page.locator("#token-open")
+    expect(dialog).to_be_hidden()
+    expect(key_btn).to_have_class(re.compile(r"\bneeds-token\b"))
+
+    key_btn.click()
+    expect(dialog).to_be_visible()
+    anon_page.fill("#api-token", "typed-token")
+    assert anon_page.evaluate("() => localStorage.getItem('labelito_api_token')") == "typed-token"
+    # A stored token clears the "unsaved" hint.
+    expect(key_btn).not_to_have_class(re.compile(r"\bneeds-token\b"))
+
+    anon_page.keyboard.press("Escape")
     expect(dialog).to_be_hidden()
 
 

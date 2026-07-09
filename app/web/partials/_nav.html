@@ -42,6 +42,11 @@
         {% endfor %}
       </select>
     </span>
+    {% if browser_token_entry %}
+    <button id="token-open" class="btn-icon" type="button" title="API token" aria-label="API token">
+      {{ icon("key") }}
+    </button>
+    {% endif %}
     <button id="about-open" class="btn-icon" type="button" title="About labelito" aria-label="About labelito">
       {{ icon("circle-info") }}
     </button>
@@ -51,6 +56,7 @@
   </div>
 </nav>
 {% include "partials/_about.html" %}
+{% if browser_token_entry %}{% include "partials/_token.html" %}{% endif %}
 {# Resolve the label language the moment the select exists — pages fire their initial preview
    from end-of-body scripts, and a persisted choice applied any later (e.g. at DOMContentLoaded)
    would preview in the default language yet print in the saved one. #}

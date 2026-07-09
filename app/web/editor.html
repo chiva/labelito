@@ -227,16 +227,6 @@
       </details>
     </div>
     {% endraw %}
-
-    <div class="card" style="margin-top:18px">
-      <div class="card-head">
-        <span class="card-title">API token</span>
-      </div>
-      <div class="field">
-        <input type="password" id="api-token" class="input" placeholder="Bearer token" autocomplete="off">
-        <span class="hint">Saved in this browser only; leave blank if the server runs unauthenticated. Entering it re-checks the printer status for the label reference.</span>
-      </div>
-    </div>
   </div>
 
   <div id="status-area"></div>
@@ -600,7 +590,9 @@
       const sel = document.getElementById('load-select');
       if (!sel) return;  // control absent when TEMPLATES_LOADABLE=false
       try {
-        const res = await fetch(api('/templates'));
+        // /templates is token-gated; send the credential like the other callers. Best-effort — a
+        // 401 (tokenless first run) just leaves the picker empty until a token is entered.
+        const res = await fetch(api('/templates'), {headers: authHeaders()});
         if (!res.ok) return;
         const templates = await res.json();
 

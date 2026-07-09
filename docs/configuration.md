@@ -16,8 +16,11 @@ working directory; names are case-insensitive). Defaults come from `app/config.p
 |---|---|---|
 | `MODEL` | `QL-810W` | Brother QL model — must be in the supported list (see [Supported printers](#label-sizes) / `GET /capabilities`). |
 | `PRINTER_URI` | `tcp://192.168.1.100:9100` | Printer address. The transport is **inferred from the scheme** — `tcp://` → network, `usb://` → usb, `file://` → file (see formats below). |
-| `API_TOKEN` | *(unset)* | If set, all `/preview`, `/print*`, `/reprint/{job_id}`, and `/reload` endpoints require `Authorization: Bearer <token>`. The service **refuses to start** unless this or `ALLOW_UNAUTHENTICATED` is set. |
-| `ALLOW_UNAUTHENTICATED` | `false` | Set `true` to explicitly run protected endpoints without a token (trusted intranet only). Logs a loud warning at startup. |
+| `API_TOKEN` | *(unset)* | If set, the protected endpoints (`/preview`, `/print*`, `/reprint/{job_id}`, `/reload`, `GET /templates`, history/studio routes) require `Authorization: Bearer <token>`. The service **refuses to start** unless this, `WEB_AUTH_USER`/`WEB_AUTH_PASSWORD`, or `ALLOW_UNAUTHENTICATED` is set. Optional (bearer for scripts/automation) once HTTP Basic auth is configured — endpoints accept either credential. |
+| `WEB_AUTH_USER` | *(unset)* | Username for optional **HTTP Basic auth** on the web UI. Set together with `WEB_AUTH_PASSWORD` (both or neither, non-blank — a half-configured pair fails startup). When enabled, the **whole UI is a login wall**: the page shells (`/`, `/editor`, `/history`) and the protected API sit behind the native browser login. The browser then re-sends its credentials on every same-origin request automatically, so no in-page API-token entry is shown. Best for deployments **without** a reverse proxy that want the UI protected. |
+| `WEB_AUTH_PASSWORD` | *(unset)* | Password for HTTP Basic auth (see `WEB_AUTH_USER`). |
+| `WEB_AUTH_REALM` | `labelito` | Realm string shown in the browser's Basic-auth login dialog. |
+| `ALLOW_UNAUTHENTICATED` | `false` | Set `true` to explicitly run without any app-level auth (trusted intranet, or auth handled by a reverse proxy). Logs a loud warning at startup. Only satisfies the startup guard when neither `API_TOKEN` nor `WEB_AUTH_*` is set. |
 | `TEMPLATES_DIR` | `templates` (`/app/templates` in Docker) | Template search path — the user/override slot. Loaded **in addition** to `EXAMPLE_TEMPLATES_DIR`; a file here wins over a bundled example of the same internal `name`. May be empty. |
 | `EXAMPLE_TEMPLATES_DIR` | `templates` (`/app/examples/templates` in Docker) | Bundled example templates, baked into the image **outside** the `TEMPLATES_DIR` volume so a bind-mount can't shadow them and upgrades ship new examples. Read-only, not a volume. Defaults to `TEMPLATES_DIR` on bare-metal (loaded once). |
 | `FONTS_DIR` | `fonts` (`/app/fonts`) | Custom TrueType font directory. Falls back to bundled DejaVu. |
@@ -143,13 +146,37 @@ original request); see [known limitations](known-limitations.md).
 
 ## Deployment & security notes
 
-- **Auth & network exposure.** The service fails closed — it won't start without either `API_TOKEN`
-  or an explicit `ALLOW_UNAUTHENTICATED=true`. Prefer a token whenever the service is reachable
-  beyond a trusted LAN; it guards every write/preview path. The bearer token is sent **in clear over
-  plain HTTP**, so for anything past a trusted intranet put labelito behind a TLS-terminating reverse
-  proxy rather than relying on the token alone. **Don't expose port `8765` to the public internet.**
-  Serving under a sub-path (`https://host/labelito/`)? Have the proxy send the prefix in a header and
-  set `PROXY_PATH_HEADER` to that header's name so generated URLs stay prefix-correct.
+- **Auth & network exposure.** The service fails closed — it won't start without one of `API_TOKEN`,
+  `WEB_AUTH_USER`/`WEB_AUTH_PASSWORD`, or an explicit `ALLOW_UNAUTHENTICATED=true`. Prefer some auth
+  whenever the service is reachable beyond a trusted LAN; it guards every write/preview path.
+  Credentials are sent **in clear over plain HTTP** (the bearer token, and Basic auth's base64 which
+  is trivially reversible), so for anything past a trusted intranet put labelito behind a
+  TLS-terminating reverse proxy. **Don't expose port `8765` to the public internet.** Serving under a
+  sub-path (`https://host/labelito/`)? Have the proxy send the prefix in a header and set
+  `PROXY_PATH_HEADER` to that header's name so generated URLs stay prefix-correct.
+- **Choosing an auth mode.** All three are permutations of the same build:
+
+  | Mode | Set | Page shells | API auth | Browser token entry |
+  |---|---|---|---|---|
+  | **Behind a reverse proxy** (proxy does auth) | `ALLOW_UNAUTHENTICATED=true` | public (app); proxy guards | none (app) | hidden |
+  | **Bearer token** (scripts / advanced) | `API_TOKEN=…` | public | bearer | shown — a key button in the nav opens a token dialog, saved to this browser only |
+  | **HTTP Basic** (no proxy, protect the UI) | `WEB_AUTH_USER=…` `WEB_AUTH_PASSWORD=…` | login wall | Basic **or** bearer | hidden (browser sends Basic automatically) |
+
+  Basic and bearer can be set together: the browser logs in once via Basic, scripts keep using the
+  bearer token (`Authorization: Bearer …`) or `curl -u user:pass`. Note HTTP Basic has **no clean
+  logout** — browsers cache the credentials until closed.
+- **Reverse-proxy auth recipe.** To let a proxy (Caddy, nginx, Authelia, Home Assistant ingress)
+  handle authentication and TLS, run labelito open with `ALLOW_UNAUTHENTICATED=true` and never expose
+  its port directly — only the proxy should reach it. Example Caddy Basic-auth front:
+
+  ```caddy
+  labels.example.com {
+    basic_auth {
+      me $2a$14$…              # caddy hash-password
+    }
+    reverse_proxy 127.0.0.1:8765
+  }
+  ```
 - **Request size.** Bodies over ~8 MiB are rejected (`413`) by `Content-Length` before being read,
   bounding upload memory. A body-bearing request that omits `Content-Length` (a chunked upload) is
   rejected with `411`, so the guard can't be bypassed; a public-facing deployment should still set a

@@ -40,7 +40,6 @@
     .list-foot .btn { padding: 6px 12px; font-size: 12px; }
 
     .legend { display: block; margin: 14px 2px 0; }
-    .token-card { margin-top: 18px; }
 
     @media (max-width: 640px) {
       .job-row { flex-wrap: wrap; }
@@ -72,16 +71,6 @@
     </div>
 
     <p class="hint legend">Text, QR, barcode and icon labels can be reprinted from their saved fields (the result may differ if you've since edited the template or its icons).<br>Labels built from an uploaded image can't be reprinted — the image isn't stored; re-submit the original print.</p>
-
-    <div class="card token-card">
-      <div class="card-head">
-        <span class="card-title">API token</span>
-      </div>
-      <div class="field">
-        <input type="password" id="api-token" class="input" placeholder="Bearer token" autocomplete="off">
-        <span class="hint">Saved in this browser only; leave blank if the server runs unauthenticated.</span>
-      </div>
-    </div>
   </div>
 
   <div id="status-area"></div>
@@ -136,7 +125,7 @@
     }
 
     // Load the template→media map once (templates change rarely). Best-effort: on any failure the map
-    // stays empty and no row is size-gated. /templates is unauthenticated but we send the token anyway.
+    // stays empty and no row is size-gated. /templates is token-gated, so send the credential.
     async function loadTemplates() {
       try {
         const res = await fetch(api('/templates'), {headers: authHeaders()});

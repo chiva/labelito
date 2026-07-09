@@ -64,9 +64,12 @@ services:
       HISTORY_MODE: file                       # durable reprint/dedup on ./data
       # No default secret ships — `docker compose up` fails fast (the `${VAR:?msg}` interpolation)
       # unless API_TOKEN is set, e.g. in a .env file beside the compose file (auto-loaded).
-      # To run without auth on a trusted LAN instead: comment out the API_TOKEN line and
-      # uncomment ALLOW_UNAUTHENTICATED below.
-      API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set ALLOW_UNAUTHENTICATED=true}
+      # Alternatives (comment out API_TOKEN, then pick one): WEB_AUTH_USER/WEB_AUTH_PASSWORD for a
+      # browser login wall (HTTP Basic — protects the whole UI, no reverse proxy needed), or
+      # ALLOW_UNAUTHENTICATED for a trusted LAN / behind an auth proxy. See docs/configuration.md.
+      API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set WEB_AUTH_USER/PASSWORD or ALLOW_UNAUTHENTICATED=true}
+      # WEB_AUTH_USER: me
+      # WEB_AUTH_PASSWORD: ${WEB_AUTH_PASSWORD:-}
       # ALLOW_UNAUTHENTICATED: "true"  # run open (trusted intranet only)
     healthcheck:  # dependency-aware readiness; printer reachability deliberately excluded
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/readyz')"]

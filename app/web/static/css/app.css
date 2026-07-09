@@ -660,6 +660,21 @@ input[type="radio"] {
   animation: lbl-spin 0.8s linear infinite;
 }
 
+/* While no API token is stored yet, the nav key button breathes amber so a first-run visitor on a
+   secured deployment is drawn to it before hitting a 401. Toggled by syncTokenIndicator() in
+   labelito.js. */
+.btn-icon.needs-token {
+  animation: lbl-breathe 2.4s ease-in-out infinite;
+}
+/* Honor reduced-motion: drop the breathing but keep the icon statically amber so it still stands
+   out without animation. */
+@media (prefers-reduced-motion: reduce) {
+  .btn-icon.needs-token {
+    animation: none;
+    color: var(--amber);
+  }
+}
+
 /* ── Inline SVG icons ───────────────────────────────────────────────────────── */
 
 .icon {

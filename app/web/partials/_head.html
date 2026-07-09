@@ -33,5 +33,8 @@
   // Proxy path prefix for every client-side fetch — labelito.js's api() reads it. Must be set
   // before that script loads. tojson keeps an attacker-shaped prefix inert inside the literal.
   window.LABELITO_BASE = {{ base_path | default("") | tojson }};
+  // True when HTTP Basic auth is on: authHeaders() then omits the bearer token so the browser's
+  // own Basic credential is used (an explicit Authorization header would override it).
+  window.LABELITO_BASIC_AUTH = {{ basic_auth | default(false) | tojson }};
 </script>
 <script src="{{ base_path | default('') }}/static/js/labelito.js?v={{ asset_v }}"></script>

@@ -140,6 +140,18 @@ button:focus-visible {
   }
 }
 
+/* Slow color "breathe" between the resting icon tint and the amber attention color, used on the
+   nav key button while no API token is stored so a first-run visitor is drawn to it. */
+@keyframes lbl-breathe {
+  0%,
+  100% {
+    color: var(--ink3);
+  }
+  50% {
+    color: var(--amber);
+  }
+}
+
 @keyframes lbl-spin {
   to {
     transform: rotate(360deg);

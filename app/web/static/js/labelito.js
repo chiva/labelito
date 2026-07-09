@@ -832,8 +832,11 @@ function initCopyConfig() {
     try {
       const res = await fetch(api('/diagnostics'), {headers: {...authHeaders(), Accept: 'application/json'}});
       if (res.status === 401) {
-        flash('API token required');
-        syncTokenIndicator(); // nudge toward the key icon rather than a toast hidden behind the modal
+        // handleAuthError is mode-aware (bearer: light the nav key button; Basic: reload-to-sign-in).
+        // Its #status-area toast renders behind the modal's top layer, so the inline flash is the cue
+        // the user actually sees over the modal — kept mode-neutral to fit both auth modes.
+        handleAuthError(res);
+        flash('Sign-in required');
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

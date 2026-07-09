@@ -1,36 +1,45 @@
+# Local hooks invoke the project's own tooling through `uv run`, so pre-commit uses the exact
+# ruff/mypy/uv versions pinned in uv.lock — the same ones CI runs. This removes the version drift
+# of pre-commit's separately-pinned mirror repos (which had ruff v0.11.13 vs CI's 0.15.18, mypy
+# v1.16.0 vs CI's 2.1.0): a commit that passes these hooks can no longer be rejected by CI for a
+# formatting or typing difference. CI counterparts:
+#   ruff        -> `uv run ruff check .` / `uv run ruff format --check .`
+#   mypy        -> `uv sync --group typing` + `uv run mypy app/`
+#   uv-lock     -> `uv lock --check`
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.13
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix]
+        name: ruff (lint + autofix)
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: ruff-format
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.16.0
-    hooks:
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: mypy
-        # Mirror [tool.mypy] exclude in pyproject.toml: tests are not type-checked.
-        # pre-commit passes staged filenames explicitly, which bypasses mypy's own
-        # exclude, so it must be restated here.
-        exclude: ^tests/
-        # mypy resolves types from this isolated env, not the project venv, so it must carry the
-        # runtime packages whose types app/ relies on: fastapi (route decorators — without it the
-        # @app.get/post decorators degrade to untyped and every handler trips
-        # "untyped decorator makes function untyped"; fastapi pulls in starlette + pydantic) and
-        # types-Pillow (PIL stubs for the font/image types in app/render). Versions mirror
-        # pyproject's [project.dependencies] and the [typing] extra. brother_ql / prometheus_client /
-        # jinja2 ship no stubs and stay covered by --ignore-missing-imports.
-        additional_dependencies:
-          - types-PyYAML
-          - types-Pillow>=10.2.0
-          - fastapi>=0.115.0
-          - pydantic>=2.8.0
-          - pydantic-settings>=2.4.0
-        args: [--ignore-missing-imports]
-  - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.11.21
-    hooks:
+        name: mypy (app/)
+        # Mirror CI exactly: run over the whole package (pass_filenames: false, mypy needs full
+        # import context) with the typing group synced. Config comes from [tool.mypy] in
+        # pyproject.toml (strict, ignore_missing_imports, exclude tests/), so there is no per-hook
+        # exclude/args/additional_dependencies list to keep in sync anymore.
+        entry: uv run --group typing mypy app/
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi]
       - id: uv-lock
+        name: uv lock --check (uv.lock in sync with pyproject.toml)
+        # Non-mutating, identical to CI's `lock` job. A stale lockfile fails the commit with the
+        # same message CI would show, so the local gate and CI can't disagree; the dev re-locks
+        # with `uv lock` explicitly rather than the hook silently rewriting uv.lock mid-commit.
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
   - repo: https://github.com/adrienverge/yamllint
     rev: v1.35.1
     hooks:

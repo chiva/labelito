@@ -1783,6 +1783,24 @@ def _auth_mode() -> str:
     return "unauthenticated"
 
 
+def _sanitize_printer_uri(uri: str) -> str:
+    """Strip userinfo (``user:pass@``) from a printer URI before it enters the diagnostics blob.
+
+    The Copy-config snapshot is meant to be pasted into a public issue, but ``printer_uri`` can embed
+    credentials — e.g. ``tcp://user:pass@host:9100``. Drop the userinfo unconditionally while keeping
+    the scheme, host, port, and path, which are what make a misconfiguration report actionable. A
+    ``file://`` path (no userinfo) is returned unchanged; unparseable input is returned as-is rather
+    than raising inside the diagnostics path."""
+    try:
+        parsed = urlparse(uri)
+    except ValueError:
+        return uri
+    if "@" not in (parsed.netloc or "") or not parsed.hostname:
+        return uri
+    netloc = f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
+    return parsed._replace(netloc=netloc).geturl()
+
+
 @app.get(
     "/diagnostics",
     response_model=DiagnosticsResponse,
@@ -1809,7 +1827,9 @@ def diagnostics() -> DiagnosticsResponse:
         api_version=API_VERSION,
         driver=settings.driver,
         model=settings.model,
-        printer_uri=settings.printer_uri,
+        # Sanitized: the blob is pasted into public issues, so never surface userinfo credentials
+        # that a tcp://user:pass@host URI could carry. transport is still inferred from the original.
+        printer_uri=_sanitize_printer_uri(settings.printer_uri),
         transport=infer_transport(settings.printer_uri),
         snmp_enabled=settings.snmp_enabled,
         snmp_port=settings.snmp_port,

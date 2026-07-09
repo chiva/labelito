@@ -191,6 +191,34 @@ def test_auth_mode(
     assert main_mod._auth_mode() == expected
 
 
+@pytest.mark.parametrize(
+    ("uri", "expected"),
+    [
+        ("tcp://user:pass@printer.local:9100", "tcp://printer.local:9100"),  # creds stripped
+        ("tcp://192.168.1.100:9100", "tcp://192.168.1.100:9100"),  # no userinfo → unchanged
+        ("file:///Users/name/out.bin", "file:///Users/name/out.bin"),  # path kept, no userinfo
+        ("usb://0x04f9:0x209c", "usb://0x04f9:0x209c"),  # unchanged
+    ],
+)
+def test_sanitize_printer_uri(uri: str, expected: str) -> None:
+    """Userinfo credentials are stripped from the printer URI; host/port/path are preserved."""
+    import app.main as main_mod
+
+    assert main_mod._sanitize_printer_uri(uri) == expected
+
+
+def test_diagnostics_strips_uri_credentials(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tcp://user:pass@host printer URI must not leak its credentials into the copied blob."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "printer_uri", "tcp://admin:s3cret@printer.local:9100")
+    data = client.get("/diagnostics").json()
+    assert data["printer_uri"] == "tcp://printer.local:9100"
+    assert "s3cret" not in client.get("/diagnostics").text
+
+
 def test_diagnostics_public_when_unauthenticated(client: TestClient) -> None:
     """In unauthenticated mode (the default test client) the gate is a no-op — no token needed."""
     assert client.get("/diagnostics").status_code == 200

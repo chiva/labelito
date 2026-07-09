@@ -131,6 +131,9 @@ class LiveServer:
                 "PRINTER_URI": f"file://{self._sink_path}",
                 "HISTORY_MODE": "memory",
                 "DEFAULT_LANGUAGE": "en",
+                # Never let a page load in dev/e2e make a real GitHub request — the nav calls
+                # /update-check on every load. Tests that exercise the update dot mock the response.
+                "UPDATE_CHECK_ENABLED": "false",
                 # Enable the in-browser label builder (YAML template studio) by default for local
                 # dev/e2e runs so it's reachable without extra setup. Server-save (TEMPLATES_WRITABLE)
                 # is intentionally left OFF: the harness's templates_dir is the repo's TRACKED

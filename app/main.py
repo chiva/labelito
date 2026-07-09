@@ -104,12 +104,11 @@ from app.transports.base import PrinterStatus, Transport, get_transport, infer_t
 from app.transports.file import FileTransport  # noqa: F401 — registers transport
 from app.transports.network import NetworkTransport  # noqa: F401 — registers transport
 from app.transports.snmp import (
-    CONSOLE_READY,
-    CONSOLE_TRANSIENT_BUSY,
     HR_PRINTER_ERROR_BITS,
     HR_PRINTER_STATUS_BUSY,
-    HR_PRINTER_STATUS_OTHER,
     PrinterSNMPStatus,
+    is_latched_fault,
+    is_transient_busy_console,
     query_snmp_status,
 )
 from app.transports.usb import (
@@ -813,12 +812,7 @@ def _raise_if_media_incompatible(label_id: str, loaded: PrinterSNMPStatus) -> No
     # end of a normal print (verified live 2026-07-09); that is not the latch (which shows "ERROR" and
     # persists), so exclude CONSOLE_TRANSIENT_BUSY or a back-to-back print catching that ~1s window
     # would falsely 409.
-    if (
-        loaded.printer_status == HR_PRINTER_STATUS_OTHER
-        and loaded.console_text is not None
-        and loaded.console_text.strip().upper() != CONSOLE_READY
-        and loaded.console_text.strip().upper() not in CONSOLE_TRANSIENT_BUSY
-    ):
+    if is_latched_fault(loaded.printer_status, loaded.console_text):
         LABEL_ERRORS.labels(reason="printer_error").inc()
         raise HTTPException(
             409,
@@ -2039,13 +2033,7 @@ def _status_has_hard_fault(status: PrinterStatus) -> bool:
     hrPrinterStatus ride in ``raw`` (see from_snmp)."""
     if (status.raw.get("error_state_bits") or 0) != 0:
         return True
-    console = status.console_text
-    return (
-        status.raw.get("printer_status") == HR_PRINTER_STATUS_OTHER
-        and console is not None
-        and console.strip().upper() != CONSOLE_READY
-        and console.strip().upper() not in CONSOLE_TRANSIENT_BUSY
-    )
+    return is_latched_fault(status.raw.get("printer_status"), status.console_text)
 
 
 def _status_is_busy(status: PrinterStatus) -> bool:
@@ -2057,12 +2045,7 @@ def _status_is_busy(status: PrinterStatus) -> bool:
     printer_status = status.raw.get("printer_status")
     if printer_status in HR_PRINTER_STATUS_BUSY:
         return True
-    console = status.console_text
-    return (
-        printer_status == HR_PRINTER_STATUS_OTHER
-        and console is not None
-        and console.strip().upper() in CONSOLE_TRANSIENT_BUSY
-    )
+    return is_transient_busy_console(printer_status, status.console_text)
 
 
 # brother_ql ESC i S phase byte (RESP_PHASE_TYPES): the printer is READY only in 'Waiting to receive';

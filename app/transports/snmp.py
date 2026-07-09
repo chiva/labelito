@@ -158,6 +158,27 @@ CONTINUOUS_FEED_SENTINELS = (-1, -2)
 MEDIA_DIM_HUNDREDTHS_PER_MM = 100
 
 
+def is_latched_fault(printer_status: object, console_text: str | None) -> bool:
+    """The bitmask-blind QL latch signature: ``hrPrinterStatus=other(1)`` with a non-``READY`` console
+    that is NOT a transient working state (``CONSOLE_TRANSIENT_BUSY``). Shared by the ``/print``
+    preflight and the status-badge fault gate so the two cannot drift if the transient list or the
+    latch signature changes again. Callers pass the raw ``(printer_status, console_text)`` from
+    whichever shape they hold — ``PrinterSNMPStatus`` fields or ``PrinterStatus.raw``/``console_text``."""
+    if printer_status != HR_PRINTER_STATUS_OTHER or console_text is None:
+        return False
+    console = console_text.strip().upper()
+    return console != CONSOLE_READY and console not in CONSOLE_TRANSIENT_BUSY
+
+
+def is_transient_busy_console(printer_status: object, console_text: str | None) -> bool:
+    """The end-of-print transient the QL emits (verified live 2026-07-09): ``hrPrinterStatus=other(1)``
+    with a working console in ``CONSOLE_TRANSIENT_BUSY`` (e.g. "BUSY"). The complement of
+    :func:`is_latched_fault` within ``other(1)`` — surfaced as PRINTING, never a fault."""
+    if printer_status != HR_PRINTER_STATUS_OTHER or console_text is None:
+        return False
+    return console_text.strip().upper() in CONSOLE_TRANSIENT_BUSY
+
+
 class SNMPError(Exception):
     """Raised inside snmp_get for a protocol-level fault (bad request-id echo, error-status != 0,
     or an undecodable response). query_snmp_status catches it and degrades to reachable=False."""

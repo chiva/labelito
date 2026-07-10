@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/chiva/labelito/compare/v0.9.0...v0.10.0) (2026-07-10)
+
+
+### Features
+
+* **api:** accept inline (on-the-fly) template body on /print and /preview ([#58](https://github.com/chiva/labelito/issues/58)) ([905a688](https://github.com/chiva/labelito/commit/905a6883935318a50a242f7b7c52bbb70ce9d498))
+
 ## [0.9.0](https://github.com/chiva/labelito/compare/v0.8.1...v0.9.0) (2026-07-10)
 
 

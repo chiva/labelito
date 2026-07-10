@@ -135,9 +135,11 @@ Every print is recorded in a small SQLite store. That record powers two things:
   The fingerprint covers the request payload (fields, options, language, sequence) — **not** the
   render date. So a template whose output is entirely clock-derived (e.g. the `today` label, or a
   dated label reprinted with an unchanged title) has an *identical* payload from one day to the
-  next. If automation prints such a label on a schedule, give each run a date-unique key (e.g.
-  `today-2026-07-11`) or omit the key — a fixed key would dedupe the second day to the first and
-  silently skip the fresh label.
+  next. Where dedup is active — `HISTORY_MODE=file`, or `memory` while the process is up and the
+  prior entry is still retained (see the table below) — a fixed key reused across days returns the
+  first day's job and silently skips the fresh label; `HISTORY_MODE=disabled` reprints on every
+  keyed retry, so it never skips. For scheduled automation, give each run a date-unique key (e.g.
+  `today-2026-07-11`) or omit the key.
 
 Because both features read the store, **`HISTORY_MODE` changes behaviour, not just durability:**
 

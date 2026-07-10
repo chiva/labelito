@@ -132,6 +132,15 @@ Every print is recorded in a small SQLite store. That record powers two things:
   a key with a *different* payload is rejected with `409`. Without a key, identical requests print
   again (so you can intentionally print twice).
 
+  The fingerprint covers the request payload (fields, options, language, sequence) — **not** the
+  render date. So a template whose output is entirely clock-derived (e.g. the `today` label, or a
+  dated label reprinted with an unchanged title) has an *identical* payload from one day to the
+  next. Where dedup is active — `HISTORY_MODE=file`, or `memory` while the process is up and the
+  prior entry is still retained (see the table below) — a fixed key reused across days returns the
+  first day's job and silently skips the fresh label; `HISTORY_MODE=disabled` reprints on every
+  keyed retry, so it never skips. For scheduled automation, give each run a date-unique key (e.g.
+  `today-2026-07-11`) or omit the key.
+
 Because both features read the store, **`HISTORY_MODE` changes behaviour, not just durability:**
 
 | Mode | Reprint / dedup | On restart | Use when |

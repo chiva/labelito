@@ -86,7 +86,7 @@ _TEMPLATED_ATTRS = ("text", "data", "name")
 _DATE_FORMAT = "%d/%m/%Y"
 _DATETIME_FORMAT = "%d/%m/%Y %H:%M"
 
-# Fallback weekday names (Monday-first) mirroring app.render.i18n's module defaults, used when no
+# Fallback weekday/month names mirroring app.render.i18n's module defaults, used when no
 # language-specific lists are supplied — plain C-locale English, matching un-localized strftime.
 _WEEKDAYS_ABBR = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _WEEKDAYS_FULL = (
@@ -97,6 +97,21 @@ _WEEKDAYS_FULL = (
     "Friday",
     "Saturday",
     "Sunday",
+)
+_MONTHS_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_MONTHS_FULL = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 )
 
 
@@ -299,6 +314,52 @@ def _apply_offset(base: datetime, offset: str) -> datetime:
     return _add_months(base, amount * 12)  # unit == "y" (regex permits only dwmy)
 
 
+def _localize_date_names(
+    fmt: str,
+    moment: datetime,
+    weekday_abbr: Sequence[str],
+    weekday_full: Sequence[str],
+    month_abbr: Sequence[str],
+    month_full: Sequence[str],
+) -> str:
+    """Substitute the locale's weekday/month names for the ``%a``/``%A``/``%b``/``%B`` directives in
+    a strftime format string, returning a format that ``strftime`` can then render.
+
+    Python's ``strftime`` always emits the C-locale (English) weekday/month name regardless of the
+    process locale, so those four directives are replaced with the active language's names HERE,
+    before ``strftime`` runs. The string is scanned left to right so only a *real* directive is
+    substituted:
+
+    - ``%%`` (an escaped literal percent) is passed through untouched — ``{{date:%%b}}`` must render
+      the literal ``%b``, not a month name.
+    - Any other directive (``%Y``, ``%d``, …) is passed through for ``strftime`` to handle.
+    - A ``%`` inside a substituted name is doubled to ``%%`` so ``strftime`` treats it as a literal,
+      never as a directive introducer.
+    """
+    out: list[str] = []
+    i, n = 0, len(fmt)
+    while i < n:
+        if fmt[i] == "%" and i + 1 < n:
+            spec = fmt[i + 1]
+            if spec == "%":
+                out.append("%%")  # escaped percent — leave for strftime, do not localize
+            elif spec == "A":
+                out.append(weekday_full[moment.weekday()].replace("%", "%%"))
+            elif spec == "a":
+                out.append(weekday_abbr[moment.weekday()].replace("%", "%%"))
+            elif spec == "B":
+                out.append(month_full[moment.month - 1].replace("%", "%%"))
+            elif spec == "b":
+                out.append(month_abbr[moment.month - 1].replace("%", "%%"))
+            else:
+                out.append(fmt[i : i + 2])  # other directive — hand to strftime unchanged
+            i += 2
+            continue
+        out.append(fmt[i])
+        i += 1
+    return "".join(out)
+
+
 def _resolve_fields(
     template_str: str,
     fields: dict[str, Any],
@@ -308,6 +369,8 @@ def _resolve_fields(
     seq: str = "",
     weekday_abbr: Sequence[str] = _WEEKDAYS_ABBR,
     weekday_full: Sequence[str] = _WEEKDAYS_FULL,
+    month_abbr: Sequence[str] = _MONTHS_ABBR,
+    month_full: Sequence[str] = _MONTHS_FULL,
 ) -> str:
     """Substitute {{field}}, {{date[±Nunit]}}, {{now[±Nunit][:fmt]}}, {{seq}} in a string.
 
@@ -320,12 +383,13 @@ def _resolve_fields(
     and ``{{now}}``; an explicit ``{{date:%fmt}}`` in the template still overrides them.
 
     ``weekday_abbr``/``weekday_full`` are the active locale's Monday-first weekday name lists
-    (index 0 = Monday, matching ``datetime.weekday()``), defaulting to plain English. When the
-    effective strftime format contains ``%a``/``%A`` the localized name is substituted into the
-    format string BEFORE calling ``strftime`` — Python's ``strftime`` always emits the C-locale
-    (English) weekday regardless of the process locale, so leaving it to `strftime` would silently
-    ignore the label's language. Only ``%a``/``%A`` are handled this way; ``%b``/``%B`` (month
-    names) are out of scope for this round and still emit C-locale English.
+    (index 0 = Monday, matching ``datetime.weekday()``) and ``month_abbr``/``month_full`` are its
+    January-first month name lists (index 0 = January, matching ``datetime.month - 1``), all
+    defaulting to plain English. The locale's ``%a``/``%A``/``%b``/``%B`` names are substituted
+    into the format via :func:`_localize_date_names` BEFORE calling ``strftime`` — Python's
+    ``strftime`` always emits the C-locale (English) weekday/month name regardless of the process
+    locale, so leaving it to ``strftime`` would silently ignore the label's language. That helper
+    scans the format so escaped ``%%`` literals are preserved (``{{date:%%b}}`` → literal ``%b``).
     """
 
     def replace(match: re.Match[str]) -> str:
@@ -335,10 +399,9 @@ def _resolve_fields(
             if offset:
                 moment = _apply_offset(moment, offset)
             effective_fmt = fmt or (date_fmt if key == "date" else datetime_fmt)
-            if "%a" in effective_fmt or "%A" in effective_fmt:
-                weekday = moment.weekday()  # Monday=0, matching the Monday-first name lists
-                effective_fmt = effective_fmt.replace("%A", weekday_full[weekday])
-                effective_fmt = effective_fmt.replace("%a", weekday_abbr[weekday])
+            effective_fmt = _localize_date_names(
+                effective_fmt, moment, weekday_abbr, weekday_full, month_abbr, month_full
+            )
             return moment.strftime(effective_fmt)
         if key == "seq":
             return seq
@@ -600,9 +663,20 @@ class RenderEngine:
         """
         date_fmt, datetime_fmt = self.translator.date_formats(language)
         weekday_abbr, weekday_full = self.translator.weekday_names(language)
+        month_abbr, month_full = self.translator.month_names(language)
         return [
             self._resolve_element(
-                el, fields, language, now, date_fmt, datetime_fmt, seq, weekday_abbr, weekday_full
+                el,
+                fields,
+                language,
+                now,
+                date_fmt,
+                datetime_fmt,
+                seq,
+                weekday_abbr,
+                weekday_full,
+                month_abbr,
+                month_full,
             )
             for el in elements
         ]
@@ -618,6 +692,8 @@ class RenderEngine:
         seq: str = "",
         weekday_abbr: Sequence[str] = _WEEKDAYS_ABBR,
         weekday_full: Sequence[str] = _WEEKDAYS_FULL,
+        month_abbr: Sequence[str] = _MONTHS_ABBR,
+        month_full: Sequence[str] = _MONTHS_FULL,
     ) -> dict[str, Any]:
         resolved: dict[str, Any] = {}
         for attr in _TEMPLATED_ATTRS:
@@ -625,7 +701,16 @@ class RenderEngine:
             if isinstance(raw, str):
                 translated = self.translator.translate(raw, language)
                 resolved[f"__{attr}__"] = _resolve_fields(
-                    translated, fields, now, date_fmt, datetime_fmt, seq, weekday_abbr, weekday_full
+                    translated,
+                    fields,
+                    now,
+                    date_fmt,
+                    datetime_fmt,
+                    seq,
+                    weekday_abbr,
+                    weekday_full,
+                    month_abbr,
+                    month_full,
                 )
         field_name = getattr(el, "field", None)
         if isinstance(field_name, str):
@@ -643,6 +728,8 @@ class RenderEngine:
                     seq,
                     weekday_abbr,
                     weekday_full,
+                    month_abbr,
+                    month_full,
                 )
                 for child in children
             ]

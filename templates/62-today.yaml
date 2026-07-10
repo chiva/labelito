@@ -7,5 +7,5 @@ fields:
   optional: []
 layout:
   - {type: spacer, size: 40}
-  - {type: text, text: "{{date:%a, %-d %b}}", size: 64, align: center, max_lines: 1}
+  - {type: text, text: "{{date:%a, %d %b}}", size: 64, align: center, max_lines: 1}
   - {type: spacer, size: 40}

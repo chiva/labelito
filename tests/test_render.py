@@ -1581,7 +1581,7 @@ def test_resolve_date_weekday_and_month_combined_localized() -> None:
     both substituted before strftime. Friday 2026-07-10 in Spanish → 'vie, 10 jul'."""
     now = datetime(2026, 7, 10)  # a Friday
     out = _resolve_fields(
-        "{{date:%a, %-d %b}}",
+        "{{date:%a, %d %b}}",
         {},
         now=now,
         weekday_abbr=_ES_WEEKDAYS_ABBR,

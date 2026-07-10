@@ -88,7 +88,7 @@ Always available without being declared as fields:
 
 | Token | Resolves to | Options |
 |---|---|---|
-| `{{date}}` | Current date | Offset `±N` with unit `d`/`w`/`m`/`y` (e.g. `{{date+6m}}` = six months ahead). strftime format via `:` (e.g. `{{date:%Y-%m-%d}}`). Default format is locale-driven (`%d/%m/%Y`). `%a`/`%A` (abbreviated/full weekday name) and `%b`/`%B` (abbreviated/full month name) are localized from the active language's catalog instead of Python's C-locale English (e.g. `{{date:%a, %-d %b}}` renders `vie, 10 jul` for Spanish). |
+| `{{date}}` | Current date | Offset `±N` with unit `d`/`w`/`m`/`y` (e.g. `{{date+6m}}` = six months ahead). strftime format via `:` (e.g. `{{date:%Y-%m-%d}}`). Default format is locale-driven (`%d/%m/%Y`). `%a`/`%A` (abbreviated/full weekday name) and `%b`/`%B` (abbreviated/full month name) are localized from the active language's catalog instead of Python's C-locale English (e.g. `{{date:%a, %d %b}}` renders `vie, 10 jul` for Spanish). |
 | `{{now}}` | Current date+time | Same offset/format options (e.g. `{{now:%H:%M}}`). |
 | `{{seq}}` | Per-item sequence number | Only meaningful in a sequence batch (a `/print` with a `sequence` spec). Numbered `start + index*step`, optionally zero-padded. A template that uses `{{seq}}` printed **without** a sequence spec is rejected (it would print a blank number). |
 

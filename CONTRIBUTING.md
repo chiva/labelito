@@ -98,7 +98,7 @@ Label chrome words live in translation catalogs, not in templates. To add a lang
    to localize `{{date}}`/`{{now}}`; otherwise the day-first European default is used.
    Also translate the reserved list keys `_weekdays_abbr` / `_weekdays_full` (7 items, Monday-first)
    and `_months_abbr` / `_months_full` (12 items, January-first) — these localize the `%a`/`%A`
-   and `%b`/`%B` directives (e.g. `{{date:%a, %-d %b}}`). Leaving them out silently falls back to
+   and `%b`/`%B` directives (e.g. `{{date:%a, %d %b}}`). Leaving them out silently falls back to
    English names.
 3. Do **not** put `{{…}}` in a value — catalogs are pure vocabulary; the loader rejects it.
 4. `uv run pytest tests/test_i18n.py tests/test_render.py` — the validation test checks every

@@ -53,6 +53,8 @@ function initTokenInput() {
   tokenInput.addEventListener('input', () => {
     localStorage.setItem(TOKEN_KEY, tokenInput.value.trim());
     syncTokenIndicator();
+    // Editing the token means the user is acting on the prior 401 — stop the wrong-token blink.
+    document.getElementById('token-open')?.classList.remove('auth-failed');
   });
   return tokenInput;
 }
@@ -71,6 +73,9 @@ function handleAuthError(res) {
   // non-blocking prompt; the user opens the dialog when ready.
   showStatus('Authentication required — enter your API token from the key icon.', 'err');
   syncTokenIndicator();
+  // A token may be stored but wrong, so needs-token (no-token only) won't fire. Blink the key button
+  // red to point the user at where to fix it; cleared once they edit the input (see initTokenInput).
+  document.getElementById('token-open')?.classList.add('auth-failed');
   return true;
 }
 

@@ -689,6 +689,20 @@ input[type="radio"] {
   }
 }
 
+/* A stored API token was rejected (401). Stronger than .needs-token: red and blinking. Placed after
+   .needs-token so equal-specificity source order lets the blink win if both classes are ever present.
+   Toggled by handleAuthError()/initTokenInput() in labelito.js. */
+.btn-icon.auth-failed {
+  animation: lbl-blink 1s ease-in-out infinite;
+  color: var(--red);
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn-icon.auth-failed {
+    animation: none;
+    color: var(--red);
+  }
+}
+
 /* A newer release is available: a small STATIC dot on the info button (no pulse). Deliberately blue
    (an informational, non-warning color) rather than amber/red — an update is a note, not a fault.
    Toggled by initUpdateCheck() in labelito.js from GET /update-check. */

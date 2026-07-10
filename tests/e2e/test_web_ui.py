@@ -1838,6 +1838,25 @@ def test_unauthenticated_preview_shows_auth_error(anon_page: Page) -> None:
     expect(status).to_contain_text("Authentication required")
 
 
+def test_wrong_token_blinks_key_icon_until_edited(anon_page: Page) -> None:
+    """A stored-but-wrong bearer token 401s on preview: the nav key button blinks (`.auth-failed`) to
+    point the user at where to fix it — unlike `.needs-token`, which only fires when NO token is stored.
+    Editing the token input (the user acting on the 401) clears the blink."""
+    anon_page.add_init_script(web_token_init_script("wrong-token"))
+    anon_page.goto("/")
+    _select_template(anon_page, SAMPLE_TEMPLATE)
+    _fill_all_fields(anon_page)
+    anon_page.click("button.btn-preview")
+
+    key_btn = anon_page.locator("#token-open")
+    expect(key_btn).to_have_class(re.compile(r"\bauth-failed\b"))
+
+    # Open the dialog and edit the token — the blink should stop.
+    anon_page.click("#token-open")
+    anon_page.fill("#api-token", DEFAULT_API_TOKEN)
+    expect(key_btn).not_to_have_class(re.compile(r"\bauth-failed\b"))
+
+
 # ── History page: loaded-roll size gating ──────────────────────────────────────────────────────────
 # The history page disables Reprint for rows whose template needs a roll different from the one
 # loaded — advisory UI in front of the server's existing /reprint SNMP preflight (which 409s the same

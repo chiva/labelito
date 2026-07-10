@@ -919,15 +919,20 @@ def load_template(path: Path) -> Template:
 def validate_template_from_string(yaml_text: str, source_name: str = "<draft>") -> Template:
     """Validate raw template YAML text into a :class:`Template` WITHOUT touching the filesystem.
 
-    Backs the draft studio: a user-supplied YAML body is parsed and run through exactly the
-    same schema validation as a saved file (:func:`build_template_from_mapping`), but no file is
-    read or written and the returned Template carries the :data:`DRAFT_SOURCE_PATH` sentinel. A
-    malformed YAML body raises :class:`TemplateLoadError` (the caller maps it to a 422) rather than
-    surfacing an uncaught ``yaml.YAMLError``.
+    Backs the draft studio AND inline printing: a user-supplied (untrusted, request-driven) YAML
+    body is parsed and run through exactly the same schema validation as a saved file
+    (:func:`build_template_from_mapping`), but no file is read or written and the returned Template
+    carries the :data:`DRAFT_SOURCE_PATH` sentinel. A malformed body raises
+    :class:`TemplateLoadError` (the caller maps it to a 422) rather than surfacing an uncaught
+    parser exception. ``RecursionError`` is caught alongside ``yaml.YAMLError`` because
+    ``yaml.safe_load`` recurses while composing nested collections: a deeply nested but
+    within-size-cap body (e.g. thousands of nested flow sequences) blows the interpreter's
+    recursion limit with a ``RecursionError`` — a ``RuntimeError`` subclass, NOT a ``YAMLError`` —
+    which must be a 422 (bad client input), never a 500.
     """
     try:
         raw = yaml.safe_load(yaml_text)
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, RecursionError) as exc:
         raise TemplateLoadError(f"{source_name}: YAML parse error: {exc}") from exc
     return build_template_from_mapping(raw, source_name, DRAFT_SOURCE_PATH)
 

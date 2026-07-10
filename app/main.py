@@ -2299,6 +2299,23 @@ def get_template_source(name: str) -> TemplateSourceResponse:
     return TemplateSourceResponse(name=tmpl.name, yaml=yaml_text)
 
 
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\x00-\x1f\x7f"\\]+')
+
+
+def _png_content_disposition(name: str) -> str:
+    """Build a safe ``Content-Disposition`` attachment header for a ``<name>.png`` download.
+
+    ``name`` may be a user-controlled *inline* template name (inline templates are not constrained
+    by :data:`_SAFE_TEMPLATE_NAME`, which only gates the save-to-disk filename). Interpolating it
+    raw into the header is a header-injection / response-splitting vector: a name containing CR/LF
+    would inject additional header lines. Strip control characters, quotes and backslashes (which
+    would also break the quoted-string) before interpolating, falling back to a fixed name if
+    nothing safe remains.
+    """
+    safe = _UNSAFE_FILENAME_CHARS.sub("_", name).strip() or "label"
+    return f'attachment; filename="{safe}.png"'
+
+
 @app.post(
     "/preview",
     dependencies=[Depends(check_token)],
@@ -2361,9 +2378,7 @@ async def preview(request: PrintRequest, download: bool = False) -> Response:
         threshold=effective_threshold,
         seq=preview_seq,
     )
-    headers = (
-        {"Content-Disposition": f'attachment; filename="{tmpl.name}.png"'} if download else None
-    )
+    headers = {"Content-Disposition": _png_content_disposition(tmpl.name)} if download else None
     return Response(content=png, media_type="image/png", headers=headers)
 
 

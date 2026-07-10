@@ -230,6 +230,38 @@ def test_inline_idempotency_same_body_dedupes(inline_client: TestClient) -> None
     assert first.json()["job_id"] == second.json()["job_id"]
 
 
+def test_inline_deeply_nested_yaml_is_422_not_500(inline_client: TestClient) -> None:
+    """A deeply nested but within-cap body overflows PyYAML's recursion (RecursionError, not a
+    YAMLError). It must map to 422 (bad client input), never a 500."""
+    from app.models import MAX_TEMPLATE_YAML_CHARS
+
+    depth = 20_000
+    nested = "[" * depth + "0" + "]" * depth  # ~40 KiB of balanced nested flow sequences
+    assert len(nested) < MAX_TEMPLATE_YAML_CHARS  # passes the length cap, reaches the parser
+
+    resp = inline_client.post("/preview", json={"template_inline": nested, "fields": {}})
+    assert resp.status_code == 422
+
+
+def test_inline_preview_download_name_is_header_safe(inline_client: TestClient) -> None:
+    """An inline template name is user-controlled and unconstrained by _SAFE_TEMPLATE_NAME, so the
+    Content-Disposition filename must be sanitized — a CR/LF in the name must not inject headers."""
+    crlf_yaml = (
+        'name: "a\\r\\nX-Injected: pwned"\n'
+        "description: header injection probe\n"
+        'label: "62"\n'
+        "fields:\n  required: [title]\n"
+        'layout:\n  - {type: title, text: "{{title}}"}\n'
+    )
+    resp = inline_client.post(
+        "/preview?download=true", json={"template_inline": crlf_yaml, "fields": {"title": "x"}}
+    )
+    assert resp.status_code == 200
+    cd = resp.headers["content-disposition"]
+    assert "\r" not in cd and "\n" not in cd
+    assert "x-injected" not in {k.lower() for k in resp.headers}
+
+
 def test_inline_metrics_use_sentinel_label(inline_client: TestClient) -> None:
     """The labels_printed_total counter labels inline jobs with the fixed <inline> sentinel, not the
     (unbounded, user-controlled) inline template name."""

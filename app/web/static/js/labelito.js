@@ -23,6 +23,12 @@ function api(path) {
 
 const TOKEN_KEY = 'labelito_api_token';
 
+// Whether a non-empty bearer token is stored. The single source of truth for the two token-attention
+// states (needs-token / auth-failed) so their presence check can't drift.
+function hasStoredToken() {
+  return !!(localStorage.getItem(TOKEN_KEY) || '').trim();
+}
+
 function authHeaders() {
   const headers = { 'Content-Type': 'application/json' };
   // Under HTTP Basic auth the browser attaches its own credential; injecting a bearer header here
@@ -39,8 +45,7 @@ function authHeaders() {
 function syncTokenIndicator() {
   const btn = document.getElementById('token-open');
   if (!btn) return;
-  const hasToken = !!(localStorage.getItem(TOKEN_KEY) || '').trim();
-  btn.classList.toggle('needs-token', !hasToken);
+  btn.classList.toggle('needs-token', !hasStoredToken());
 }
 
 // Wire the shared #api-token dialog input to localStorage. Call from the page script once the DOM
@@ -78,10 +83,7 @@ function handleAuthError(res) {
   // initTokenInput). A tokenless 401 is the first-run case: leave the amber needs-token breathe alone,
   // since .auth-failed would otherwise override it (app.css) and mislabel "not set yet" as "rejected".
   const btn = document.getElementById('token-open');
-  if (btn) {
-    const hasToken = !!(localStorage.getItem(TOKEN_KEY) || '').trim();
-    btn.classList.toggle('auth-failed', hasToken);
-  }
+  if (btn) btn.classList.toggle('auth-failed', hasStoredToken());
   return true;
 }
 

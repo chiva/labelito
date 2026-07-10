@@ -159,15 +159,39 @@ class SequenceSpec(BaseModel):
     )
 
 
+# Coarse cap on an inline/draft template YAML body length. The whole request is already bounded by
+# MAX_REQUEST_BODY_BYTES, but a per-field cap keeps a single pathologically large YAML string from
+# being parsed at all. A real label template is a few KB; this is generous for that. Defined here
+# (above PrintRequest) so both the print path's `template_inline` and the studio's DraftPreviewRequest
+# share the one cap.
+MAX_TEMPLATE_YAML_CHARS: int = 64 * 1024
+
+
 class PrintRequest(BaseModel):
     # Reject unknown top-level keys (422) instead of silently ignoring them, so a misspelled
     # option surfaces as an error rather than printing the wrong thing. Per-template values live
     # inside `fields`, not as top-level keys.
     model_config = ConfigDict(extra="forbid")
 
-    # The template is always named explicitly; the caller chooses which label to print. (There is no
-    # field-based auto-discovery — it gave no NLP flexibility, only ambiguity as the catalog grew.)
-    template: str = Field(min_length=1, examples=["simple"])
+    # Exactly one template source per request (enforced by _template_source_exclusive):
+    #  * `template` — the name of a stored template resolved against the in-memory registry.
+    #  * `template_inline` — a full template YAML body submitted with the request (gated by
+    #    INLINE_TEMPLATES_ENABLED), so a client / git repo / integration can hold the template
+    #    off-platform. The body is validated by the SAME path as a saved file and, on /print, frozen
+    #    into history so /reprint reproduces it exactly.
+    # (There is no field-based auto-discovery — it gave no NLP flexibility, only ambiguity as the
+    # catalog grew.)
+    template: str | None = Field(default=None, min_length=1, examples=["simple"])
+    template_inline: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_TEMPLATE_YAML_CHARS,
+        description=(
+            "A full template YAML body to print/preview without storing it first. Mutually "
+            "exclusive with `template`. Requires INLINE_TEMPLATES_ENABLED=true; otherwise 403."
+        ),
+        examples=[None],
+    )
     fields: dict[str, Any] = Field(default={}, examples=[{"title": "Hello", "subtitle": "World"}])
     copies: int = Field(default=1, ge=1, le=10, examples=[1])
     dry_run: bool = Field(default=False, examples=[False])
@@ -204,6 +228,17 @@ class PrintRequest(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _template_source_exclusive(self) -> "PrintRequest":
+        # Exactly one template source: a stored `template` name OR an inline `template_inline` body.
+        # Neither is a blank label with nowhere to look; both is ambiguous about which wins.
+        if (self.template is None) == (self.template_inline is None):
+            raise ValueError(
+                "exactly one of 'template' (a stored template name) or 'template_inline' (an "
+                "inline template YAML body) must be provided"
+            )
+        return self
+
 
 class TemplateFieldContract(BaseModel):
     required: list[str]
@@ -212,12 +247,6 @@ class TemplateFieldContract(BaseModel):
     # client render a file picker instead of a text input for these fields. Defaults to [] so every
     # existing constructor and the serialized shape stay backward-compatible.
     image_fields: list[str] = []
-
-
-# Coarse cap on the draft YAML body length. The whole request is already bounded by
-# MAX_REQUEST_BODY_BYTES, but a per-field cap keeps a single pathologically large YAML string from
-# being parsed at all. A real label template is a few KB; this is generous for that.
-MAX_TEMPLATE_YAML_CHARS: int = 64 * 1024
 
 
 class DraftPreviewRequest(BaseModel):
@@ -402,6 +431,12 @@ class PrintJobRecord(BaseModel):
     # Frozen sequence spec: present when the job was a batch with {{seq}} numbering. One row
     # per batch (not one per item). /reprint replays the whole batch from this spec.
     sequence: SequenceSpec | None = None
+    # Frozen inline template body: present ONLY when the job was printed from an inline
+    # `template_inline` request (not a stored name). Persisted so /reprint reconstructs the exact
+    # template via validate_template_from_string, independent of the registry — even if no stored
+    # template of `template` exists, or a different one later claims that name. None for named jobs
+    # and every legacy row (default keeps older history lines loadable).
+    template_source: str | None = None
 
 
 class PrintResponse(BaseModel):

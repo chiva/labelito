@@ -165,6 +165,15 @@ class Settings(BaseSettings):
     # Set EDITOR_ENABLED=true to expose GET /editor, POST /preview/draft, POST /templates/parse, and
     # POST /templates (the server-save route still also requires TEMPLATES_WRITABLE=true).
     editor_enabled: bool = False
+    # Accept a full template body inline on POST /print and POST /preview (the `template_inline`
+    # field), instead of only a stored template name. Lets a client / git repo / integration hold
+    # the template off-platform and submit it per request, with no save step or writable templates
+    # dir. Default false: template authorship is otherwise doubly gated (EDITOR_ENABLED +
+    # TEMPLATES_WRITABLE, both default off), so making the plain print token sufficient to submit
+    # template DSL is a deliberate posture shift that must be opted into. The inline body runs
+    # through the exact same schema + DoS-bound validation as a saved file
+    # (validate_template_from_string), so no new validation surface is opened.
+    inline_templates_enabled: bool = False
 
     # Internationalization — default label language; per-request `language` overrides it
     default_language: str = "en"

@@ -220,6 +220,12 @@ The endpoints you'll use most:
 Write/preview endpoints require `Authorization: Bearer $API_TOKEN` when a token is set. See
 [`/docs`](http://localhost:8765/docs) for the complete list, request bodies, and response schemas.
 
+`/print` and `/preview` normally reference a stored template by name. Set
+`INLINE_TEMPLATES_ENABLED=true` to also submit a full template body inline via `template_inline` —
+letting a client or git repo hold templates off-platform and print them with no save step. The body
+is validated exactly like a stored file and frozen into history so `/reprint` reproduces it. See
+[docs/template-format.md](docs/template-format.md#inline-templates-printing-without-storing).
+
 ## Printer status & safety
 
 Brother's **network** printers have a silent back-channel: the NIC accepts a `:9100` print job and the

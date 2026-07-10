@@ -466,3 +466,36 @@ This declares one required field (`title`) and one optional (`subtitle`), prints
 continuous roll, and stamps the current date plus a six-month expiry using computed tokens and the
 `[[frozen]]`/`[[expires]]` translation keys. Every shipped template under `templates/` is a working
 reference for these parameters.
+
+---
+
+## Inline templates (printing without storing)
+
+By default a print references a **stored** template by name (`{"template": "simple", ...}`). When
+`INLINE_TEMPLATES_ENABLED=true`, `POST /print` and `POST /preview` also accept a full template body
+inline via **`template_inline`**, so a client, a git repo, or a Home Assistant integration can hold
+the template off-platform and submit it per request — no save step and no writable templates
+directory required.
+
+- `template` and `template_inline` are **mutually exclusive**: supply exactly one (both, or neither,
+  is a `422`).
+- The inline body is validated by the **exact same** rules as a stored file (every check in this
+  document, including the 64 KiB size cap and all [layout-wide limits](#layout-wide-limits)). An
+  invalid body is a `422`; submitting inline while the feature is disabled is a `403`.
+- On `/print` the body is **frozen into history**, so `POST /reprint/{job_id}` reproduces an inline
+  job exactly — even if no stored template of that `name` exists. Inline jobs are counted under the
+  `labels_printed_total{template="<inline>"}` metric series.
+
+```json
+{
+  "template_inline": "name: adhoc\ndescription: one-off\nlabel: \"62\"\nfields:\n  required: [title]\nlayout:\n  - {type: title, text: \"{{title}}\"}",
+  "fields": {"title": "Hello"},
+  "dry_run": true
+}
+```
+
+The security note: template authoring is otherwise doubly gated (`EDITOR_ENABLED` +
+`TEMPLATES_WRITABLE`), so enabling inline printing lets any holder of the print token submit template
+DSL. The validator treats an inline body no differently from a saved file, but it is a deliberate
+posture change — hence the opt-in flag, off by default. See
+[configuration.md](configuration.md).

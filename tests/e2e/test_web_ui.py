@@ -1837,6 +1837,12 @@ def test_unauthenticated_preview_shows_auth_error(anon_page: Page) -> None:
     expect(status).to_be_visible()
     expect(status).to_contain_text("Authentication required")
 
+    # First-run (no token) keeps the amber needs-token breathe — NOT the red rejected-token blink,
+    # which would mislabel "not set yet" as "the stored token is wrong".
+    key_btn = anon_page.locator("#token-open")
+    expect(key_btn).to_have_class(re.compile(r"\bneeds-token\b"))
+    expect(key_btn).not_to_have_class(re.compile(r"\bauth-failed\b"))
+
 
 def test_wrong_token_blinks_key_icon_until_edited(anon_page: Page) -> None:
     """A stored-but-wrong bearer token 401s on preview: the nav key button blinks (`.auth-failed`) to

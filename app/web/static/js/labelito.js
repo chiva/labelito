@@ -73,9 +73,15 @@ function handleAuthError(res) {
   // non-blocking prompt; the user opens the dialog when ready.
   showStatus('Authentication required — enter your API token from the key icon.', 'err');
   syncTokenIndicator();
-  // A token may be stored but wrong, so needs-token (no-token only) won't fire. Blink the key button
-  // red to point the user at where to fix it; cleared once they edit the input (see initTokenInput).
-  document.getElementById('token-open')?.classList.add('auth-failed');
+  // A token may be stored but WRONG, so needs-token (no-token only) won't fire. In that case blink the
+  // key button red to point the user at where to fix it (cleared once they edit the input — see
+  // initTokenInput). A tokenless 401 is the first-run case: leave the amber needs-token breathe alone,
+  // since .auth-failed would otherwise override it (app.css) and mislabel "not set yet" as "rejected".
+  const btn = document.getElementById('token-open');
+  if (btn) {
+    const hasToken = !!(localStorage.getItem(TOKEN_KEY) || '').trim();
+    btn.classList.toggle('auth-failed', hasToken);
+  }
   return true;
 }
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/chiva/labelito/compare/v0.8.1...v0.9.0) (2026-07-10)
+
+
+### Features
+
+* **ui:** blink key icon red when a stored API token is rejected ([#56](https://github.com/chiva/labelito/issues/56)) ([6353041](https://github.com/chiva/labelito/commit/635304103e0eae09e890612cc6790e562cbfc29b))
+
 ## [0.8.1](https://github.com/chiva/labelito/compare/v0.8.0...v0.8.1) (2026-07-09)
 
 

@@ -314,6 +314,52 @@ def _apply_offset(base: datetime, offset: str) -> datetime:
     return _add_months(base, amount * 12)  # unit == "y" (regex permits only dwmy)
 
 
+def _localize_date_names(
+    fmt: str,
+    moment: datetime,
+    weekday_abbr: Sequence[str],
+    weekday_full: Sequence[str],
+    month_abbr: Sequence[str],
+    month_full: Sequence[str],
+) -> str:
+    """Substitute the locale's weekday/month names for the ``%a``/``%A``/``%b``/``%B`` directives in
+    a strftime format string, returning a format that ``strftime`` can then render.
+
+    Python's ``strftime`` always emits the C-locale (English) weekday/month name regardless of the
+    process locale, so those four directives are replaced with the active language's names HERE,
+    before ``strftime`` runs. The string is scanned left to right so only a *real* directive is
+    substituted:
+
+    - ``%%`` (an escaped literal percent) is passed through untouched — ``{{date:%%b}}`` must render
+      the literal ``%b``, not a month name.
+    - Any other directive (``%Y``, ``%d``, …) is passed through for ``strftime`` to handle.
+    - A ``%`` inside a substituted name is doubled to ``%%`` so ``strftime`` treats it as a literal,
+      never as a directive introducer.
+    """
+    out: list[str] = []
+    i, n = 0, len(fmt)
+    while i < n:
+        if fmt[i] == "%" and i + 1 < n:
+            spec = fmt[i + 1]
+            if spec == "%":
+                out.append("%%")  # escaped percent — leave for strftime, do not localize
+            elif spec == "A":
+                out.append(weekday_full[moment.weekday()].replace("%", "%%"))
+            elif spec == "a":
+                out.append(weekday_abbr[moment.weekday()].replace("%", "%%"))
+            elif spec == "B":
+                out.append(month_full[moment.month - 1].replace("%", "%%"))
+            elif spec == "b":
+                out.append(month_abbr[moment.month - 1].replace("%", "%%"))
+            else:
+                out.append(fmt[i : i + 2])  # other directive — hand to strftime unchanged
+            i += 2
+            continue
+        out.append(fmt[i])
+        i += 1
+    return "".join(out)
+
+
 def _resolve_fields(
     template_str: str,
     fields: dict[str, Any],
@@ -339,11 +385,11 @@ def _resolve_fields(
     ``weekday_abbr``/``weekday_full`` are the active locale's Monday-first weekday name lists
     (index 0 = Monday, matching ``datetime.weekday()``) and ``month_abbr``/``month_full`` are its
     January-first month name lists (index 0 = January, matching ``datetime.month - 1``), all
-    defaulting to plain English. When the effective strftime format contains ``%a``/``%A`` (or
-    ``%b``/``%B``) the localized name is substituted into the format string BEFORE calling
-    ``strftime`` — Python's ``strftime`` always emits the C-locale (English) weekday/month name
-    regardless of the process locale, so leaving it to ``strftime`` would silently ignore the
-    label's language.
+    defaulting to plain English. The locale's ``%a``/``%A``/``%b``/``%B`` names are substituted
+    into the format via :func:`_localize_date_names` BEFORE calling ``strftime`` — Python's
+    ``strftime`` always emits the C-locale (English) weekday/month name regardless of the process
+    locale, so leaving it to ``strftime`` would silently ignore the label's language. That helper
+    scans the format so escaped ``%%`` literals are preserved (``{{date:%%b}}`` → literal ``%b``).
     """
 
     def replace(match: re.Match[str]) -> str:
@@ -353,14 +399,9 @@ def _resolve_fields(
             if offset:
                 moment = _apply_offset(moment, offset)
             effective_fmt = fmt or (date_fmt if key == "date" else datetime_fmt)
-            if "%a" in effective_fmt or "%A" in effective_fmt:
-                weekday = moment.weekday()  # Monday=0, matching the Monday-first name lists
-                effective_fmt = effective_fmt.replace("%A", weekday_full[weekday])
-                effective_fmt = effective_fmt.replace("%a", weekday_abbr[weekday])
-            if "%b" in effective_fmt or "%B" in effective_fmt:
-                month = moment.month - 1  # January=0, matching the January-first name lists
-                effective_fmt = effective_fmt.replace("%B", month_full[month])
-                effective_fmt = effective_fmt.replace("%b", month_abbr[month])
+            effective_fmt = _localize_date_names(
+                effective_fmt, moment, weekday_abbr, weekday_full, month_abbr, month_full
+            )
             return moment.strftime(effective_fmt)
         if key == "seq":
             return seq

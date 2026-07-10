@@ -1614,6 +1614,40 @@ def test_resolve_date_without_month_directive_unaffected_by_custom_lists() -> No
     assert out == now.strftime("%Y-%m-%d")
 
 
+# ── Escaped %% directives must survive name localization (no false substitution) ──
+def test_resolve_date_escaped_percent_not_localized() -> None:
+    """`%%b`/`%%B` (and `%%a`/`%%A`) are escaped literal percents, not directives: they must render
+    a literal `%b`/`%B` etc., never a substituted month/weekday name. Guards the scan-based
+    localization against the naive `.replace()` that would corrupt these."""
+    now = datetime(2026, 7, 10)  # a Friday in July
+    lists = {
+        "weekday_abbr": _ES_WEEKDAYS_ABBR,
+        "weekday_full": _ES_WEEKDAYS_FULL,
+        "month_abbr": _ES_MONTHS_ABBR,
+        "month_full": _ES_MONTHS_FULL,
+    }
+    assert _resolve_fields("{{date:%%b}}", {}, now=now, **lists) == "%b"
+    assert _resolve_fields("{{date:%%B}}", {}, now=now, **lists) == "%B"
+    assert _resolve_fields("{{date:%%a}}", {}, now=now, **lists) == "%a"
+    assert _resolve_fields("{{date:%%A}}", {}, now=now, **lists) == "%A"
+    # A real directive next to an escaped one still resolves independently.
+    assert _resolve_fields("{{date:%%b=%b}}", {}, now=now, **lists) == "%b=jul"
+
+
+def test_resolve_date_percent_inside_localized_name_is_literal() -> None:
+    """A `%` inside a catalog name must be doubled so strftime treats it as literal text, not a
+    directive introducer that would consume the following character."""
+    now = datetime(2026, 7, 10)
+    out = _resolve_fields(
+        "{{date:%b}}",
+        {},
+        now=now,
+        month_abbr=["ja", "fe", "ma", "ap", "ma", "ju", "j%d", "au", "se", "oc", "no", "de"],
+        month_full=_ES_MONTHS_FULL,
+    )
+    assert out == "j%d"  # the '%d' is literal, NOT strftime-expanded to the day-of-month
+
+
 # ── Bundled templates — load & render (covers the new homelab/die-cut templates) ──
 def test_all_bundled_templates_load() -> None:
     from app.loader import TemplateRegistry

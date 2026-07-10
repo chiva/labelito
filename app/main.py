@@ -2724,6 +2724,13 @@ async def history_page(request: Request) -> HTMLResponse:
 @app.get(
     "/history/list",
     response_model=HistoryPage,
+    # Redact the frozen inline template body from the browse listing: it is retained on the
+    # persisted record purely so /reprint can reconstruct an inline job internally (via _load_job),
+    # and the browse UI never renders it. Returning the full YAML (up to 64 KiB per inline entry)
+    # would both bloat the page response and expose off-platform template bodies + their embedded
+    # static literals through the list API. Persistence and /reprint are unaffected (they use the
+    # full record, not this response model).
+    response_model_exclude={"entries": {"__all__": {"template_source"}}},
     dependencies=[Depends(_require_history_ui), Depends(check_token)],
     tags=["History"],
     responses={**RESPONSE_401},

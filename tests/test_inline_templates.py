@@ -315,6 +315,26 @@ def test_inline_unicode_download_name_does_not_500(inline_client: TestClient) ->
     assert "\r" not in cd and "\n" not in cd
 
 
+def test_history_list_redacts_inline_template_source(inline_client: TestClient) -> None:
+    """The browse listing must not leak the frozen inline YAML body — it is internal-only (reprint).
+    The record still persists it, so /reprint keeps working."""
+    resp = inline_client.post(
+        "/print",
+        json={"template_inline": INLINE_YAML, "fields": {"title": "Listed"}, "dry_run": True},
+    )
+    job_id = resp.json()["job_id"]
+
+    listing = inline_client.get("/history/list")
+    assert listing.status_code == 200
+    entries = listing.json()["entries"]
+    entry = next(e for e in entries if e["job_id"] == job_id)
+    assert "template_source" not in entry  # redacted from the API response
+    assert entry["template"] == "inline-demo"  # the name is still shown
+
+    # Reprint still reproduces from the persisted (un-redacted) body.
+    assert inline_client.post(f"/reprint/{job_id}").status_code == 200
+
+
 def test_inline_metrics_use_sentinel_label(inline_client: TestClient) -> None:
     """The labels_printed_total counter labels inline jobs with the fixed <inline> sentinel, not the
     (unbounded, user-controlled) inline template name."""

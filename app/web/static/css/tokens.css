@@ -152,6 +152,20 @@ button:focus-visible {
   }
 }
 
+/* Urgent flash on the nav key button after a 401 — the stored token was rejected. Red (error) and
+   faster than lbl-breathe so a wrong token reads differently from a not-yet-set one. */
+@keyframes lbl-blink {
+  0%,
+  100% {
+    color: var(--red);
+    opacity: 1;
+  }
+  50% {
+    color: var(--red);
+    opacity: 0.25;
+  }
+}
+
 @keyframes lbl-spin {
   to {
     transform: rotate(360deg);

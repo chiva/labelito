@@ -23,6 +23,12 @@ function api(path) {
 
 const TOKEN_KEY = 'labelito_api_token';
 
+// Whether a non-empty bearer token is stored. The single source of truth for the two token-attention
+// states (needs-token / auth-failed) so their presence check can't drift.
+function hasStoredToken() {
+  return !!(localStorage.getItem(TOKEN_KEY) || '').trim();
+}
+
 function authHeaders() {
   const headers = { 'Content-Type': 'application/json' };
   // Under HTTP Basic auth the browser attaches its own credential; injecting a bearer header here
@@ -39,8 +45,7 @@ function authHeaders() {
 function syncTokenIndicator() {
   const btn = document.getElementById('token-open');
   if (!btn) return;
-  const hasToken = !!(localStorage.getItem(TOKEN_KEY) || '').trim();
-  btn.classList.toggle('needs-token', !hasToken);
+  btn.classList.toggle('needs-token', !hasStoredToken());
 }
 
 // Wire the shared #api-token dialog input to localStorage. Call from the page script once the DOM
@@ -53,6 +58,8 @@ function initTokenInput() {
   tokenInput.addEventListener('input', () => {
     localStorage.setItem(TOKEN_KEY, tokenInput.value.trim());
     syncTokenIndicator();
+    // Editing the token means the user is acting on the prior 401 — stop the wrong-token blink.
+    document.getElementById('token-open')?.classList.remove('auth-failed');
   });
   return tokenInput;
 }
@@ -71,6 +78,12 @@ function handleAuthError(res) {
   // non-blocking prompt; the user opens the dialog when ready.
   showStatus('Authentication required — enter your API token from the key icon.', 'err');
   syncTokenIndicator();
+  // A token may be stored but WRONG, so needs-token (no-token only) won't fire. In that case blink the
+  // key button red to point the user at where to fix it (cleared once they edit the input — see
+  // initTokenInput). A tokenless 401 is the first-run case: leave the amber needs-token breathe alone,
+  // since .auth-failed would otherwise override it (app.css) and mislabel "not set yet" as "rejected".
+  const btn = document.getElementById('token-open');
+  if (btn) btn.classList.toggle('auth-failed', hasStoredToken());
   return true;
 }
 

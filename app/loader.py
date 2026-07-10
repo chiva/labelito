@@ -449,6 +449,31 @@ def _validate_row_child_sizing(file_name: str, label: str, child: dict[str, Any]
         _require_choice(file_name, label, "valign", valign, VALIGN_CHOICES)
 
 
+def _validate_barcode_symbology(file_name: str, label: str, symbology: Any) -> None:
+    """Reject an unknown barcode ``symbology`` at load time.
+
+    The renderer calls ``python-barcode``'s ``get_barcode_class(symbology)``, which raises
+    ``BarcodeNotFoundError`` for an unknown name — surfacing as a render-time 500 on /print and
+    /preview. Validating here (by the SAME lookup the renderer uses) turns a typo, or a crafted
+    inline template, into a clean load error / 422, matching how every other render-affecting enum
+    (color, marker, background, …) is validated up front.
+    """
+    import barcode as python_barcode
+    from barcode.errors import BarcodeNotFoundError
+
+    if not isinstance(symbology, str):
+        raise TemplateLoadError(
+            f"{file_name}: {label} barcode 'symbology' must be a string, got {symbology!r}"
+        )
+    try:
+        python_barcode.get_barcode_class(symbology)
+    except BarcodeNotFoundError as exc:
+        raise TemplateLoadError(
+            f"{file_name}: {label} unknown barcode 'symbology' {symbology!r}; "
+            f"valid: {sorted(python_barcode.PROVIDED_BARCODES)}"
+        ) from exc
+
+
 def _validate_element(
     file_name: str,
     label: str,
@@ -509,6 +534,8 @@ def _validate_element(
             raise TemplateLoadError(
                 f"{file_name}: {label} image 'field' must be a non-empty string, got {image_field!r}"
             )
+    if el_type == "barcode" and "symbology" in el:
+        _validate_barcode_symbology(file_name, label, el["symbology"])
     if el_type == "box" and "fill" in el:
         _require_bool(file_name, label, "fill", el["fill"])
     if el_type == "list":
@@ -919,15 +946,20 @@ def load_template(path: Path) -> Template:
 def validate_template_from_string(yaml_text: str, source_name: str = "<draft>") -> Template:
     """Validate raw template YAML text into a :class:`Template` WITHOUT touching the filesystem.
 
-    Backs the draft studio: a user-supplied YAML body is parsed and run through exactly the
-    same schema validation as a saved file (:func:`build_template_from_mapping`), but no file is
-    read or written and the returned Template carries the :data:`DRAFT_SOURCE_PATH` sentinel. A
-    malformed YAML body raises :class:`TemplateLoadError` (the caller maps it to a 422) rather than
-    surfacing an uncaught ``yaml.YAMLError``.
+    Backs the draft studio AND inline printing: a user-supplied (untrusted, request-driven) YAML
+    body is parsed and run through exactly the same schema validation as a saved file
+    (:func:`build_template_from_mapping`), but no file is read or written and the returned Template
+    carries the :data:`DRAFT_SOURCE_PATH` sentinel. A malformed body raises
+    :class:`TemplateLoadError` (the caller maps it to a 422) rather than surfacing an uncaught
+    parser exception. ``RecursionError`` is caught alongside ``yaml.YAMLError`` because
+    ``yaml.safe_load`` recurses while composing nested collections: a deeply nested but
+    within-size-cap body (e.g. thousands of nested flow sequences) blows the interpreter's
+    recursion limit with a ``RecursionError`` — a ``RuntimeError`` subclass, NOT a ``YAMLError`` —
+    which must be a 422 (bad client input), never a 500.
     """
     try:
         raw = yaml.safe_load(yaml_text)
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, RecursionError) as exc:
         raise TemplateLoadError(f"{source_name}: YAML parse error: {exc}") from exc
     return build_template_from_mapping(raw, source_name, DRAFT_SOURCE_PATH)
 

@@ -123,6 +123,14 @@ logging.basicConfig(level=settings.log_level)
 
 # ── Prometheus metrics ─────────────────────────────────────────────────────────
 LABELS_PRINTED = Counter("labels_printed_total", "Total labels printed", ["template", "dry_run"])
+# Fixed `template` label value for inline (`template_inline`) prints — an inline template's name is
+# arbitrary/user-controlled, so counting each distinct name as its own series would be an unbounded
+# cardinality vector on the metrics endpoint.
+INLINE_METRIC_TEMPLATE = "<inline>"
+# label_errors_total `reason` for a failed template resolution, keyed by HTTP status. 403 is the
+# inline-disabled gate; 404 an unknown stored name; any other (422 missing-fields / invalid inline
+# YAML) falls through to missing_fields.
+_RESOLVE_ERROR_REASONS = {403: "inline_disabled", 404: "not_found"}
 LABEL_ERRORS = Counter("label_errors_total", "Print errors", ["reason"])
 LAST_PRINT_TS = Gauge("last_print_timestamp_seconds", "Unix timestamp of last print")
 # A real print that proceeded WITHOUT the media/fault preflight because the printer's status channel
@@ -1259,8 +1267,9 @@ def _render_template_preview(
 ) -> bytes:
     """Render a resolved :class:`Template` to a preview PNG.
 
-    The single render path shared by the saved-template preview (:func:`_render_preview`) and the
-    draft studio preview (``/preview/draft``): a pre-driver render at the media's compose canvas
+    The single render path shared by the ``/preview`` route (which resolves a stored name OR an
+    inline body to a Template, then passes it here) and the draft studio preview
+    (``/preview/draft``): a pre-driver render at the media's compose canvas
     (:func:`_compose_canvas`) then the SAME black/white conversion the print raster gets
     (:func:`_preview_bw_convert`) — Floyd-Steinberg dither when ``dither`` is True, else brother_ql's
     exact threshold cutoff. ``dither``/``threshold`` fall back to the server default
@@ -1306,24 +1315,6 @@ def _render_template_preview(
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
-
-
-def _render_preview(
-    template_name: str,
-    fields: dict[str, Any],
-    language: str,
-    now: datetime | None = None,
-    *,
-    dither: bool | None = None,
-    threshold: float | None = None,
-    seq: str = "",
-) -> bytes:
-    tmpl = registry.get(template_name)
-    if tmpl is None:
-        raise HTTPException(404, f"Template {template_name!r} not found")
-    return _render_template_preview(
-        tmpl, fields, language, now=now, dither=dither, threshold=threshold, seq=seq
-    )
 
 
 def _try_save_job(record: PrintJobRecord) -> bool:
@@ -1413,6 +1404,9 @@ def _request_fingerprint(request: PrintRequest, options: RenderOptions) -> str:
     """
     payload = {
         "template": request.template,
+        # Fold the inline body into the identity too: two different inline templates sharing one
+        # idempotency_key are different prints and must not dedupe to each other.
+        "template_inline": request.template_inline,
         "fields": request.fields,
         "copies": request.copies,
         "dry_run": request.dry_run,
@@ -1439,6 +1433,7 @@ def _execute_print(
     idempotency_key: str | None = None,
     request_fingerprint: str | None = None,
     sequence: SequenceSpec | None = None,
+    template_source: str | None = None,
 ) -> PrintResponse:
     """Render with frozen inputs, persist the job, and (unless dry-run) send to the printer.
 
@@ -1482,6 +1477,11 @@ def _execute_print(
     # any render/send so the failure paths can record a uniform record.
     persisted_fields, image_stripped = _strip_image_fields(tmpl, fields)
 
+    # Prometheus label for labels_printed_total. An inline template's `name` is arbitrary and
+    # user-controlled, so labelling the counter by it would blow up series cardinality; inline jobs
+    # collapse to a single fixed sentinel instead. Named jobs keep their (bounded) template name.
+    metric_template = INLINE_METRIC_TEMPLATE if template_source is not None else tmpl.name
+
     def _record(status: str) -> PrintJobRecord:
         return PrintJobRecord(
             job_id=job_id,
@@ -1499,6 +1499,7 @@ def _execute_print(
             request_fingerprint=request_fingerprint,
             image_stripped=image_stripped,
             sequence=sequence,
+            template_source=template_source,
         )
 
     # Render a single label PNG. ``seq`` is the pre-formatted per-item string ("" for the
@@ -1593,7 +1594,7 @@ def _execute_print(
         if not _try_save_job(_record("dry-run")):
             log.error("Dry-run job %s could not be recorded to history", job_id)
         effective_count = sequence.count if sequence is not None else copies
-        LABELS_PRINTED.labels(template=tmpl.name, dry_run="True").inc(effective_count)
+        LABELS_PRINTED.labels(template=metric_template, dry_run="True").inc(effective_count)
         LAST_PRINT_TS.set_to_current_time()
         return PrintResponse(job_id=job_id, template=tmpl.name, copies=copies, dry_run=dry_run)
 
@@ -1623,7 +1624,7 @@ def _execute_print(
                 # Some labels already printed — record the partial failure so the job is
                 # visible (with the partial count and accurate render-fault reason).
                 _try_save_job(_record("failed"))
-                LABELS_PRINTED.labels(template=tmpl.name, dry_run="False").inc(printed)
+                LABELS_PRINTED.labels(template=metric_template, dry_run="False").inc(printed)
                 LAST_PRINT_TS.set_to_current_time()
                 raise HTTPException(500, f"Render error: {exc}") from exc
 
@@ -1642,7 +1643,7 @@ def _execute_print(
                 )
                 _try_save_job(_record("failed"))
                 if printed:
-                    LABELS_PRINTED.labels(template=tmpl.name, dry_run="False").inc(printed)
+                    LABELS_PRINTED.labels(template=metric_template, dry_run="False").inc(printed)
                     LAST_PRINT_TS.set_to_current_time()
                 raise HTTPException(422, f"Two-color (red) printing not supported: {exc}") from exc
             except Exception as exc:
@@ -1655,7 +1656,7 @@ def _execute_print(
                 )
                 _try_save_job(_record("failed"))
                 if printed:
-                    LABELS_PRINTED.labels(template=tmpl.name, dry_run="False").inc(printed)
+                    LABELS_PRINTED.labels(template=metric_template, dry_run="False").inc(printed)
                     LAST_PRINT_TS.set_to_current_time()
                 raise HTTPException(500, f"Print error: {exc}") from exc
 
@@ -1680,7 +1681,7 @@ def _execute_print(
                 _try_save_job(_record("failed"))
                 # Count only the labels actually sent before the failing one.
                 if printed:
-                    LABELS_PRINTED.labels(template=tmpl.name, dry_run="False").inc(printed)
+                    LABELS_PRINTED.labels(template=metric_template, dry_run="False").inc(printed)
                     LAST_PRINT_TS.set_to_current_time()
                 raise HTTPException(502, f"Printer error: {detail}")
             printed += 1
@@ -1690,7 +1691,7 @@ def _execute_print(
             log.error(
                 "Job %s printed but its history record was lost; /reprint will not find it", job_id
             )
-        LABELS_PRINTED.labels(template=tmpl.name, dry_run="False").inc(printed)
+        LABELS_PRINTED.labels(template=metric_template, dry_run="False").inc(printed)
         LAST_PRINT_TS.set_to_current_time()
         return PrintResponse(job_id=job_id, template=tmpl.name, copies=copies, dry_run=dry_run)
 
@@ -1738,7 +1739,7 @@ def _execute_print(
         log.error(
             "Job %s printed but its history record was lost; /reprint will not find it", job_id
         )
-    LABELS_PRINTED.labels(template=tmpl.name, dry_run="False").inc(copies)
+    LABELS_PRINTED.labels(template=metric_template, dry_run="False").inc(copies)
     LAST_PRINT_TS.set_to_current_time()
     return PrintResponse(job_id=job_id, template=tmpl.name, copies=copies, dry_run=dry_run)
 
@@ -2298,6 +2299,27 @@ def get_template_source(name: str) -> TemplateSourceResponse:
     return TemplateSourceResponse(name=tmpl.name, yaml=yaml_text)
 
 
+# Keep only a conservative printable-ASCII subset for the download filename. This single allowlist
+# defends two ways at once: it drops CR/LF and other control chars (header injection / response
+# splitting) AND any non-ASCII (Starlette latin-1-encodes header values, so an emoji/CJK name would
+# raise UnicodeEncodeError → 500). Quotes/backslashes are excluded too so the quoted-string can't be
+# broken out of. Stored names are ASCII kebab-case and pass through unchanged.
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._ -]+")
+_MAX_DOWNLOAD_FILENAME_LEN = 100
+
+
+def _png_content_disposition(name: str) -> str:
+    """Build a safe ``Content-Disposition`` attachment header for a ``<name>.png`` download.
+
+    ``name`` may be a user-controlled *inline* template name (inline templates are not constrained
+    by :data:`_SAFE_TEMPLATE_NAME`, which only gates the save-to-disk filename), so it is reduced to
+    an ASCII-safe, length-capped filename before interpolation (see :data:`_UNSAFE_FILENAME_CHARS`),
+    falling back to a fixed name if nothing safe remains.
+    """
+    safe = _UNSAFE_FILENAME_CHARS.sub("_", name).strip("._ ")[:_MAX_DOWNLOAD_FILENAME_LEN]
+    return f'attachment; filename="{safe or "label"}.png"'
+
+
 @app.post(
     "/preview",
     dependencies=[Depends(check_token)],
@@ -2309,7 +2331,7 @@ def get_template_source(name: str) -> TemplateSourceResponse:
     },
 )
 async def preview(request: PrintRequest, download: bool = False) -> Response:
-    tmpl = _resolve_template(request.template, request.fields)
+    tmpl, _template_source = _resolve_template_for_request(request)
 
     # A {{seq}} template must be previewed WITH a sequence spec, else {{seq}} resolves to "" and the
     # raster shows a blank-numbered label a user could approve. When the request carries a sequence
@@ -2348,18 +2370,19 @@ async def preview(request: PrintRequest, download: bool = False) -> Response:
     # Offload the blocking PIL render exactly like /print offloads _execute_print: rendering on the
     # event loop would stall every other request (health, metrics, auth) for the render duration.
     # HTTPException raised inside the helper propagates unchanged through run_in_threadpool.
+    # Render the already-resolved Template directly (not by name via _render_preview): an inline
+    # template is not in the registry, so a name lookup would 404. Named templates are unaffected —
+    # the handler already resolved the same object.
     png = await run_in_threadpool(
-        _render_preview,
-        tmpl.name,
+        _render_template_preview,
+        tmpl,
         request.fields,
         language,
         dither=effective_dither,
         threshold=effective_threshold,
         seq=preview_seq,
     )
-    headers = (
-        {"Content-Disposition": f'attachment; filename="{tmpl.name}.png"'} if download else None
-    )
+    headers = {"Content-Disposition": _png_content_disposition(tmpl.name)} if download else None
     return Response(content=png, media_type="image/png", headers=headers)
 
 
@@ -2418,10 +2441,10 @@ async def print_label(request: PrintRequest) -> PrintResponse:
     )
 
     try:
-        tmpl = _resolve_template(request.template, request.fields)
+        tmpl, template_source = _resolve_template_for_request(request)
     except HTTPException as exc:
         LABEL_ERRORS.labels(
-            reason="not_found" if exc.status_code == 404 else "missing_fields"
+            reason=_RESOLVE_ERROR_REASONS.get(exc.status_code, "missing_fields")
         ).inc()
         raise
 
@@ -2491,6 +2514,7 @@ async def print_label(request: PrintRequest) -> PrintResponse:
             idempotency_key=request.idempotency_key,
             request_fingerprint=fingerprint,
             sequence=request.sequence,
+            template_source=template_source,
         )
 
 
@@ -2520,9 +2544,24 @@ async def reprint(job_id: str) -> PrintResponse:
             f"Job {job_id!r} contained an image, which is not retained in history; "
             "re-submit the original /print request to reproduce it",
         )
-    tmpl = registry.get(record.template)
-    if tmpl is None:
-        raise HTTPException(409, f"Template {record.template!r} no longer exists; cannot reprint")
+    # Inline jobs carry their frozen YAML body: reconstruct the template from it (independent of the
+    # registry) so the reprint reproduces the original exactly — even if no stored template of this
+    # name exists, or a DIFFERENT one later claimed the name. Named jobs resolve by name as before.
+    if record.template_source is not None:
+        try:
+            tmpl = validate_template_from_string(record.template_source)
+        except TemplateLoadError as exc:
+            raise HTTPException(
+                409,
+                f"Job {job_id!r} froze an inline template that no longer validates: {exc}",
+            ) from exc
+    else:
+        resolved = registry.get(record.template)
+        if resolved is None:
+            raise HTTPException(
+                409, f"Template {record.template!r} no longer exists; cannot reprint"
+            )
+        tmpl = resolved
 
     # Enforce the current required-field contract on replay. /print rejects missing/blank required
     # fields up front; a saved row can fall short of it after schema drift (the template gained a
@@ -2609,6 +2648,7 @@ async def reprint(job_id: str) -> PrintResponse:
             now=now,
             job_id=str(uuid.uuid4()),
             sequence=record.sequence,
+            template_source=record.template_source,
         )
 
 
@@ -2684,6 +2724,13 @@ async def history_page(request: Request) -> HTMLResponse:
 @app.get(
     "/history/list",
     response_model=HistoryPage,
+    # Redact the frozen inline template body from the browse listing: it is retained on the
+    # persisted record purely so /reprint can reconstruct an inline job internally (via _load_job),
+    # and the browse UI never renders it. Returning the full YAML (up to 64 KiB per inline entry)
+    # would both bloat the page response and expose off-platform template bodies + their embedded
+    # static literals through the list API. Persistence and /reprint are unaffected (they use the
+    # full record, not this response model).
+    response_model_exclude={"entries": {"__all__": {"template_source"}}},
     dependencies=[Depends(_require_history_ui), Depends(check_token)],
     tags=["History"],
     responses={**RESPONSE_401},
@@ -3277,6 +3324,46 @@ def _resolve_template(template_name: str, fields: dict[str, Any]) -> Template:
             },
         )
     return tmpl
+
+
+def _resolve_template_for_request(request: PrintRequest) -> tuple[Template, str | None]:
+    """Resolve a print/preview request to a validated Template from either a stored name or an inline body.
+
+    Returns ``(template, template_source)`` where ``template_source`` is the verbatim inline YAML for
+    an inline request (frozen into history so /reprint reproduces it) or ``None`` for a named request.
+    The request model guarantees exactly one of ``template`` / ``template_inline`` is set
+    (:meth:`PrintRequest._template_source_exclusive`).
+
+    Inline bodies run through :func:`validate_template_from_string` — the SAME schema + DoS-bound
+    validation path a saved file gets — so no new validation surface is opened; the inline body then
+    faces the identical required-field contract check a named template does. Inline printing is gated
+    by ``INLINE_TEMPLATES_ENABLED`` (403 when disabled).
+    """
+    if request.template_inline is not None:
+        if not settings.inline_templates_enabled:
+            raise HTTPException(
+                403,
+                "Inline templates are disabled; set INLINE_TEMPLATES_ENABLED=true to print or "
+                "preview a template body directly, or reference a stored template by name",
+            )
+        try:
+            tmpl = validate_template_from_string(request.template_inline)
+        except TemplateLoadError as exc:
+            raise HTTPException(422, f"Invalid inline template: {exc}") from exc
+        missing = _missing_required_fields(tmpl, request.fields)
+        if missing:
+            raise HTTPException(
+                422,
+                detail={
+                    "msg": "Missing required fields",
+                    "template": tmpl.name,
+                    "missing_required": missing,
+                },
+            )
+        return tmpl, request.template_inline
+    # The model validator guarantees a non-None name here when template_inline is None.
+    assert request.template is not None
+    return _resolve_template(request.template, request.fields), None
 
 
 def _validate_sequence_matches_template(

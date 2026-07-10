@@ -262,6 +262,59 @@ def test_inline_preview_download_name_is_header_safe(inline_client: TestClient) 
     assert "x-injected" not in {k.lower() for k in resp.headers}
 
 
+def test_inline_invalid_barcode_symbology_is_422_not_500(inline_client: TestClient) -> None:
+    """A bad barcode symbology is caught at validation (422), not at render (BarcodeNotFoundError →
+    500). Covers both /preview and /print."""
+    bad = (
+        "name: bad-barcode\n"
+        "description: invalid symbology\n"
+        'label: "62"\n'
+        "fields:\n  required: [code]\n"
+        'layout:\n  - {type: barcode, data: "{{code}}", symbology: definitely-not-real}\n'
+    )
+    prev = inline_client.post("/preview", json={"template_inline": bad, "fields": {"code": "abc"}})
+    assert prev.status_code == 422, prev.text
+    pr = inline_client.post(
+        "/print", json={"template_inline": bad, "fields": {"code": "abc"}, "dry_run": True}
+    )
+    assert pr.status_code == 422, pr.text
+
+
+def test_inline_valid_barcode_symbology_renders(inline_client: TestClient) -> None:
+    """A valid symbology still renders — the load-time check must not reject good templates."""
+    good = (
+        "name: good-barcode\n"
+        "description: valid symbology\n"
+        'label: "62"\n'
+        "fields:\n  required: [code]\n"
+        'layout:\n  - {type: barcode, data: "{{code}}", symbology: code128}\n'
+    )
+    resp = inline_client.post(
+        "/preview", json={"template_inline": good, "fields": {"code": "ABC123"}}
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+
+
+def test_inline_unicode_download_name_does_not_500(inline_client: TestClient) -> None:
+    """A non-ASCII inline template name must not crash the download (Starlette latin-1 header
+    encoding). The filename is reduced to an ASCII-safe fallback."""
+    emoji_yaml = (
+        'name: "😀 CJK 名前"\n'
+        "description: unicode name\n"
+        'label: "62"\n'
+        "fields:\n  required: [title]\n"
+        'layout:\n  - {type: title, text: "{{title}}"}\n'
+    )
+    resp = inline_client.post(
+        "/preview?download=true", json={"template_inline": emoji_yaml, "fields": {"title": "x"}}
+    )
+    assert resp.status_code == 200
+    cd = resp.headers["content-disposition"]
+    assert cd.isascii()
+    assert "\r" not in cd and "\n" not in cd
+
+
 def test_inline_metrics_use_sentinel_label(inline_client: TestClient) -> None:
     """The labels_printed_total counter labels inline jobs with the fixed <inline> sentinel, not the
     (unbounded, user-controlled) inline template name."""

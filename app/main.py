@@ -2299,21 +2299,25 @@ def get_template_source(name: str) -> TemplateSourceResponse:
     return TemplateSourceResponse(name=tmpl.name, yaml=yaml_text)
 
 
-_UNSAFE_FILENAME_CHARS = re.compile(r'[\x00-\x1f\x7f"\\]+')
+# Keep only a conservative printable-ASCII subset for the download filename. This single allowlist
+# defends two ways at once: it drops CR/LF and other control chars (header injection / response
+# splitting) AND any non-ASCII (Starlette latin-1-encodes header values, so an emoji/CJK name would
+# raise UnicodeEncodeError → 500). Quotes/backslashes are excluded too so the quoted-string can't be
+# broken out of. Stored names are ASCII kebab-case and pass through unchanged.
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._ -]+")
+_MAX_DOWNLOAD_FILENAME_LEN = 100
 
 
 def _png_content_disposition(name: str) -> str:
     """Build a safe ``Content-Disposition`` attachment header for a ``<name>.png`` download.
 
     ``name`` may be a user-controlled *inline* template name (inline templates are not constrained
-    by :data:`_SAFE_TEMPLATE_NAME`, which only gates the save-to-disk filename). Interpolating it
-    raw into the header is a header-injection / response-splitting vector: a name containing CR/LF
-    would inject additional header lines. Strip control characters, quotes and backslashes (which
-    would also break the quoted-string) before interpolating, falling back to a fixed name if
-    nothing safe remains.
+    by :data:`_SAFE_TEMPLATE_NAME`, which only gates the save-to-disk filename), so it is reduced to
+    an ASCII-safe, length-capped filename before interpolation (see :data:`_UNSAFE_FILENAME_CHARS`),
+    falling back to a fixed name if nothing safe remains.
     """
-    safe = _UNSAFE_FILENAME_CHARS.sub("_", name).strip() or "label"
-    return f'attachment; filename="{safe}.png"'
+    safe = _UNSAFE_FILENAME_CHARS.sub("_", name).strip("._ ")[:_MAX_DOWNLOAD_FILENAME_LEN]
+    return f'attachment; filename="{safe or "label"}.png"'
 
 
 @app.post(

@@ -6,3 +6,5 @@ _date_format: "%d/%m/%Y"
 _datetime_format: "%d/%m/%Y %H:%M"
 _weekdays_abbr: [seg, ter, qua, qui, sex, sáb, dom]
 _weekdays_full: [segunda-feira, terça-feira, quarta-feira, quinta-feira, sexta-feira, sábado, domingo]
+_months_abbr: [jan, fev, mar, abr, mai, jun, jul, ago, set, out, nov, dez]
+_months_full: [janeiro, fevereiro, março, abril, maio, junho, julho, agosto, setembro, outubro, novembro, dezembro]

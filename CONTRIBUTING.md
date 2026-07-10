@@ -96,6 +96,10 @@ Label chrome words live in translation catalogs, not in templates. To add a lang
 1. Copy `translations/en.yaml` to `translations/<code>.yaml` (a lowercase code such as `sv`, `cs`).
 2. Translate each value. Optionally set `_date_format` / `_datetime_format` (Python `strftime`)
    to localize `{{date}}`/`{{now}}`; otherwise the day-first European default is used.
+   Also translate the reserved list keys `_weekdays_abbr` / `_weekdays_full` (7 items, Monday-first)
+   and `_months_abbr` / `_months_full` (12 items, January-first) — these localize the `%a`/`%A`
+   and `%b`/`%B` directives (e.g. `{{date:%a, %-d %b}}`). Leaving them out silently falls back to
+   English names.
 3. Do **not** put `{{…}}` in a value — catalogs are pure vocabulary; the loader rejects it.
 4. `uv run pytest tests/test_i18n.py tests/test_render.py` — the validation test checks every
    `[[key]]` used by a bundled template exists in the default (`en`) catalog.

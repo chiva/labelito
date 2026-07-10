@@ -11,11 +11,20 @@ import pytest
 
 from app.render.i18n import (
     DEFAULT_DATETIME_FORMAT,
+    DEFAULT_MONTHS_ABBR,
+    DEFAULT_MONTHS_FULL,
     DEFAULT_WEEKDAYS_ABBR,
     DEFAULT_WEEKDAYS_FULL,
     TranslationLoadError,
     Translator,
     load_catalog,
+)
+
+# A full 12-item January-first Spanish month pair, reused across the month-localization tests.
+_ES_MONTHS_ABBR = "[ene, feb, mar, abr, may, jun, jul, ago, sep, oct, nov, dic]"
+_ES_MONTHS_FULL = (
+    "[enero, febrero, marzo, abril, mayo, junio, "
+    "julio, agosto, septiembre, octubre, noviembre, diciembre]"
 )
 
 
@@ -295,3 +304,104 @@ def test_all_bundled_catalogs_have_complete_weekday_lists() -> None:
         full = catalog.get("_weekdays_full")
         assert isinstance(abbr, list) and len(abbr) == 7, f"{path.name}: _weekdays_abbr incomplete"
         assert isinstance(full, list) and len(full) == 7, f"{path.name}: _weekdays_full incomplete"
+
+
+# ── Month name lists (_months_abbr / _months_full) ───────────────────────────────
+def test_load_accepts_month_lists(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        "en",
+        "_months_abbr: [Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec]\n"
+        "_months_full: [January, February, March, April, May, June, July, August, "
+        "September, October, November, December]\n",
+    )
+    catalog = load_catalog(path)
+    assert catalog["_months_abbr"][0] == "Jan"
+    assert catalog["_months_full"][11] == "December"
+
+
+def test_load_rejects_month_list_wrong_length(tmp_path: Path) -> None:
+    # 7 items is a valid weekday length but wrong for months — the per-key spec must reject it.
+    path = _write(tmp_path, "bad", "_months_abbr: [Jan, Feb, Mar, Apr, May, Jun, Jul]\n")
+    with pytest.raises(TranslationLoadError, match="12-item list"):
+        load_catalog(path)
+
+
+def test_load_rejects_month_list_non_string_items(tmp_path: Path) -> None:
+    path = _write(tmp_path, "bad", "_months_full: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]\n")
+    with pytest.raises(TranslationLoadError, match="12-item list"):
+        load_catalog(path)
+
+
+def test_load_rejects_month_key_as_plain_string(tmp_path: Path) -> None:
+    """The reserved month list keys must be lists, not a scalar string."""
+    path = _write(tmp_path, "bad", '_months_abbr: "Jan"\n')
+    with pytest.raises(TranslationLoadError, match="12-item list"):
+        load_catalog(path)
+
+
+def test_month_names_per_language_and_fallback(tmp_path: Path) -> None:
+    d = tmp_path / "translations"
+    d.mkdir()
+    _write(
+        d,
+        "en",
+        'frozen: "Frozen"\n'
+        "_months_abbr: [Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec]\n"
+        "_months_full: [January, February, March, April, May, June, July, August, "
+        "September, October, November, December]\n",
+    )
+    # es supplies only the abbreviated list — the full list must fall back to the default
+    # language's (en) catalog, mirroring weekday_names()'s per-field fallback chain.
+    _write(d, "es", f'frozen: "Congelado"\n_months_abbr: {_ES_MONTHS_ABBR}\n')
+    t = Translator(d, "en")
+    t.load_all()
+
+    assert t.month_names("en") == (
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+        list(DEFAULT_MONTHS_FULL),
+    )
+    abbr, full = t.month_names("es")
+    assert abbr == [
+        "ene",
+        "feb",
+        "mar",
+        "abr",
+        "may",
+        "jun",
+        "jul",
+        "ago",
+        "sep",
+        "oct",
+        "nov",
+        "dic",
+    ]
+    assert full == list(DEFAULT_MONTHS_FULL)  # es omitted _months_full → en fallback
+    # Unknown language falls back entirely to the default language's (en) lists.
+    assert t.month_names("zz")[0][6] == "Jul"
+
+
+def test_month_names_falls_back_to_module_default_when_catalog_omits_keys(
+    catalogs: Path,
+) -> None:
+    """The shared `catalogs` fixture carries no _months_* keys — month_names() must degrade to the
+    plain-English module defaults rather than raising or returning an empty list."""
+    t = Translator(catalogs, "en")
+    t.load_all()
+    assert t.month_names("en") == (list(DEFAULT_MONTHS_ABBR), list(DEFAULT_MONTHS_FULL))
+    assert t.month_names("es") == (list(DEFAULT_MONTHS_ABBR), list(DEFAULT_MONTHS_FULL))
+
+
+def test_all_bundled_catalogs_have_complete_month_lists() -> None:
+    """Every shipped translations/<lang>.yaml must carry both month reserved keys as valid 12-item
+    January-first lists — the month counterpart to the weekday-completeness guard. A missing list
+    degrades silently to English, so this pins the shipped catalogs explicitly."""
+    translations_dir = Path(__file__).resolve().parent.parent / "translations"
+    catalog_paths = sorted(translations_dir.glob("*.yaml"))
+    assert len(catalog_paths) == 8, f"expected 8 shipped catalogs, found {len(catalog_paths)}"
+    for path in catalog_paths:
+        catalog = load_catalog(path)
+        abbr = catalog.get("_months_abbr")
+        full = catalog.get("_months_full")
+        assert isinstance(abbr, list) and len(abbr) == 12, f"{path.name}: _months_abbr incomplete"
+        assert isinstance(full, list) and len(full) == 12, f"{path.name}: _months_full incomplete"

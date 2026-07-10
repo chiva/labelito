@@ -1517,6 +1517,103 @@ def test_resolve_date_without_weekday_directive_unaffected_by_custom_lists() -> 
     assert out == now.strftime("%Y-%m-%d")
 
 
+# ── Localized month names (%b/%B) ────────────────────────────────────────────────
+_ES_MONTHS_ABBR = [
+    "ene",
+    "feb",
+    "mar",
+    "abr",
+    "may",
+    "jun",
+    "jul",
+    "ago",
+    "sep",
+    "oct",
+    "nov",
+    "dic",
+]
+_ES_MONTHS_FULL = [
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+]
+
+
+def test_resolve_date_month_abbr_defaults_to_english() -> None:
+    """Without month_abbr/month_full (a catalog that omits the reserved keys), %b falls back to the
+    module's plain English defaults rather than crashing."""
+    now = datetime(2026, 7, 10)
+    assert _resolve_fields("{{date:%b}}", {}, now=now) == "Jul"
+
+
+def test_resolve_date_month_full_defaults_to_english() -> None:
+    now = datetime(2026, 12, 1)
+    assert _resolve_fields("{{date:%B}}", {}, now=now) == "December"
+
+
+def test_resolve_date_month_abbr_localized() -> None:
+    now = datetime(2026, 7, 10)
+    out = _resolve_fields(
+        "{{date:%b}}", {}, now=now, month_abbr=_ES_MONTHS_ABBR, month_full=_ES_MONTHS_FULL
+    )
+    assert out == "jul"
+
+
+def test_resolve_date_month_full_localized() -> None:
+    now = datetime(2026, 8, 15)  # August → agosto exercises a month whose English/Spanish differ
+    out = _resolve_fields(
+        "{{date:%B}}", {}, now=now, month_abbr=_ES_MONTHS_ABBR, month_full=_ES_MONTHS_FULL
+    )
+    assert out == "agosto"
+
+
+def test_resolve_date_weekday_and_month_combined_localized() -> None:
+    """The 'today' label's line: localized weekday + day + localized month in one format string,
+    both substituted before strftime. Friday 2026-07-10 in Spanish → 'vie, 10 jul'."""
+    now = datetime(2026, 7, 10)  # a Friday
+    out = _resolve_fields(
+        "{{date:%a, %-d %b}}",
+        {},
+        now=now,
+        weekday_abbr=_ES_WEEKDAYS_ABBR,
+        weekday_full=_ES_WEEKDAYS_FULL,
+        month_abbr=_ES_MONTHS_ABBR,
+        month_full=_ES_MONTHS_FULL,
+    )
+    assert out == "vie, 10 jul"
+
+
+def test_resolve_now_month_localized() -> None:
+    """%b/%B localization applies to {{now}} exactly like {{date}}."""
+    now = datetime(2026, 1, 5, 9, 0)
+    out = _resolve_fields(
+        "{{now:%B}}", {}, now=now, month_abbr=_ES_MONTHS_ABBR, month_full=_ES_MONTHS_FULL
+    )
+    assert out == "enero"
+
+
+def test_resolve_date_without_month_directive_unaffected_by_custom_lists() -> None:
+    """A format with no %b/%B is untouched by month localization (no accidental substitution)."""
+    now = datetime(2026, 7, 10)
+    out = _resolve_fields(
+        "{{date:%Y-%m-%d}}",
+        {},
+        now=now,
+        month_abbr=_ES_MONTHS_ABBR,
+        month_full=_ES_MONTHS_FULL,
+    )
+    assert out == now.strftime("%Y-%m-%d")
+
+
 # ── Bundled templates — load & render (covers the new homelab/die-cut templates) ──
 def test_all_bundled_templates_load() -> None:
     from app.loader import TemplateRegistry

@@ -6,9 +6,10 @@ maps each key to a word. A distinct delimiter is used so these never collide wit
 ``{{field}}`` substitution grammar (where ``:`` already means a strftime format).
 
 Catalogs are flat ``translations/<lang>.yaml`` files of ``key: value`` strings, plus the
-reserved keys ``_date_format`` / ``_datetime_format`` that localize ``{{date}}``/``{{now}}``, and
+reserved keys ``_date_format`` / ``_datetime_format`` that localize ``{{date}}``/``{{now}}``,
 ``_weekdays_abbr`` / ``_weekdays_full`` (7-item Monday-first lists) that localize the ``%a``/``%A``
-strftime directives inside those formats. This format is intentionally trivial so a translation
+strftime directives, and ``_months_abbr`` / ``_months_full`` (12-item January-first lists) that
+localize ``%b``/``%B`` inside those formats. This format is intentionally trivial so a translation
 platform (Weblate/Crowdin) can sync to it later without code changes.
 """
 
@@ -30,10 +31,20 @@ _DATE_FORMAT_KEY = "_date_format"
 _DATETIME_FORMAT_KEY = "_datetime_format"
 _WEEKDAYS_ABBR_KEY = "_weekdays_abbr"
 _WEEKDAYS_FULL_KEY = "_weekdays_full"
+_MONTHS_ABBR_KEY = "_months_abbr"
+_MONTHS_FULL_KEY = "_months_full"
 
-# The two reserved keys whose value is a 7-item list (Monday-first) rather than a plain string —
-# everything else in a catalog (including _date_format/_datetime_format) must be a string.
-_RESERVED_LIST_KEYS = frozenset({_WEEKDAYS_ABBR_KEY, _WEEKDAYS_FULL_KEY})
+# Reserved keys whose value is an ordered list of strings rather than a plain string — everything
+# else in a catalog (including _date_format/_datetime_format) must be a string. Each maps to the
+# exact (length, ordering) it requires: weekdays are 7 Monday-first (index 0 = Monday, matching
+# datetime.weekday()); months are 12 January-first (index 0 = January, matching datetime.month - 1).
+_RESERVED_LIST_SPECS: dict[str, tuple[int, str]] = {
+    _WEEKDAYS_ABBR_KEY: (7, "Monday-first"),
+    _WEEKDAYS_FULL_KEY: (7, "Monday-first"),
+    _MONTHS_ABBR_KEY: (12, "January-first"),
+    _MONTHS_FULL_KEY: (12, "January-first"),
+}
+_RESERVED_LIST_KEYS = frozenset(_RESERVED_LIST_SPECS)
 
 # Fallback date formats when a catalog omits the reserved keys (European day-first).
 DEFAULT_DATE_FORMAT = "%d/%m/%Y"
@@ -53,6 +64,38 @@ DEFAULT_WEEKDAYS_FULL = (
     "Sunday",
 )
 
+# Fallback month names (January-first) when a catalog omits the reserved keys — plain C-locale
+# English, matching the strftime %b/%B output a catalog-less render produced before localized
+# month substitution existed.
+DEFAULT_MONTHS_ABBR = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+DEFAULT_MONTHS_FULL = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
 
 class TranslationLoadError(ValueError):
     pass
@@ -61,8 +104,9 @@ class TranslationLoadError(ValueError):
 def load_catalog(path: Path) -> dict[str, str | list[str]]:
     """Load and validate a single ``<lang>.yaml`` catalog into a flat mapping.
 
-    Every key is a plain string value except :data:`_RESERVED_LIST_KEYS`
-    (``_weekdays_abbr``/``_weekdays_full``), which must be a 7-item Monday-first list of strings.
+    Every key is a plain string value except :data:`_RESERVED_LIST_KEYS`: the weekday lists
+    (``_weekdays_abbr``/``_weekdays_full``) must be 7-item Monday-first lists of strings and the
+    month lists (``_months_abbr``/``_months_full``) must be 12-item January-first lists of strings.
     """
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -77,13 +121,15 @@ def load_catalog(path: Path) -> dict[str, str | list[str]]:
     catalog: dict[str, str | list[str]] = {}
     for key, value in raw.items():
         if key in _RESERVED_LIST_KEYS:
+            expected_len, ordering = _RESERVED_LIST_SPECS[key]
             if (
                 not isinstance(value, list)
-                or len(value) != 7
+                or len(value) != expected_len
                 or not all(isinstance(v, str) for v in value)
             ):
                 raise TranslationLoadError(
-                    f"{path.name}: value for {key!r} must be a 7-item list of strings (Monday-first)"
+                    f"{path.name}: value for {key!r} must be a {expected_len}-item list of strings "
+                    f"({ordering})"
                 )
             catalog[str(key)] = list(value)
             continue
@@ -248,6 +294,27 @@ class Translator:
             if isinstance(raw_abbr, list):
                 abbr = list(raw_abbr)  # copy, don't alias the shared catalog's internal list
             raw_full = catalog.get(_WEEKDAYS_FULL_KEY)
+            if isinstance(raw_full, list):
+                full = list(raw_full)  # same: the singleton translator is shared across requests
+        return abbr, full
+
+    def month_names(self, language: str) -> tuple[list[str], list[str]]:
+        """Return ``(months_abbr, months_full)`` for a language, both January-first 12-item lists.
+
+        Same fallback chain as :meth:`weekday_names`: requested language → default language →
+        module defaults (plain C-locale English, matching un-localized ``%b``/``%B`` output).
+        """
+        lang = language.lower()
+        abbr: list[str] = list(DEFAULT_MONTHS_ABBR)
+        full: list[str] = list(DEFAULT_MONTHS_FULL)
+        for candidate in (self.default_language, lang):  # requested wins (applied last)
+            catalog = self._catalogs.get(candidate)
+            if catalog is None:
+                continue
+            raw_abbr = catalog.get(_MONTHS_ABBR_KEY)
+            if isinstance(raw_abbr, list):
+                abbr = list(raw_abbr)  # copy, don't alias the shared catalog's internal list
+            raw_full = catalog.get(_MONTHS_FULL_KEY)
             if isinstance(raw_full, list):
                 full = list(raw_full)  # same: the singleton translator is shared across requests
         return abbr, full

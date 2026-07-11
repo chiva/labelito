@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import io
 import json
 import logging
@@ -4647,6 +4648,153 @@ def test_save_template_when_enabled_writes_and_reloads(
     assert body["saved"] == "saved-via-studio"
     assert (main_mod.settings.templates_dir / "saved-via-studio.yaml").exists()
     assert "saved-via-studio" in main_mod.registry._templates
+
+
+def test_warn_templates_writable_warns_when_dir_not_traversable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When the save path can't enumerate the dir (the glob needs read+traverse), the boot check
+    warns. os.access is stubbed rather than chmod'd so the test is independent of the runner's
+    privileges (chmod does not deny root / DAC-override processes)."""
+    import app.main as main_mod
+
+    rw_dir = tmp_path / "templates"
+    rw_dir.mkdir()
+    monkeypatch.setattr(main_mod.os, "access", lambda path, mode: False)
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    monkeypatch.setattr(main_mod.settings, "templates_dir", rw_dir)
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        main_mod._warn_if_templates_writable_but_readonly()
+    assert any(
+        "TEMPLATES_WRITABLE=true" in r.message and "not writable" in r.message
+        for r in caplog.records
+    ), caplog.text
+
+
+def test_warn_templates_writable_warns_when_write_probe_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When the dir is traversable but creating a file fails (read-only mount / ACL / wrong owner),
+    the boot check warns. Both os.access and the temp-file probe are stubbed so the test is
+    deterministic and privilege-independent — a bare os.access(W_OK) check would have missed this."""
+    import app.main as main_mod
+
+    rw_dir = tmp_path / "templates"
+    rw_dir.mkdir()
+    monkeypatch.setattr(main_mod.os, "access", lambda path, mode: True)
+
+    def _raise_eacces(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+    monkeypatch.setattr(main_mod.tempfile, "NamedTemporaryFile", _raise_eacces)
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    monkeypatch.setattr(main_mod.settings, "templates_dir", rw_dir)
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        main_mod._warn_if_templates_writable_but_readonly()
+    assert any("TEMPLATES_WRITABLE=true" in r.message for r in caplog.records), caplog.text
+
+
+def test_warn_templates_writable_silent_when_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A genuinely writable templates_dir with the flag on produces no warning — this exercises the
+    REAL temp-file probe succeeding (create+unlink), which works for root and non-root alike."""
+    import app.main as main_mod
+
+    rw_dir = tmp_path / "rw-templates"
+    rw_dir.mkdir()
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    monkeypatch.setattr(main_mod.settings, "templates_dir", rw_dir)
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        main_mod._warn_if_templates_writable_but_readonly()
+    assert not any("TEMPLATES_WRITABLE" in r.message for r in caplog.records), caplog.text
+
+
+def test_warn_templates_writable_silent_when_flag_off(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With TEMPLATES_WRITABLE=false the check returns early and never warns — the blocker probe is
+    stubbed to raise so the test also proves it is never consulted when the flag is off."""
+    import app.main as main_mod
+
+    def _must_not_run(templates_dir: Path) -> str | None:
+        raise AssertionError("blocker probe must not run when TEMPLATES_WRITABLE is off")
+
+    monkeypatch.setattr(main_mod, "_templates_dir_save_blocker", _must_not_run)
+    monkeypatch.setattr(main_mod.settings, "templates_writable", False)
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        main_mod._warn_if_templates_writable_but_readonly()
+    assert not any("TEMPLATES_WRITABLE" in r.message for r in caplog.records), caplog.text
+
+
+def test_save_template_permission_denied_returns_ownership_guidance(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A permission denial (EACCES) must yield ownership/permission guidance, NOT read-only-mount
+    advice: on a writable-but-wrong-uid mount, dropping ':ro' would not help. The atomic write is
+    stubbed to raise EACCES (mirroring the EROFS test) so the test is privilege-independent."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+
+    def _raise_eacces(path: Path, text: str) -> None:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+    monkeypatch.setattr(main_mod, "_atomic_write_template", _raise_eacces)
+    yaml = _DRAFT_YAML.replace("draft-simple", "cant-save-me")
+    resp = client.post("/templates", json={"name": "cant-save-me", "yaml": yaml})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"].lower()
+    assert "not writable by the container user" in detail
+    assert "read-only" not in detail  # EACCES must not be misdiagnosed as a :ro mount
+    assert not (main_mod.settings.templates_dir / "cant-save-me.yaml").exists()
+
+
+def test_save_template_readonly_fs_returns_mount_guidance(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An EROFS write failure (read-only filesystem/mount) yields the ':ro' mount remediation. A real
+    read-only FS is impractical to stage in-process, so the atomic write is stubbed to raise EROFS."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+
+    def _raise_erofs(path: Path, text: str) -> None:
+        raise OSError(errno.EROFS, os.strerror(errno.EROFS))
+
+    monkeypatch.setattr(main_mod, "_atomic_write_template", _raise_erofs)
+    yaml = _DRAFT_YAML.replace("draft-simple", "cant-save-me-erofs")
+    resp = client.post("/templates", json={"name": "cant-save-me-erofs", "yaml": yaml})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"].lower()
+    assert "read-only" in detail and "drop ':ro'" in detail
+    assert "container user" not in detail  # EROFS is a mount issue, not an ownership one
+
+
+def test_save_template_unreadable_existing_file_returns_config_aware_500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Overwriting an EXISTING template whose file is unreadable (EACCES on the rollback snapshot
+    read) must still get the config-aware error, not a bare 500 raised before the classifier — the
+    snapshot read now lives inside the same try as the write. Path.read_bytes is stubbed for the
+    target file so the test does not depend on the runner's privileges (root can read a 0o000 file)."""
+    import pathlib
+
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    original_read_bytes = pathlib.Path.read_bytes
+
+    def _read_bytes(self: Path) -> bytes:
+        if self.name == "simple.yaml":  # the existing template being overwritten
+            raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _read_bytes)
+    yaml = _DRAFT_YAML.replace("draft-simple", "simple")
+    resp = client.post("/templates", json={"name": "simple", "yaml": yaml})
+    assert resp.status_code == 500
+    assert "not writable by the container user" in resp.json()["detail"].lower()
 
 
 def test_save_template_path_traversal_rejected(

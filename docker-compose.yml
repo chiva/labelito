@@ -45,7 +45,9 @@ services:
       # HISTORY_UI: "false"  # hide the /history browse page + list/delete (reprint-by-id still works)
       # In-browser template studio (all off/limited by default):
       # EDITOR_ENABLED: "true"      # expose GET /editor + draft-preview/parse/load/save routes
-      # TEMPLATES_WRITABLE: "true"  # also allow POST /templates server-save (needs a writable templates mount)
+      # TEMPLATES_WRITABLE: "true"  # also allow POST /templates server-save (needs a writable templates
+      #   mount: drop the ':ro' from the ./templates volume above AND ensure the host dir is writable by
+      #   this uid/gid — otherwise the app warns at boot and the save route returns a config-aware 500)
       # TEMPLATES_LOADABLE: "false" # default true: hide the "Load existing template" picker + 404 its source route
       # Auth — no default secret is shipped; the service refuses to start unless ONE is set:
       #   put API_TOKEN=<your-secret> in a .env file beside this compose file (auto-loaded), OR

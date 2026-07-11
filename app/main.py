@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import errno
 import hashlib
 import importlib.metadata
 import io
@@ -1003,6 +1004,57 @@ def _warn_missing_custom_icons() -> None:
             )
 
 
+def _templates_dir_save_blocker(templates_dir: Path) -> str | None:
+    """Return a short reason the save path can't use ``templates_dir``, or None if it can.
+
+    Probes the capabilities ``POST /templates`` actually exercises rather than guessing from a single
+    permission bit: :func:`_safe_template_path` enumerates the dir (``glob`` — needs read+traverse)
+    and :func:`_atomic_write_template` creates a temp file there before ``os.replace`` (needs
+    write+traverse). ``os.access(W_OK)`` alone is insufficient — it misses the read/execute the glob
+    needs, and a bare write bit doesn't prove creation works on a read-only mount or under ACLs. The
+    temp-file probe mirrors the real write and cleans itself up.
+    """
+    if not os.access(templates_dir, os.R_OK | os.X_OK):
+        return "not readable/traversable"
+    try:
+        with tempfile.NamedTemporaryFile(dir=templates_dir, prefix=".labelito-write-probe-"):
+            pass
+    except OSError as exc:
+        return exc.strerror or "not writable"
+    return None
+
+
+def _warn_if_templates_writable_but_readonly() -> None:
+    """Boot warning: TEMPLATES_WRITABLE=true but ``templates_dir`` is not actually usable for saves.
+
+    The common docker-compose case is leaving the ``./templates:/app/templates:ro`` mount read-only
+    after flipping the flag on — the app boots fine and ``/config`` reports ``templates_writable:
+    true``, but the studio's Save (``POST /templates``) then fails at write time with a bare errno.
+    Surfacing the mismatch at boot — as the DEFAULT_LANGUAGE catalog and DATA_DIR checks do — makes
+    the misconfig obvious immediately. Warn-only, matching the fail-open ethos: the save route still
+    returns a clear error, and read-only preview/parse/load still work.
+    """
+    if not settings.templates_writable:
+        return
+    templates_dir = settings.templates_dir.resolve()
+    blocker = _templates_dir_save_blocker(templates_dir)
+    if blocker is not None:
+        # The probe can't attribute the cause, so name both common ones: a read-only mount (:ro left
+        # on the volume) OR a writable mount owned by a uid the container user can't write.
+        log.warning(
+            "TEMPLATES_WRITABLE=true but the templates directory %s is not usable for saves by the "
+            "container user (uid %d, gid %d): %s. Studio server-save (POST /templates) will fail. "
+            "Either the templates mount is still read-only — drop the ':ro' from "
+            "'./templates:/app/templates:ro' in docker-compose.yml — or the host directory is not "
+            "writable by this uid/gid — fix its ownership (chown) or start with matching ids "
+            "(`UID=$(id -u) GID=$(id -g) docker compose up`). Otherwise unset TEMPLATES_WRITABLE.",
+            templates_dir,
+            os.getuid(),
+            os.getgid(),
+            blocker,
+        )
+
+
 async def startup() -> None:
     """Boot-time initialization, invoked by ``_lifespan`` before the server accepts requests."""
     global _history
@@ -1025,6 +1077,7 @@ async def startup() -> None:
     loaded = registry.load_all()
     log.info("Loaded %d templates: %s", len(loaded), loaded)
     _warn_missing_custom_icons()
+    _warn_if_templates_writable_but_readonly()
     langs = translator.load_all()
     if not translator.has(settings.default_language):
         # Not fatal: translate() degrades a missing catalog to the raw key, so the service still
@@ -3153,12 +3206,34 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
     # mid-write corrupts or empties an existing template while the API reports saved. Instead write a
     # temp file in the SAME directory (so os.replace is atomic on one filesystem), fsync it, then
     # replace the target in one syscall. Capture the prior content first so a failed reload can roll
-    # back to exactly what was there before.
-    previous_bytes = path.read_bytes() if path.exists() else None
+    # back to exactly what was there before. The snapshot read is INSIDE the try so an unreadable
+    # existing file (e.g. EACCES on a wrong-owner mount) gets the same config-aware error as the
+    # write, not a bare 500 before the classifier runs.
     try:
+        previous_bytes = path.read_bytes() if path.exists() else None
         _atomic_write_template(path, request.yaml)
     except OSError as exc:
         log.exception("Failed to write template %s", path)
+        # TEMPLATES_WRITABLE=true but the write was denied: point at the ACTUAL cause instead of a
+        # bare errno. EROFS is unambiguously a read-only filesystem/mount (drop ':ro'); EACCES/EPERM
+        # is a permission/ownership denial on a writable mount — in this Docker setup the container
+        # runs as a configurable non-root uid, so the host directory is most likely owned by another
+        # uid/gid. Conflating the two would send operators toward the wrong fix.
+        if exc.errno == errno.EROFS:
+            raise HTTPException(
+                500,
+                f"Cannot write to the templates directory ({exc.strerror}); TEMPLATES_WRITABLE=true "
+                "but the templates mount is read-only. Drop ':ro' from the templates volume "
+                "(or use Download/Copy YAML instead).",
+            ) from exc
+        if exc.errno in (errno.EACCES, errno.EPERM):
+            raise HTTPException(
+                500,
+                f"Cannot write to the templates directory ({exc.strerror}); TEMPLATES_WRITABLE=true "
+                f"but it is not writable by the container user (uid {os.getuid()}, gid {os.getgid()}). "
+                "Fix the host directory's ownership/permissions (chown/chmod) or start with matching "
+                "ids (`UID=$(id -u) GID=$(id -g) docker compose up`), or use Download/Copy YAML.",
+            ) from exc
         raise HTTPException(500, f"Failed to write template: {exc}") from exc
 
     # The /reload endpoint treats reload errors as 422; save must not be weaker. Verify the saved

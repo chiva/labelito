@@ -480,9 +480,11 @@ def test_network_send_decodes_complete_frame_buffered_at_deadline(
 def test_network_send_propagates_connect_failure_and_closes_socket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A refused/unreachable connection propagates to the caller (main.py maps transport exceptions
-    to a failed job) — send() must not swallow it into a None 'state unknown' — and the socket is
-    still closed by the finally block, with nothing ever sent."""
+    """A refused/unreachable connection propagates to the caller as PrinterUnreachable (main.py maps
+    it to a clean 503 failed job) — send() must not swallow it into a None 'state unknown' — and the
+    socket is still closed by the finally block, with nothing ever sent. The original OS error is
+    preserved on __cause__ for diagnostics."""
+    from app.transports.base import PrinterUnreachable
 
     class _RefusingSocket(_FakeSocket):
         def connect(self, addr: tuple[str, int]) -> None:
@@ -491,11 +493,60 @@ def test_network_send_propagates_connect_failure_and_closes_socket(
     fake = _RefusingSocket(b"")
     _patch_socket(monkeypatch, fake)
 
-    with pytest.raises(ConnectionRefusedError):
+    with pytest.raises(PrinterUnreachable) as excinfo:
         NetworkTransport("tcp://192.168.1.50:9100").send(b"x")
+    assert isinstance(excinfo.value.__cause__, ConnectionRefusedError)
 
     assert fake.sent == b"", "nothing must be sent when the connection never opened"
     assert fake.closed is True, "the socket must be closed even when connect() fails"
+
+
+def test_network_send_maps_connect_timeout_to_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connect-phase timeout (a blackholed/powered-off host that drops SYNs) is a pre-send
+    unreachable failure — nothing was sent — so it surfaces as PrinterUnreachable, not a bare
+    TimeoutError. This is the "no route to host after a few seconds" case, mapped to a clean 503."""
+    from app.transports.base import PrinterUnreachable
+
+    class _TimingOutSocket(_FakeSocket):
+        def connect(self, addr: tuple[str, int]) -> None:
+            raise TimeoutError("timed out")
+
+    fake = _TimingOutSocket(b"")
+    _patch_socket(monkeypatch, fake)
+
+    with pytest.raises(PrinterUnreachable) as excinfo:
+        NetworkTransport("tcp://192.168.1.50:9100").send(b"x")
+    assert isinstance(excinfo.value.__cause__, TimeoutError)
+    assert fake.sent == b"", "nothing must be sent when the connection never opened"
+    assert fake.closed is True, "the socket must be closed even when connect() times out"
+
+
+def test_network_send_does_not_mislabel_sendall_failure_as_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure DURING sendall (connect already succeeded) is ambiguous — some bytes may have reached
+    the printer — so it must propagate as a raw OSError, NOT the pre-send PrinterUnreachable. Only the
+    connect phase is unambiguous; wrapping a sendall error would let the caller present an irreversible
+    partial print as a retry-safe 503."""
+    import errno
+
+    from app.transports.base import PrinterUnreachable
+
+    class _FailingSendSocket(_FakeSocket):
+        def sendall(self, data: bytes) -> None:
+            raise OSError(errno.ENETUNREACH, "network went away mid-send")
+
+    fake = _FailingSendSocket(b"")
+    _patch_socket(monkeypatch, fake)
+
+    with pytest.raises(OSError) as excinfo:
+        NetworkTransport("tcp://192.168.1.50:9100").send(b"x")
+    assert not isinstance(excinfo.value, PrinterUnreachable), (
+        "a mid-send failure must stay ambiguous, not be tagged unreachable"
+    )
+    assert fake.closed is True, "the socket must still be closed after a sendall failure"
 
 
 def test_network_close_closes_cached_socket_and_is_idempotent() -> None:
@@ -898,8 +949,9 @@ def test_usb_timeout_records_job_failed_and_emits_print_error_metric(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A USB timeout propagates through _execute_print: the job is recorded failed and
-    label_errors_total{reason=print_error} increments (USBTimeoutError is caught by the generic
-    transport Exception handler in main.py, matching the existing 'print_error' reason)."""
+    label_errors_total{reason=print_error} increments. It stays a 500 (not the "unreachable" 503):
+    the USB transport abandons a worker that may STILL finish printing, so the outcome is ambiguous
+    and must not be dressed up as a safely retryable failure."""
     import time
 
     import brother_ql.backends.helpers as helpers_mod

@@ -4771,6 +4771,26 @@ def test_save_template_readonly_fs_returns_mount_guidance(
     assert "container user" not in detail  # EROFS is a mount issue, not an ownership one
 
 
+def test_save_template_unreadable_existing_file_returns_config_aware_500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Overwriting an EXISTING template whose file is unreadable (EACCES on the rollback snapshot
+    read) must still get the config-aware error, not a bare 500 raised before the classifier — the
+    snapshot read now lives inside the same try as the write."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    simple_path = main_mod.settings.templates_dir / "simple.yaml"
+    simple_path.chmod(0o000)
+    try:
+        yaml = _DRAFT_YAML.replace("draft-simple", "simple")
+        resp = client.post("/templates", json={"name": "simple", "yaml": yaml})
+        assert resp.status_code == 500
+        assert "not writable by the container user" in resp.json()["detail"].lower()
+    finally:
+        simple_path.chmod(0o644)
+
+
 def test_save_template_path_traversal_rejected(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

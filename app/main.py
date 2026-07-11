@@ -3206,9 +3206,11 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
     # mid-write corrupts or empties an existing template while the API reports saved. Instead write a
     # temp file in the SAME directory (so os.replace is atomic on one filesystem), fsync it, then
     # replace the target in one syscall. Capture the prior content first so a failed reload can roll
-    # back to exactly what was there before.
-    previous_bytes = path.read_bytes() if path.exists() else None
+    # back to exactly what was there before. The snapshot read is INSIDE the try so an unreadable
+    # existing file (e.g. EACCES on a wrong-owner mount) gets the same config-aware error as the
+    # write, not a bare 500 before the classifier runs.
     try:
+        previous_bytes = path.read_bytes() if path.exists() else None
         _atomic_write_template(path, request.yaml)
     except OSError as exc:
         log.exception("Failed to write template %s", path)

@@ -1571,6 +1571,129 @@ def test_failed_print_is_recorded_and_not_reprintable(client: TestClient) -> Non
     assert reprint.status_code == 409  # a failed job must not be replayable
 
 
+# ── Unreachable print channel → clean 503 (not a raw-errno 500) ───────────────────
+# A print goes over TCP :9100 / USB; when that socket connect/send fails (EHOSTUNREACH "no route to
+# host", ECONNREFUSED, a timeout) the print channel is unreachable — distinct from the SNMP status
+# channel, which is why the SNMP preflight fails open rather than pre-blocking. The failure must
+# surface as a 503 with a stable, user-facing message instead of a 500 carrying a raw errno string.
+
+
+class _UnreachableTransport:
+    """A transport that fails its connect phase like an offline printer — exactly what
+    NetworkTransport raises (PrinterUnreachable) when connect() errors before any bytes are sent."""
+
+    def __init__(self, uri: str) -> None:
+        self._uri = uri
+
+    def send(self, payload: bytes) -> None:
+        from app.transports.base import PrinterUnreachable
+
+        raise PrinterUnreachable("could not connect to printer: no route to host")
+
+    def close(self) -> None:
+        pass
+
+
+def test_print_failure_http_maps_only_phase_tagged_unreachable_to_503() -> None:
+    """Only a phase-tagged PrinterUnreachable (raised by a transport from its connect phase, so
+    nothing was sent) becomes the clean 503. A RAW OSError is NOT trusted here — the send-path catch
+    wraps sendall too, and a partial-write failure is ambiguous — so every non-PrinterUnreachable
+    exception (raw EHOSTUNREACH/ENETUNREACH/reset, any timeout, the USB worker-abandonment timeout)
+    stays a 500, so a retry is never dressed up as safe against an irreversible print."""
+    import errno as _errno
+
+    import app.main as main_mod
+    from app.transports.base import PrinterUnreachable
+    from app.transports.usb import USBTimeoutError
+
+    # The one 503 path: a transport-tagged connect failure (even if it wraps a connect timeout).
+    assert main_mod._print_failure_http(PrinterUnreachable("connect timed out")).status_code == 503
+
+    # Everything else — including raw connect-looking errnos that reached the global catch unwrapped —
+    # is treated as ambiguous → 500.
+    assert main_mod._print_failure_http(OSError(_errno.EHOSTUNREACH, "No route")).status_code == 500
+    assert main_mod._print_failure_http(OSError(_errno.ENETUNREACH, "net")).status_code == 500
+    assert main_mod._print_failure_http(ConnectionRefusedError()).status_code == 500
+    assert main_mod._print_failure_http(TimeoutError("timed out")).status_code == 500
+    assert main_mod._print_failure_http(USBTimeoutError("usb timed out")).status_code == 500
+    assert main_mod._print_failure_http(OSError(_errno.ECONNRESET, "reset")).status_code == 500
+    assert main_mod._print_failure_http(RuntimeError("boom")).status_code == 500
+
+
+def test_print_unreachable_printer_is_503_not_500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _UnreachableTransport)
+
+    resp = client.post(
+        "/print", json={"template": "simple", "fields": {"title": "X"}, "dry_run": False}
+    )
+    assert resp.status_code == 503
+    assert "unreachable" in resp.json()["detail"].lower()
+    # The failed attempt is still recorded (so it is visible in history), exactly like other faults.
+    assert any(r.status == "failed" for r in main_mod._history.recent(50))
+
+
+def test_reprint_unreachable_printer_is_503_not_500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reprint runs the same _execute_print, so an unreachable printer maps to 503 there too."""
+    import app.main as main_mod
+
+    printed = client.post(
+        "/print", json={"template": "simple", "fields": {"title": "X"}, "dry_run": False}
+    )
+    job_id = printed.json()["job_id"]
+
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _UnreachableTransport)
+    resp = client.post(f"/reprint/{job_id}")
+    assert resp.status_code == 503
+    assert "unreachable" in resp.json()["detail"].lower()
+
+
+def test_sequence_partial_then_unreachable_is_500_not_clean_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a sequence batch prints some labels then hits an unreachable printer, the response must NOT
+    be the clean "nothing printed" 503 — physical output already happened, so it is an explicit 500
+    naming the partial count (a same-key retry would otherwise replay the whole batch)."""
+    import app.main as main_mod
+
+    _write_seq_template(main_mod)
+
+    class _FailSecondSendTransport:
+        calls = 0
+
+        def __init__(self, uri: str) -> None:
+            pass
+
+        def send(self, payload: bytes) -> None:
+            import errno
+
+            type(self).calls += 1
+            if type(self).calls == 1:
+                return None  # first label sent; status unknown → counted as printed
+            raise OSError(errno.EHOSTUNREACH, "No route to host")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_mod, "_resolve_transport", lambda: _FailSecondSendTransport)
+    resp = client.post(
+        "/print",
+        json={
+            "template": "seq-guard",
+            "fields": {},
+            "dry_run": False,
+            "sequence": {"count": 3, "start": 1, "step": 1, "padding": 3},
+        },
+    )
+    assert resp.status_code == 500, resp.text
+    assert "1/3" in resp.json()["detail"], "the partial count must be surfaced, not hidden"
+
+
 # ── Image fields reach the renderer (regression: dropped before rendering) ────────
 def test_multipart_preview_renders_uploaded_image(client: TestClient) -> None:
     src = Image.new("L", (80, 80), 0)  # solid black square

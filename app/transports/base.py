@@ -11,6 +11,16 @@ if TYPE_CHECKING:
     from app.transports.snmp import PrinterSNMPStatus
 
 
+class PrinterUnreachable(OSError):
+    """The printer could not be reached BEFORE any label bytes were sent.
+
+    Raised by a transport when its connect phase fails (connection refused, no route to host, or a
+    connect timeout on a blackholed host). It is deliberately an *unambiguous* failure: nothing was
+    printed, so the caller can present a clean, retry-safe "printer unreachable" error — distinct from
+    a mid-send/read failure, whose outcome is unknown and must not be dressed up as retryable.
+    """
+
+
 @dataclass(frozen=True)
 class PrinterStatus:
     """Outcome of a ``send`` as reported back by the printer (status readback).

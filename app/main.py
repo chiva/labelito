@@ -100,7 +100,13 @@ from app.render.engine import (
     uses_seq,
 )
 from app.render.i18n import Translator
-from app.transports.base import PrinterStatus, Transport, get_transport, infer_transport
+from app.transports.base import (
+    PrinterStatus,
+    PrinterUnreachable,
+    Transport,
+    get_transport,
+    infer_transport,
+)
 from app.transports.file import FileTransport  # noqa: F401 — registers transport
 from app.transports.network import NetworkTransport  # noqa: F401 — registers transport
 from app.transports.snmp import (
@@ -1419,6 +1425,33 @@ def _request_fingerprint(request: PrintRequest, options: RenderOptions) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+# User-facing detail for a print that failed because the printer could not be reached over its PRINT
+# channel (TCP :9100) before any bytes were sent — an UNAMBIGUOUS "nothing was printed" failure.
+# Deliberately generic and stable: the raw cause ("No route to host", "Connection refused") is logged,
+# not shown.
+_PRINTER_UNREACHABLE_DETAIL = "Printer unreachable — check that it is powered on and connected."
+
+
+def _print_failure_http(exc: Exception) -> HTTPException:
+    """Map a send-path exception to the right HTTP error.
+
+    The ONLY thing that becomes a clean 503 is :class:`PrinterUnreachable`, which a transport raises
+    from its connect phase — so nothing was sent and the outcome is unambiguous (a connect timeout on
+    a blackholed host counts). We deliberately do NOT guess from a raw ``OSError``/errno here: this
+    catch wraps both conversion and ``sendall``, and a ``sendall`` that writes some bytes then fails
+    (interface drop, route lost) is ambiguous — the label may have printed. Classifying reachability
+    lives at the transport boundary, where the connect-vs-send phase is known; here everything that is
+    not a phase-tagged ``PrinterUnreachable`` stays a 500 with its raw cause (including all non-connect
+    timeouts and the USB ``USBTimeoutError``, whose abandoned worker may STILL complete the print).
+    Presenting an ambiguous failure as a retry-safe "unreachable" could duplicate an irreversible
+    print. The print channel is also distinct from the SNMP status channel the status endpoint reports
+    on, which is why the SNMP preflight fails open rather than pre-blocking.
+    """
+    if isinstance(exc, PrinterUnreachable):
+        return HTTPException(503, _PRINTER_UNREACHABLE_DETAIL)
+    return HTTPException(500, f"Print error: {exc}")
+
+
 def _execute_print(
     tmpl: Template,
     fields: dict[str, Any],
@@ -1658,7 +1691,15 @@ def _execute_print(
                 if printed:
                     LABELS_PRINTED.labels(template=metric_template, dry_run="False").inc(printed)
                     LAST_PRINT_TS.set_to_current_time()
-                raise HTTPException(500, f"Print error: {exc}") from exc
+                    # Some labels already came out physically. Never present this as the clean,
+                    # retry-safe "unreachable" 503 (that implies nothing printed) — a same-key retry
+                    # would replay the whole batch from label 1 and duplicate the printed ones. Report
+                    # the partial outcome explicitly as a 500 so the operator knows to check the batch.
+                    raise HTTPException(
+                        500,
+                        f"Print error after {printed}/{sequence.count} labels printed: {exc}",
+                    ) from exc
+                raise _print_failure_http(exc) from exc
 
             # Per-label status readback: a single small label finishes inside the status-read
             # window, so an explicit not-ok status is a real, attributable error — stop the
@@ -1718,7 +1759,7 @@ def _execute_print(
         LABEL_ERRORS.labels(reason="print_error").inc()
         log.exception("Print error for job %s", job_id)
         _try_save_job(_record("failed"))
-        raise HTTPException(500, f"Print error: {exc}") from exc
+        raise _print_failure_http(exc) from exc
 
     # The bytes were sent without raising, but a networked printer may still report an error
     # (out of media, cover open, loaded media ≠ requested label) in its status packet. When a

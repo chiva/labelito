@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from brother_ql.reader import interpret_response
 
 from app.config import settings
-from app.transports.base import PrinterStatus, register_transport
+from app.transports.base import PrinterStatus, PrinterUnreachable, register_transport
 from app.transports.snmp import query_snmp_status
 
 log = logging.getLogger(__name__)
@@ -79,7 +79,17 @@ class NetworkTransport:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(self.TIMEOUT)
         try:
-            sock.connect((self._host, self._port))
+            try:
+                sock.connect((self._host, self._port))
+            except OSError as exc:
+                # Connect failed → the printer was NEVER reached, so no bytes were sent. This is an
+                # unambiguous "nothing printed" failure (refused, no route to host, or a connect
+                # timeout on a blackholed host), distinct from a mid-send/read error whose outcome is
+                # unknown. Re-raise as PrinterUnreachable so the caller can return a clean, retry-safe
+                # 503 rather than a raw errno 500.
+                raise PrinterUnreachable(
+                    f"could not connect to printer at {self._host}:{self._port}: {exc}"
+                ) from exc
             sock.sendall(data)
             if not settings.network_status_readback:
                 # This NIC never emits an ESC i S frame over :9100 (see config + query_status);

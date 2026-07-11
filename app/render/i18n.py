@@ -161,9 +161,10 @@ class Translator:
         # Bundled catalogs baked outside the translations_dir volume (config.example_translations_dir).
         # Loaded UNDER translations_dir so a user catalog overrides the bundled one KEY BY KEY for the
         # same language (omitted keys inherit the bundled values) and user-only languages add to it —
-        # and the DEFAULT_LANGUAGE catalog always exists
-        # even against an empty translations mount (no boot hard-fail). ``None`` / equal-to-primary
-        # means "single dir" (dev/bare-metal).
+        # and, while bundled examples are enabled (example_dir set), the DEFAULT_LANGUAGE catalog
+        # exists even against an empty translations mount (no boot hard-fail). With examples off
+        # (example_dir=None) and an empty user dir there is no default catalog (softened-boot
+        # contract). ``None`` / equal-to-primary means "single dir" (dev/bare-metal).
         self.example_dir = example_dir
         self._catalogs: dict[str, dict[str, str | list[str]]] = {}
         self._errors: list[str] = []

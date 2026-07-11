@@ -128,12 +128,14 @@ def test_translator_user_overrides_example_for_same_language(tmp_path: Path) -> 
     _write(examples, "en", 'frozen: "Frozen (shipped)"\nexpires: "Expires (shipped)"\n')
     _write(examples, "de", 'frozen: "Gefroren"\n')
     _write(user, "en", 'frozen: "Frozen (mine)"\n')
+    _write(user, "fr", 'frozen: "Congelé"\n')  # user-only language, no bundled counterpart
 
     t = Translator(user, "en", examples)
-    assert sorted(t.load_all()) == ["de", "en"]
+    assert sorted(t.load_all()) == ["de", "en", "fr"]
     assert t.translate("[[frozen]]", "en") == "Frozen (mine)"  # user key wins
     assert t.translate("[[expires]]", "en") == "Expires (shipped)"  # omitted key inherited
     assert t.translate("[[frozen]]", "de") == "Gefroren"  # bundled-only language kept
+    assert t.translate("[[frozen]]", "fr") == "Congelé"  # user-only language added alongside
 
 
 def test_translator_stale_user_catalog_inherits_bundled_reserved_lists(tmp_path: Path) -> None:

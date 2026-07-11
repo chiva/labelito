@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/chiva/labelito/compare/v0.10.0...v0.11.0) (2026-07-10)
+
+
+### Features
+
+* "today" date label + localized month names (%b/%B) ([#60](https://github.com/chiva/labelito/issues/60)) ([70770e5](https://github.com/chiva/labelito/commit/70770e5db5ebce01d490c0c2b2bbffe927a5176f))
+
 ## [0.10.0](https://github.com/chiva/labelito/compare/v0.9.0...v0.10.0) (2026-07-10)
 
 

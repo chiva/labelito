@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.0](https://github.com/chiva/labelito/compare/v0.11.0...v0.12.0) (2026-07-11)
+
+
+### Features
+
+* warn when TEMPLATES_WRITABLE=true but the templates dir is read-only ([#66](https://github.com/chiva/labelito/issues/66)) ([c5bcf39](https://github.com/chiva/labelito/commit/c5bcf390a68c32c5cd10e982543499c2fa3898d0))
+
+
+### Bug Fixes
+
+* **i18n:** merge user translation catalogs onto bundled ones key-by-key ([#65](https://github.com/chiva/labelito/issues/65)) ([e96b4c3](https://github.com/chiva/labelito/commit/e96b4c3e7e13e2b97f7e13152c05480ab2e8bf78))
+* surface an unreachable printer as a clean 503, not a raw-errno 500 ([#63](https://github.com/chiva/labelito/issues/63)) ([2c55708](https://github.com/chiva/labelito/commit/2c557086553a8a55afd4ab76f3e95bb0117f1c87))
+
 ## [0.11.0](https://github.com/chiva/labelito/compare/v0.10.0...v0.11.0) (2026-07-10)
 
 

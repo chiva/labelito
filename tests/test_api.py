@@ -4649,6 +4649,82 @@ def test_save_template_when_enabled_writes_and_reloads(
     assert "saved-via-studio" in main_mod.registry._templates
 
 
+def test_warn_templates_writable_readonly_warns_on_readonly_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """TEMPLATES_WRITABLE=true against a non-writable templates_dir warns at boot, naming the flag."""
+    import app.main as main_mod
+
+    ro_dir = tmp_path / "ro-templates"
+    ro_dir.mkdir()
+    ro_dir.chmod(0o555)
+    try:
+        monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+        monkeypatch.setattr(main_mod.settings, "templates_dir", ro_dir)
+        with caplog.at_level(logging.WARNING, logger="app.main"):
+            main_mod._warn_if_templates_writable_but_readonly()
+        assert any(
+            "TEMPLATES_WRITABLE=true" in r.message and "not writable" in r.message
+            for r in caplog.records
+        ), caplog.text
+    finally:
+        ro_dir.chmod(0o755)
+
+
+def test_warn_templates_writable_readonly_silent_when_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A genuinely writable templates_dir with the flag on produces no warning."""
+    import app.main as main_mod
+
+    rw_dir = tmp_path / "rw-templates"
+    rw_dir.mkdir()
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    monkeypatch.setattr(main_mod.settings, "templates_dir", rw_dir)
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        main_mod._warn_if_templates_writable_but_readonly()
+    assert not any("TEMPLATES_WRITABLE" in r.message for r in caplog.records), caplog.text
+
+
+def test_warn_templates_writable_readonly_silent_when_flag_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With TEMPLATES_WRITABLE=false, a read-only dir is expected and must not warn."""
+    import app.main as main_mod
+
+    ro_dir = tmp_path / "ro-templates-off"
+    ro_dir.mkdir()
+    ro_dir.chmod(0o555)
+    try:
+        monkeypatch.setattr(main_mod.settings, "templates_writable", False)
+        monkeypatch.setattr(main_mod.settings, "templates_dir", ro_dir)
+        with caplog.at_level(logging.WARNING, logger="app.main"):
+            main_mod._warn_if_templates_writable_but_readonly()
+        assert not any("TEMPLATES_WRITABLE" in r.message for r in caplog.records), caplog.text
+    finally:
+        ro_dir.chmod(0o755)
+
+
+def test_save_template_readonly_dir_returns_config_aware_500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TEMPLATES_WRITABLE=true but the templates mount is read-only → a 500 that names the mount as
+    the cause (not a bare errno). Mirrors the boot warning for the save-time path."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+    tdir = main_mod.settings.templates_dir
+    tdir.chmod(0o555)
+    try:
+        yaml = _DRAFT_YAML.replace("draft-simple", "cant-save-me")
+        resp = client.post("/templates", json={"name": "cant-save-me", "yaml": yaml})
+        assert resp.status_code == 500
+        assert "read-only" in resp.json()["detail"].lower()
+        assert not (tdir / "cant-save-me.yaml").exists()
+    finally:
+        tdir.chmod(0o755)
+
+
 def test_save_template_path_traversal_rejected(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

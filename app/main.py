@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import errno
 import hashlib
 import importlib.metadata
 import io
@@ -1003,6 +1004,30 @@ def _warn_missing_custom_icons() -> None:
             )
 
 
+def _warn_if_templates_writable_but_readonly() -> None:
+    """Boot warning: TEMPLATES_WRITABLE=true but ``templates_dir`` is not actually writable.
+
+    The common docker-compose case is leaving the ``./templates:/app/templates:ro`` mount read-only
+    after flipping the flag on — the app boots fine and ``/config`` reports ``templates_writable:
+    true``, but the studio's Save (``POST /templates``) then fails at write time with a bare errno.
+    Surfacing the mismatch at boot — as the DEFAULT_LANGUAGE catalog and DATA_DIR checks do — makes
+    the misconfig obvious immediately. Warn-only, matching the fail-open ethos: the save route still
+    returns a clear error, and read-only preview/parse/load still work.
+    """
+    if not settings.templates_writable:
+        return
+    templates_dir = settings.templates_dir.resolve()
+    if not os.access(templates_dir, os.W_OK):
+        log.warning(
+            "TEMPLATES_WRITABLE=true but the templates directory %s is not writable "
+            "(running as uid %d); studio server-save (POST /templates) will fail. In Docker this "
+            "usually means the templates mount is still read-only — drop the ':ro' from "
+            "'./templates:/app/templates:ro' in docker-compose.yml, or unset TEMPLATES_WRITABLE.",
+            templates_dir,
+            os.getuid(),
+        )
+
+
 async def startup() -> None:
     """Boot-time initialization, invoked by ``_lifespan`` before the server accepts requests."""
     global _history
@@ -1025,6 +1050,7 @@ async def startup() -> None:
     loaded = registry.load_all()
     log.info("Loaded %d templates: %s", len(loaded), loaded)
     _warn_missing_custom_icons()
+    _warn_if_templates_writable_but_readonly()
     langs = translator.load_all()
     if not translator.has(settings.default_language):
         # Not fatal: translate() degrades a missing catalog to the raw key, so the service still
@@ -3159,6 +3185,16 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
         _atomic_write_template(path, request.yaml)
     except OSError as exc:
         log.exception("Failed to write template %s", path)
+        # A read-only/permission errno is the TEMPLATES_WRITABLE-but-:ro-mount misconfig (the same
+        # case _warn_if_templates_writable_but_readonly flags at boot); name the mount so the error
+        # points at the fix instead of a bare errno.
+        if exc.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
+            raise HTTPException(
+                500,
+                f"Cannot write to the templates directory ({exc.strerror}); TEMPLATES_WRITABLE=true "
+                "but the templates mount appears read-only. Drop ':ro' from the templates volume "
+                "(or use Download/Copy YAML instead).",
+            ) from exc
         raise HTTPException(500, f"Failed to write template: {exc}") from exc
 
     # The /reload endpoint treats reload errors as 422; save must not be weaker. Verify the saved

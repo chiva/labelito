@@ -124,8 +124,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     translations_dir: Path = Path("translations")
     # Bundled translation catalogs, baked outside the translations_dir VOLUME — same rationale as
-    # example_templates_dir. Merged UNDER translations_dir (a user catalog for a language overrides
-    # the bundled one; user-only languages add to it). Guarantees the DEFAULT_LANGUAGE catalog always
+    # example_templates_dir. Merged UNDER translations_dir KEY BY KEY (a user catalog for a language
+    # overrides the bundled one per-key while inheriting any key it omits; user-only languages add to
+    # it). Guarantees the DEFAULT_LANGUAGE catalog always
     # exists even against an empty translations mount, so the service no longer hard-fails on boot
     # when the volume is empty. Mirrors translations_dir when not set explicitly (see
     # _mirror_example_dirs_to_primary). Docker sets EXAMPLE_TRANSLATIONS_DIR=/app/examples/translations.

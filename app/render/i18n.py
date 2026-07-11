@@ -159,8 +159,9 @@ class Translator:
         self.translations_dir = translations_dir
         self.default_language = default_language.lower()
         # Bundled catalogs baked outside the translations_dir volume (config.example_translations_dir).
-        # Loaded UNDER translations_dir so a user catalog overrides the bundled one for the same
-        # language and user-only languages add to it — and the DEFAULT_LANGUAGE catalog always exists
+        # Loaded UNDER translations_dir so a user catalog overrides the bundled one KEY BY KEY for the
+        # same language (omitted keys inherit the bundled values) and user-only languages add to it —
+        # and the DEFAULT_LANGUAGE catalog always exists
         # even against an empty translations mount (no boot hard-fail). ``None`` / equal-to-primary
         # means "single dir" (dev/bare-metal).
         self.example_dir = example_dir
@@ -173,9 +174,10 @@ class Translator:
         Catalogs that fail to parse/validate are skipped and USER-dir errors retained in
         :attr:`errors`, so a reload can report the failure instead of silently dropping a language.
 
-        Bundled examples load FIRST and user catalogs load on top: a user catalog for language ``xx``
-        overrides the bundled ``xx``; a user-only language adds to the set. A malformed/failed bundled
-        catalog is logged but NOT recorded in :attr:`errors` (shipped content must not fail ``/reload``).
+        Bundled examples load FIRST and user catalogs load on top, MERGED key by key: a user catalog
+        for language ``xx`` overrides the bundled ``xx`` per-key while inheriting any key it omits;
+        a user-only language adds to the set. A malformed/failed bundled catalog is logged but NOT
+        recorded in :attr:`errors` (shipped content must not fail ``/reload``).
         """
         loaded: dict[str, dict[str, str | list[str]]] = {}
         errors: list[str] = []
@@ -202,14 +204,18 @@ class Translator:
         is_example: bool,
     ) -> None:
         """Load ``directory/<lang>.yaml`` into ``loaded``, keyed by lowercased stem. A later call for
-        the same language overwrites the earlier one (that is how user dirs override bundled ones).
-        Bundled-dir failures are logged but never appended to ``errors``."""
+        the same language MERGES over the earlier one KEY BY KEY (that is how user dirs override
+        bundled ones): a user catalog's keys win, and any key it omits is inherited from the bundled
+        catalog. Bundled-dir failures are logged but never appended to ``errors``."""
         if not directory.exists():
             return
         for path in sorted(directory.glob("*.yaml")):
             lang = path.stem.lower()
             try:
-                loaded[lang] = load_catalog(path)
+                # Key-level merge, not whole-file replace: a stale user catalog missing newer
+                # reserved keys (e.g. _weekdays_*/_months_* added in a later release) still inherits
+                # them from the bundled catalog instead of shadowing it into English fallbacks.
+                loaded[lang] = {**loaded.get(lang, {}), **load_catalog(path)}
                 log.debug("Loaded translation catalog %r from %s", lang, path.name)
             except TranslationLoadError as exc:
                 log.error("Failed to load translation catalog %s: %s", path.name, exc)

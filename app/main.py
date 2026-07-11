@@ -1004,8 +1004,28 @@ def _warn_missing_custom_icons() -> None:
             )
 
 
+def _templates_dir_save_blocker(templates_dir: Path) -> str | None:
+    """Return a short reason the save path can't use ``templates_dir``, or None if it can.
+
+    Probes the capabilities ``POST /templates`` actually exercises rather than guessing from a single
+    permission bit: :func:`_safe_template_path` enumerates the dir (``glob`` — needs read+traverse)
+    and :func:`_atomic_write_template` creates a temp file there before ``os.replace`` (needs
+    write+traverse). ``os.access(W_OK)`` alone is insufficient — it misses the read/execute the glob
+    needs, and a bare write bit doesn't prove creation works on a read-only mount or under ACLs. The
+    temp-file probe mirrors the real write and cleans itself up.
+    """
+    if not os.access(templates_dir, os.R_OK | os.X_OK):
+        return "not readable/traversable"
+    try:
+        with tempfile.NamedTemporaryFile(dir=templates_dir, prefix=".labelito-write-probe-"):
+            pass
+    except OSError as exc:
+        return exc.strerror or "not writable"
+    return None
+
+
 def _warn_if_templates_writable_but_readonly() -> None:
-    """Boot warning: TEMPLATES_WRITABLE=true but ``templates_dir`` is not actually writable.
+    """Boot warning: TEMPLATES_WRITABLE=true but ``templates_dir`` is not actually usable for saves.
 
     The common docker-compose case is leaving the ``./templates:/app/templates:ro`` mount read-only
     after flipping the flag on — the app boots fine and ``/config`` reports ``templates_writable:
@@ -1017,12 +1037,13 @@ def _warn_if_templates_writable_but_readonly() -> None:
     if not settings.templates_writable:
         return
     templates_dir = settings.templates_dir.resolve()
-    if not os.access(templates_dir, os.W_OK):
-        # os.access can't tell us WHY it's unwritable, so name both common causes: a read-only mount
-        # (:ro left on the volume) OR a writable mount owned by a uid the container user can't write.
+    blocker = _templates_dir_save_blocker(templates_dir)
+    if blocker is not None:
+        # The probe can't attribute the cause, so name both common ones: a read-only mount (:ro left
+        # on the volume) OR a writable mount owned by a uid the container user can't write.
         log.warning(
-            "TEMPLATES_WRITABLE=true but the templates directory %s is not writable by the "
-            "container user (uid %d, gid %d); studio server-save (POST /templates) will fail. "
+            "TEMPLATES_WRITABLE=true but the templates directory %s is not usable for saves by the "
+            "container user (uid %d, gid %d): %s. Studio server-save (POST /templates) will fail. "
             "Either the templates mount is still read-only — drop the ':ro' from "
             "'./templates:/app/templates:ro' in docker-compose.yml — or the host directory is not "
             "writable by this uid/gid — fix its ownership (chown) or start with matching ids "
@@ -1030,6 +1051,7 @@ def _warn_if_templates_writable_but_readonly() -> None:
             templates_dir,
             os.getuid(),
             os.getgid(),
+            blocker,
         )
 
 

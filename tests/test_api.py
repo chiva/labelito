@@ -4706,6 +4706,28 @@ def test_warn_templates_writable_readonly_silent_when_flag_off(
         ro_dir.chmod(0o755)
 
 
+def test_warn_templates_writable_warns_on_write_bit_without_execute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A dir with the write bit set but no execute/read (mode 0o600) passes a bare os.access(W_OK)
+    check yet cannot host a save (creation needs execute; the glob needs read). The probe that
+    exercises the real save capabilities must still warn — this is the gap that W_OK alone missed."""
+    import app.main as main_mod
+
+    noexec_dir = tmp_path / "wx-templates"
+    noexec_dir.mkdir()
+    noexec_dir.chmod(0o600)
+    try:
+        assert os.access(noexec_dir, os.W_OK)  # the old, insufficient check would have passed
+        monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+        monkeypatch.setattr(main_mod.settings, "templates_dir", noexec_dir)
+        with caplog.at_level(logging.WARNING, logger="app.main"):
+            main_mod._warn_if_templates_writable_but_readonly()
+        assert any("TEMPLATES_WRITABLE=true" in r.message for r in caplog.records), caplog.text
+    finally:
+        noexec_dir.chmod(0o755)
+
+
 def test_save_template_permission_denied_returns_ownership_guidance(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

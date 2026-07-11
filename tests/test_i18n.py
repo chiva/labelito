@@ -118,20 +118,52 @@ def test_translator_provides_default_language_when_user_dir_empty(tmp_path: Path
 
 
 def test_translator_user_overrides_example_for_same_language(tmp_path: Path) -> None:
-    """A user catalog overrides the bundled one for the same language (loaded on top); a user-only
-    language is added alongside."""
+    """A user catalog overrides the bundled one KEY BY KEY (loaded on top): a user-provided key wins,
+    a key present only in the bundled catalog is inherited, and a user-only language is added
+    alongside."""
     user = tmp_path / "translations"
     user.mkdir()
     examples = tmp_path / "examples"
     examples.mkdir()
-    _write(examples, "en", 'frozen: "Frozen (shipped)"\n')
+    _write(examples, "en", 'frozen: "Frozen (shipped)"\nexpires: "Expires (shipped)"\n')
     _write(examples, "de", 'frozen: "Gefroren"\n')
     _write(user, "en", 'frozen: "Frozen (mine)"\n')
+    _write(user, "fr", 'frozen: "Congelé"\n')  # user-only language, no bundled counterpart
 
     t = Translator(user, "en", examples)
-    assert sorted(t.load_all()) == ["de", "en"]
-    assert t.translate("[[frozen]]", "en") == "Frozen (mine)"  # user wins
+    assert sorted(t.load_all()) == ["de", "en", "fr"]
+    assert t.translate("[[frozen]]", "en") == "Frozen (mine)"  # user key wins
+    assert t.translate("[[expires]]", "en") == "Expires (shipped)"  # omitted key inherited
     assert t.translate("[[frozen]]", "de") == "Gefroren"  # bundled-only language kept
+    assert t.translate("[[frozen]]", "fr") == "Congelé"  # user-only language added alongside
+
+
+def test_translator_stale_user_catalog_inherits_bundled_reserved_lists(tmp_path: Path) -> None:
+    """Regression: a stale user catalog that predates the %a/%b feature (only ``frozen``, no
+    ``_weekdays_*``/``_months_*``) must inherit the bundled locale lists per-key instead of shadowing
+    them into English fallbacks — the "Sat, 11 Jul" bug. Vocabulary from the user file still wins."""
+    user = tmp_path / "translations"
+    user.mkdir()
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write(
+        examples,
+        "es",
+        'frozen: "Congelado (shipped)"\n'
+        "_weekdays_abbr: [lun, mar, mié, jue, vie, sáb, dom]\n"
+        "_weekdays_full: [lunes, martes, miércoles, jueves, viernes, sábado, domingo]\n"
+        f"_months_abbr: {_ES_MONTHS_ABBR}\n"
+        f"_months_full: {_ES_MONTHS_FULL}\n",
+    )
+    _write(user, "es", 'frozen: "Congelado"\n')  # stale: vocabulary only, no reserved lists
+
+    t = Translator(user, "es", examples)
+    assert t.load_all() == ["es"]
+    assert t.translate("[[frozen]]", "es") == "Congelado"  # user vocabulary still wins
+    abbr, full = t.weekday_names("es")
+    assert abbr[5] == "sáb" and full[5] == "sábado"  # inherited, not English "Sat"/"Saturday"
+    months_abbr, months_full = t.month_names("es")
+    assert months_abbr[6] == "jul" and months_full[6] == "julio"  # inherited, not English "Jul"
 
 
 def test_translator_example_dir_equal_to_user_loads_once(catalogs: Path) -> None:

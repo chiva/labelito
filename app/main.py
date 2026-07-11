@@ -1018,13 +1018,18 @@ def _warn_if_templates_writable_but_readonly() -> None:
         return
     templates_dir = settings.templates_dir.resolve()
     if not os.access(templates_dir, os.W_OK):
+        # os.access can't tell us WHY it's unwritable, so name both common causes: a read-only mount
+        # (:ro left on the volume) OR a writable mount owned by a uid the container user can't write.
         log.warning(
-            "TEMPLATES_WRITABLE=true but the templates directory %s is not writable "
-            "(running as uid %d); studio server-save (POST /templates) will fail. In Docker this "
-            "usually means the templates mount is still read-only — drop the ':ro' from "
-            "'./templates:/app/templates:ro' in docker-compose.yml, or unset TEMPLATES_WRITABLE.",
+            "TEMPLATES_WRITABLE=true but the templates directory %s is not writable by the "
+            "container user (uid %d, gid %d); studio server-save (POST /templates) will fail. "
+            "Either the templates mount is still read-only — drop the ':ro' from "
+            "'./templates:/app/templates:ro' in docker-compose.yml — or the host directory is not "
+            "writable by this uid/gid — fix its ownership (chown) or start with matching ids "
+            "(`UID=$(id -u) GID=$(id -g) docker compose up`). Otherwise unset TEMPLATES_WRITABLE.",
             templates_dir,
             os.getuid(),
+            os.getgid(),
         )
 
 
@@ -3185,15 +3190,25 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
         _atomic_write_template(path, request.yaml)
     except OSError as exc:
         log.exception("Failed to write template %s", path)
-        # A read-only/permission errno is the TEMPLATES_WRITABLE-but-:ro-mount misconfig (the same
-        # case _warn_if_templates_writable_but_readonly flags at boot); name the mount so the error
-        # points at the fix instead of a bare errno.
-        if exc.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
+        # TEMPLATES_WRITABLE=true but the write was denied: point at the ACTUAL cause instead of a
+        # bare errno. EROFS is unambiguously a read-only filesystem/mount (drop ':ro'); EACCES/EPERM
+        # is a permission/ownership denial on a writable mount — in this Docker setup the container
+        # runs as a configurable non-root uid, so the host directory is most likely owned by another
+        # uid/gid. Conflating the two would send operators toward the wrong fix.
+        if exc.errno == errno.EROFS:
             raise HTTPException(
                 500,
                 f"Cannot write to the templates directory ({exc.strerror}); TEMPLATES_WRITABLE=true "
-                "but the templates mount appears read-only. Drop ':ro' from the templates volume "
+                "but the templates mount is read-only. Drop ':ro' from the templates volume "
                 "(or use Download/Copy YAML instead).",
+            ) from exc
+        if exc.errno in (errno.EACCES, errno.EPERM):
+            raise HTTPException(
+                500,
+                f"Cannot write to the templates directory ({exc.strerror}); TEMPLATES_WRITABLE=true "
+                f"but it is not writable by the container user (uid {os.getuid()}, gid {os.getgid()}). "
+                "Fix the host directory's ownership/permissions (chown/chmod) or start with matching "
+                "ids (`UID=$(id -u) GID=$(id -g) docker compose up`), or use Download/Copy YAML.",
             ) from exc
         raise HTTPException(500, f"Failed to write template: {exc}") from exc
 

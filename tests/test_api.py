@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import io
 import json
 import logging
@@ -4705,11 +4706,11 @@ def test_warn_templates_writable_readonly_silent_when_flag_off(
         ro_dir.chmod(0o755)
 
 
-def test_save_template_readonly_dir_returns_config_aware_500(
+def test_save_template_permission_denied_returns_ownership_guidance(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """TEMPLATES_WRITABLE=true but the templates mount is read-only → a 500 that names the mount as
-    the cause (not a bare errno). Mirrors the boot warning for the save-time path."""
+    """A real permission denial (chmod-only dir → EACCES) must yield ownership/permission guidance,
+    NOT read-only-mount advice: on a writable-but-wrong-uid mount, dropping ':ro' would not help."""
     import app.main as main_mod
 
     monkeypatch.setattr(main_mod.settings, "templates_writable", True)
@@ -4719,10 +4720,33 @@ def test_save_template_readonly_dir_returns_config_aware_500(
         yaml = _DRAFT_YAML.replace("draft-simple", "cant-save-me")
         resp = client.post("/templates", json={"name": "cant-save-me", "yaml": yaml})
         assert resp.status_code == 500
-        assert "read-only" in resp.json()["detail"].lower()
+        detail = resp.json()["detail"].lower()
+        assert "not writable by the container user" in detail
+        assert "read-only" not in detail  # EACCES must not be misdiagnosed as a :ro mount
         assert not (tdir / "cant-save-me.yaml").exists()
     finally:
         tdir.chmod(0o755)
+
+
+def test_save_template_readonly_fs_returns_mount_guidance(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An EROFS write failure (read-only filesystem/mount) yields the ':ro' mount remediation. A real
+    read-only FS is impractical to stage in-process, so the atomic write is stubbed to raise EROFS."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+
+    def _raise_erofs(path: Path, text: str) -> None:
+        raise OSError(errno.EROFS, os.strerror(errno.EROFS))
+
+    monkeypatch.setattr(main_mod, "_atomic_write_template", _raise_erofs)
+    yaml = _DRAFT_YAML.replace("draft-simple", "cant-save-me-erofs")
+    resp = client.post("/templates", json={"name": "cant-save-me-erofs", "yaml": yaml})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"].lower()
+    assert "read-only" in detail and "drop ':ro'" in detail
+    assert "container user" not in detail  # EROFS is a mount issue, not an ownership one
 
 
 def test_save_template_path_traversal_rejected(

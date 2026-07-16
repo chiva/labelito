@@ -4232,6 +4232,7 @@ def test_editor_gate_disabled_by_default_returns_404(
     assert client.post("/preview/draft", json={"yaml": "", "fields": {}}).status_code == 404
     assert client.post("/templates/parse", json={"yaml": ""}).status_code == 404
     assert client.post("/templates", json={"name": "x", "yaml": ""}).status_code == 404
+    assert client.post("/print/draft", json={"yaml": "", "fields": {}}).status_code == 404
 
 
 def test_editor_gate_precedes_auth(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4248,6 +4249,7 @@ def test_editor_gate_precedes_auth(client: TestClient, monkeypatch: pytest.Monke
     assert client.post("/preview/draft", json={"yaml": "", "fields": {}}).status_code == 404
     assert client.post("/templates/parse", json={"yaml": ""}).status_code == 404
     assert client.post("/templates", json={"name": "x", "yaml": ""}).status_code == 404
+    assert client.post("/print/draft", json={"yaml": "", "fields": {}}).status_code == 404
 
 
 def test_editor_disabled_hides_nav_link(

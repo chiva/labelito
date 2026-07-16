@@ -1797,6 +1797,78 @@ def test_studio_draft_preview_unavailable_until_required_field_filled(authed_pag
     expect(authed_page.locator("#draft-status")).to_have_text("valid")
 
 
+def test_studio_print_draft_dry_run_round_trip(authed_page: Page) -> None:
+    """Print the current draft straight from the studio (dry-run) — no save needed. Asserts the
+    /print/draft round-trip: the payload carries the raw YAML + typed fields, the response reports
+    the draft's parsed name, and the sticky success banner appears. The starter seed is used as-is,
+    so this also proves the flow works before the template exists anywhere on disk."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#field-title")).to_be_visible()
+    authed_page.fill("#field-title", "Straight from the studio")
+    authed_page.check("#dry-run")
+
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/print/draft") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("#print-draft-btn")
+
+    import json as _json
+
+    response = resp_info.value
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent["yaml"].startswith("name: my-label"), "payload must carry the draft YAML verbatim"
+    assert sent["fields"]["title"] == "Straight from the studio"
+    assert "options" in sent and "dither" in sent["options"]
+    assert response.status == 200, f"/print/draft must succeed: {response.status}"
+    body = response.json()
+    assert body["dry_run"] is True
+    assert body["template"] == "my-label"  # the draft's parsed internal name
+    assert body["job_id"]
+
+    expect(authed_page.locator(".status.ok")).to_be_visible()
+
+
+def test_studio_print_draft_seq_hides_copies_and_sends_sequence(authed_page: Page) -> None:
+    """A {{seq}} draft swaps the Copies input for the Auto-number panel (mutually exclusive
+    server-side) and a dry-run print carries the sequence spec with copies pinned to 1."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#copies-cell")).to_be_visible()
+
+    seq_yaml = (
+        "name: draft-seq\n"
+        "description: seq draft\n"
+        'label: "62"\n'
+        "layout:\n"
+        '  - {type: title, text: "Box {{seq}}"}\n'
+    )
+    authed_page.fill("#yaml", seq_yaml)
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    expect(authed_page.locator("#copies-cell")).to_be_hidden()
+
+    authed_page.fill("#seq-count", "3")
+    authed_page.check("#dry-run")
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/print/draft") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("#print-draft-btn")
+
+    import json as _json
+
+    response = resp_info.value
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent["copies"] == 1, "a seq draft must pin copies=1 (sequence drives the count)"
+    assert sent["sequence"]["count"] == 3
+    assert response.status == 200, f"seq draft must print, not 422: {response.status}"
+
+    # Back to a plain draft: Copies returns, the sequence panel hides.
+    authed_page.fill(
+        "#yaml",
+        'name: d2\ndescription: plain\nlabel: "62"\nlayout:\n  - {type: title, text: "Static"}\n',
+    )
+    expect(authed_page.locator("#sequence-field")).to_be_hidden()
+    expect(authed_page.locator("#copies-cell")).to_be_visible()
+
+
 def test_studio_horizontal_scroll_proxy_shows_and_syncs_for_long_lines(authed_page: Page) -> None:
     """A long, unwrapped line overflows #yaml horizontally: the themed proxy scroller (#yaml-hscroll)
     becomes visible, and its scrollLeft stays mirrored with the textarea's in both directions. The

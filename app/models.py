@@ -281,6 +281,42 @@ class DraftPreviewRequest(BaseModel):
     sequence: SequenceSpec | None = Field(default=None)
 
 
+class DraftPrintRequest(BaseModel):
+    """Print a template that exists only as in-memory YAML text (the studio's current draft).
+
+    Carries the raw template ``yaml`` body (never written to disk) plus the same print knobs as
+    ``PrintRequest``: ``copies``/``dry_run``/``language``/``options``/``sequence``/
+    ``idempotency_key``. Unlike ``/preview/draft``, rasterization ``options`` ARE accepted — this
+    is a real print, so dither/threshold/red/high_res shape the raster exactly as on ``/print``
+    (nullable-inherit semantics, see :class:`RenderOptions`). ``cut`` is intentionally absent and
+    inherits ``PrintRequest``'s default (True), matching the Print page which exposes no cut
+    control either.
+
+    The handler freezes the YAML into history as ``template_source`` so ``/reprint`` reproduces a
+    studio print exactly, with no registry entry needed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    yaml: str = Field(
+        min_length=1,
+        max_length=MAX_TEMPLATE_YAML_CHARS,
+        description="Raw template YAML body (the version-controllable source of truth).",
+        examples=[
+            "name: draft\ndescription: ''\nlabel: '62'\nlayout:\n  - {type: title, text: Hi}"
+        ],
+    )
+    fields: dict[str, Any] = Field(default={}, examples=[{"title": "Hello"}])
+    copies: int = Field(default=1, ge=1, le=10, examples=[1])
+    dry_run: bool = Field(default=False, examples=[False])
+    language: str | None = Field(default=None, max_length=35, examples=["en"])
+    options: RenderOptions = Field(default_factory=RenderOptions)
+    # Same exclusivity as PrintRequest (sequence drives the item count; copies multiplies identical
+    # labels) — enforced by the internal PrintRequest the handler builds, not re-declared here.
+    sequence: SequenceSpec | None = Field(default=None)
+    idempotency_key: str | None = Field(default=None, max_length=200, examples=[None])
+
+
 class TemplateParseRequest(BaseModel):
     """Parse a draft YAML body and return its field contract without rendering."""
 

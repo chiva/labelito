@@ -47,6 +47,21 @@
     }
     #preview-img.preview-stale { opacity: 0.25; filter: grayscale(1); }
 
+    /* Print-the-draft controls — a compact mirror of the Print page's options block, separated
+       from the preview above by a dashed rule so "what it looks like" and "print it" read as two
+       steps of one card. */
+    #print-draft-row { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 12px; }
+    .print-draft-controls { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+    #copies-cell .input { max-width: 90px; }
+    .print-draft-controls .check-label { margin-bottom: 7px; }
+    .print-draft-controls .btn-print { margin-left: auto; }
+    #print-draft-row details { margin-top: 10px; font-size: 13px; }
+    #print-draft-row summary { cursor: pointer; font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink3); }
+    #print-draft-row .section-body { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; }
+    .threshold-row { display: flex; flex-direction: row; align-items: center; gap: 10px; }
+    #threshold { max-width: 110px; }
+    .hint-warn { color: var(--amber); }
+
     /* "Your Printer" callout + match highlighting in the label reference (ids/classes e2e-pinned). */
     .your-printer { background: color-mix(in srgb, var(--blue) 10%, transparent); border: 1px solid color-mix(in srgb, var(--blue) 35%, transparent); border-radius: 11px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; line-height: 1.6; }
     #your-printer:empty { display: none; }
@@ -150,6 +165,51 @@
           </div>
         </div>
         <div id="preview-error" class="printer-detail" role="alert" aria-live="assertive"></div>
+
+        <!-- ── Print the current draft — POST /print/draft, the studio-gated twin of /print. The
+             draft is sent as raw YAML, so nothing needs saving first; the render options mirror the
+             Print page (defaults inherit the server's DEFAULT_* settings when untouched). -->
+        <div id="print-draft-row">
+          <div class="print-draft-controls">
+            <label class="seq-cell" id="copies-cell">Copies
+              <input type="number" id="copies" class="input" value="1" min="1" max="10"></label>
+            <label class="check-label">
+              <input type="checkbox" id="dry-run">
+              Dry run (no print)
+            </label>
+            <button type="button" class="btn btn-primary btn-print" id="print-draft-btn" onclick="doPrintDraft()">{{ icon("print") }}Print draft</button>
+          </div>
+          <details>
+            <summary>Print options</summary>
+            <div class="section-body">
+              <label class="check-label">
+                <input type="checkbox" id="high-res"{% if default_high_res and high_res_supported %} checked{% endif %}{% if not high_res_supported %} disabled{% endif %}>
+                High-res (600 dpi)
+                {% if high_res_supported %}
+                <span class="hint">— improves small text &amp; dense QR; affects the print only</span>
+                {% else %}
+                <span class="hint hint-warn">— not supported by {{ model }}</span>
+                {% endif %}
+              </label>
+              {% if two_color %}
+              <label class="check-label">
+                <input type="checkbox" id="red"{% if default_red %} checked{% endif %}>
+                Two-color (red/black)
+                <span class="hint">— renders <code>color: red</code> elements in red; needs black/red media (e.g. 62red)</span>
+              </label>
+              {% endif %}
+              <label class="check-label">
+                <input type="checkbox" id="dither"{% if default_dither %} checked{% endif %}>
+                Dither (approximate greys)
+              </label>
+              <div class="field threshold-row">
+                <label class="field-label" for="threshold">Threshold&nbsp;%</label>
+                <input type="number" id="threshold" class="input" min="0.1" max="100" step="0.1" placeholder="{{ default_threshold }}">
+                <span class="hint">— blank = default</span>
+              </div>
+            </div>
+          </details>
+        </div>
       </div>
     </div>
 
@@ -381,13 +441,16 @@
       }
     }
 
-    // Reveal the auto-number controls when the draft uses {{seq}}. Unlike the Print page there is no
-    // Copies control to hide — a draft's item count comes only from the sequence spec. Clamps the
-    // inputs so a sent spec is always valid (count is required, ge=1).
+    // Reveal the auto-number controls when the draft uses {{seq}} — and hide the Copies input, like
+    // the Print page: the two are mutually exclusive server-side (sequence drives the item count;
+    // copies > 1 is a 422, and doPrintDraft pins copies=1 for a seq draft). Clamps the inputs so a
+    // sent spec is always valid (count is required, ge=1).
     function syncSequenceForDraft() {
       const seqField = document.getElementById('sequence-field');
       if (!seqField) return;
       seqField.style.display = draftUsesSeq ? '' : 'none';
+      const copiesCell = document.getElementById('copies-cell');
+      if (copiesCell) copiesCell.style.display = draftUsesSeq ? 'none' : '';
       if (draftUsesSeq) clampSequence();
     }
 
@@ -524,6 +587,98 @@
         if (seq !== previewSeq) return;
         showPreviewError('Network error: ' + e.message);
         setDraftStatus('unknown');
+      }
+    }
+
+    // ── Print the current draft — POST /print/draft, the same print machinery as /print but fed the
+    //    in-memory YAML, so nothing needs saving first. Editor-gated server-side (404 when the studio
+    //    is off); NOT gated by INLINE_TEMPLATES_ENABLED. Success/failure lands in the status toast (a
+    //    print is an action), unlike the passive preview which reports inline in the card.
+
+    // Mirror of the Print page's large-batch guard: a sequence print is an irreversible physical
+    // action of up to 500 labels, so confirm a non-dry-run batch at/above this count.
+    const SEQ_CONFIRM_THRESHOLD = 10;
+
+    // "first..last" for a sequence spec, zero-padded like the server's format_seq — same helper as
+    // the Print page's batch confirm/readout.
+    function seqRangeLabel(spec) {
+      const pad = (n) => {
+        const s = String(Math.abs(n)).padStart(spec.padding || 0, '0');
+        return n < 0 ? `-${s}` : s;
+      };
+      const last = spec.start + (spec.count - 1) * spec.step;
+      return spec.count > 1 ? `${pad(spec.start)}..${pad(last)}` : pad(spec.start);
+    }
+
+    // In-flight latch: disables the Print button for the whole request lifetime so a double-click
+    // (or keyboard re-activation) can't queue a duplicate job behind the server's print lock.
+    let printInFlight = false;
+
+    async function doPrintDraft() {
+      // Never build a print from a half-loaded image — same guard as the Print page.
+      if (imageReadsPending()) {
+        showStatus('Still reading the selected image — try again in a moment.', 'info');
+        return;
+      }
+      if (printInFlight) return;
+      const yaml = currentYaml();
+      if (!yaml.trim()) {
+        showStatus('Nothing to print — the draft is empty.', 'err');
+        return;
+      }
+      const redEl = document.getElementById('red');  // absent on models without two-color support
+      const thresholdRaw = document.getElementById('threshold').value;
+      const payload = {
+        yaml,
+        // gatherFields() is text-only; merge base64 for any image fields, exactly like doPreview.
+        fields: {...gatherFields(), ...collectImageFields(contract.image_fields || [])},
+        // A {{seq}} draft drives its item count from the sequence spec and rejects copies > 1
+        // (server 422) — pin copies=1 and attach the spec, like the Print page's buildPayload.
+        copies: draftUsesSeq ? 1 : clampSeqValue('copies', 1, 10, 1),
+        dry_run: document.getElementById('dry-run').checked,
+        language: currentLanguage(),
+        options: {
+          dither: document.getElementById('dither').checked,
+          high_res: document.getElementById('high-res').checked,
+          red: redEl ? redEl.checked : false,
+          // Blank means "inherit the server default" (null), not 0.
+          threshold: thresholdRaw ? parseFloat(thresholdRaw) : null,
+        },
+      };
+      if (draftUsesSeq) payload.sequence = currentSequenceSpec();
+      if (!payload.dry_run && payload.sequence && payload.sequence.count >= SEQ_CONFIRM_THRESHOLD) {
+        const range = seqRangeLabel(payload.sequence);
+        if (!confirm(`Print ${payload.sequence.count} labels (${range})? This can't be undone.`)) {
+          return;
+        }
+      }
+      printInFlight = true;
+      const btn = document.getElementById('print-draft-btn');
+      btn.disabled = true;
+      try {
+        const res = await fetch(api('/print/draft'), {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          // previewErrorMessage flattens the shared 422 shapes ({msg, missing_required}, {msg,
+          // error}) and passes plain-string details (503 unreachable, 409 preflight) through as-is.
+          showStatus('Print error: ' + previewErrorMessage(res.status, err.detail), 'err');
+          return;
+        }
+        const json = await res.json();
+        // A sequence batch reports copies:1 (one printer job per numbered label) — describe it from
+        // the spec instead, mirroring the Print page's readout.
+        const countLabel = payload.sequence
+          ? `sequence: ×${payload.sequence.count} (${seqRangeLabel(payload.sequence)})`
+          : `copies: ${json.copies}`;
+        showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · ${countLabel}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
+      } catch (e) {
+        showStatus('Network error: ' + e.message, 'err');
+      } finally {
+        printInFlight = false;
+        btn.disabled = false;
       }
     }
 

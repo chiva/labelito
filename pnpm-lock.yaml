@@ -13,10 +13,10 @@ importers:
         version: 7.3.0
       '@material-symbols/svg-400':
         specifier: ^0.45.0
-        version: 0.45.5
+        version: 0.45.8
       '@primer/octicons':
         specifier: ^19.15.1
-        version: 19.29.1
+        version: 19.29.2
 
 packages:
 
@@ -24,11 +24,11 @@ packages:
     resolution: {integrity: sha512-Yw4Qa43P6e4Xwh0TwEUkHQNRJInWaqIBo73VJmns3j2AIlZPAvUcR4yGIxCPqPRCgyJ5KIVIalF/I1GxhZ/Kgw==}
     engines: {node: '>=6'}
 
-  '@material-symbols/svg-400@0.45.5':
-    resolution: {integrity: sha512-0iwoWUGQPCwI/HDxOrl5BSI0T3dHDDNoKhkSgL9TrKkgAcWNHT3+NawaLBc4XTMMX4+obSy2CegX8FfOQHukng==}
+  '@material-symbols/svg-400@0.45.8':
+    resolution: {integrity: sha512-Z3xWWza+RFg6TPwzqPbN9rUp4ElAp4vuBGNkozvGK42vLXXmcd13xJvpbwEqD2PwM3pnD0TVU2ghm3fGyNCRVg==}
 
-  '@primer/octicons@19.29.1':
-    resolution: {integrity: sha512-XVRArUP8bN+IEjfNQSquXAJinVqAWRx36sVvhN5VzC+gOLfbx16EfFFvcFhSVaqQJ+57PjBrbj75oqm8VlOoYQ==}
+  '@primer/octicons@19.29.2':
+    resolution: {integrity: sha512-n7zuEgzTz70m5dmBqpYuE8zpeLKxgf73OeDudQWByNzIwWLb0I/UlxqdCLkk6Qb338O7em0aNuhVfExNBVCfTQ==}
 
   object-assign@4.1.1:
     resolution: {integrity: sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==}
@@ -38,9 +38,9 @@ snapshots:
 
   '@fortawesome/fontawesome-free@7.3.0': {}
 
-  '@material-symbols/svg-400@0.45.5': {}
+  '@material-symbols/svg-400@0.45.8': {}
 
-  '@primer/octicons@19.29.1':
+  '@primer/octicons@19.29.2':
     dependencies:
       object-assign: 4.1.1
 

@@ -6,7 +6,9 @@ and the special case of adding printer support.
 ## Development setup
 
 The project uses [**uv**](https://docs.astral.sh/uv/). A VS Code/Codespaces **dev container**
-(`.devcontainer/`) provisions everything automatically; otherwise:
+(`.devcontainer/`) provisions everything automatically — Python + uv, system libs, pnpm + icon
+collections, gh — and also works via plain `docker/podman compose`, including on SELinux/rootless-
+podman hosts (Fedora Atomic, Bazzite). Otherwise:
 
 ```bash
 uv sync                       # create .venv and install all dependency groups

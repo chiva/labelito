@@ -1,22 +1,17 @@
 {
   "name": "labelito",
-  // Matches the production runtime Python (Dockerfile is python:3.13-slim-trixie).
-  "image": "mcr.microsoft.com/devcontainers/python:3.13",
-  "features": {
-    "ghcr.io/devcontainers-extra/features/uv:1": {}
-  },
-  // System libraries the app needs at runtime/dev, mirroring the production Dockerfile:
-  //   libcairo2        — backs cairosvg (icon-collection SVG rasterization)
-  //   libusb-1.0-0     — pyusb backend for the USB transport
-  //   fonts-dejavu-core— faithful label previews (same font the prod image ships)
-  //   snmp             — snmpget/snmpwalk, for debugging the network printer's SNMP status
-  "onCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends libcairo2 libusb-1.0-0 fonts-dejavu-core snmp && sudo rm -rf /var/lib/apt/lists/*",
-  // Install all dependency groups, enable commit hooks, and fetch the e2e/dev-harness browser.
-  "postCreateCommand": "uv sync && uv run pre-commit install && uv run playwright install --with-deps chromium",
+  // Compose-based so the same container works under plain `docker/podman compose`
+  // (including SELinux/rootless-podman hosts like Fedora/Bazzite — see the
+  // security_opt + comments in docker-compose.yml), not only the VS Code flow.
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspace",
   "forwardPorts": [8765],
   "portsAttributes": {
     "8765": { "label": "labelito web UI", "onAutoForward": "notify" }
   },
+  // git identity from gh, uv sync, pre-commit hooks, Playwright chromium, icons.
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -24,7 +19,9 @@
         "astral-sh.ty",
         "ms-python.python",
         "tamasfe.even-better-toml",
-        "redhat.vscode-yaml"
+        "redhat.vscode-yaml",
+        "eamodio.gitlens",
+        "github.vscode-github-actions"
       ],
       "settings": {
         "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python"

@@ -1,0 +1,68 @@
+# Explicit project name: without it, plain `podman/docker compose` derives the
+# project from this file's directory (".devcontainer" → "devcontainer"), which
+# collides with every other repo's devcontainer on the same host — same
+# container names AND shared named volumes. VS Code overrides this with its own
+# --project-name, so it only matters for the plain-compose flow.
+name: labelito-devcontainer
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    command: sleep infinity
+    # Chromium (playwright e2e / dev harness) crashes under the 64 MB default.
+    shm_size: "1gb"
+    # Let the container read the bind-mounted workspace on SELinux-enforcing
+    # hosts (e.g. Fedora/Bazzite) without recursively relabeling the repo.
+    # No-op where SELinux isn't enforced (typical Docker Desktop / CI).
+    security_opt:
+      - label=disable
+    # The container runs as root deliberately: under rootless podman, in-container
+    # root maps to the invoking host user, so the workspace bind mount is writable
+    # with no --userns=keep-id gymnastics. Under native-Linux Docker this means
+    # files created in-container are root-owned on the host — the usual dev-container
+    # tradeoff; chown them or use rootless Docker/podman.
+    environment:
+      HISTFILE: /commandhistory/.bash_history
+      # Consolidate Claude Code's config + login into one dir so the
+      # claude-config volume below persists them across container rebuilds.
+      CLAUDE_CONFIG_DIR: /root/.claude
+    volumes:
+      # Project workspace
+      - ..:/workspace:cached
+      # Persist shell history across container rebuilds
+      - ./.history:/commandhistory
+      # Persist uv's download/build cache so `uv sync` after a rebuild is fast
+      - uv-cache:/root/.cache/uv
+      # Persist Playwright's browser downloads (`playwright install chromium`)
+      - playwright-browsers:/root/.cache/ms-playwright
+      # Persist the pnpm package store (scripts/fetch-icons.sh) and npm cache
+      - pnpm-store:/root/.local/share/pnpm/store
+      - npm-cache:/root/.npm
+      # Persist Claude Code config + login (see CLAUDE_CONFIG_DIR above) so
+      # `claude` `/login` survives container rebuilds
+      - claude-config:/root/.claude
+      # Persist GitHub CLI auth across rebuilds. NOT a host mount: the host
+      # keeps its gh token in the system keyring (absent in the container), so
+      # the token isn't in ~/.config/gh to reuse. Run `gh auth login` once
+      # inside the container; with no keyring, gh stores it here and it persists.
+      # git identity + credential helper are then derived from gh in postCreate.
+      - gh-config:/root/.config/gh
+      # Reuse SSH keys for Git operations (clone, fetch, push)
+      # - ~/.ssh:/root/.ssh:ro
+    # Opt-in: USB printer passthrough for testing the usb:// transport against real
+    # hardware. Not needed for network printers (tcp://) or the default file:// dev
+    # transport. Under rootless podman the host user must be able to read the device
+    # node (usually via an lp/dialout group or a udev rule).
+    # devices:
+    #   - /dev/bus/usb:/dev/bus/usb
+
+volumes:
+  uv-cache:
+  playwright-browsers:
+  pnpm-store:
+  npm-cache:
+  claude-config:
+  gh-config:

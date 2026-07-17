@@ -678,7 +678,9 @@
         fields: {...gatherFields(), ...collectImageFields(contract.image_fields || [])},
         // A {{seq}} draft drives its item count from the sequence spec and rejects copies > 1
         // (server 422) — pin copies=1 and attach the spec, like the Print page's buildPayload.
-        copies: draftUsesSeq ? 1 : clampSeqValue('copies', 1, 10, 1),
+        // A plain draft sends the RAW typed value (like the Print page): an out-of-range count is
+        // the server's clear 422, never a silent quantity rewrite on a physical print.
+        copies: draftUsesSeq ? 1 : (parseInt(document.getElementById('copies').value, 10) || 1),
         dry_run: document.getElementById('dry-run').checked,
         language: currentLanguage(),
         options: currentPrintOptions(),
@@ -844,6 +846,11 @@
     // discipline as showStatus.
     function confirmAction(message, confirmLabel) {
       const dlg = document.getElementById('confirm-dialog');
+      // Already open (only reachable programmatically, e.g. the ?load= deep-link resolving while a
+      // print confirm is up — the modal makes user-initiated double-opens impossible): resolve
+      // false rather than rewrite the open dialog under its first caller (showModal would throw
+      // and the relabelled dialog could confirm the WRONG action). Declining is always safe.
+      if (dlg.open) return Promise.resolve(false);
       document.getElementById('confirm-message').textContent = message;
       document.getElementById('confirm-ok').textContent = confirmLabel;
       return new Promise((resolve) => {

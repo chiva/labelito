@@ -1334,9 +1334,9 @@ def _render_template_preview(
     (:func:`_preview_bw_convert`) — Floyd-Steinberg dither when ``dither`` is True, else brother_ql's
     exact threshold cutoff. ``dither``/``threshold`` fall back to the server default
     (``settings.default_dither`` / ``settings.default_threshold``) when a caller passes ``None``
-    (``/preview/draft`` has no rasterization options at all — see :class:`DraftPreviewRequest`), so a
-    draft still renders byte-identically to ``/preview`` of the same YAML+fields called with no options
-    overridden — including when ``DEFAULT_DITHER`` is on. High-res and two-color (red) are never
+    (both routes resolve their request's nullable options the same way — see
+    :class:`DraftPreviewRequest`), so a draft renders byte-identically to ``/preview`` of the same
+    YAML+fields+options — including when ``DEFAULT_DITHER`` is on. High-res and two-color (red) are never
     applied here regardless of request/template — those remain print-only.
 
     ``seq`` is the pre-formatted ``{{seq}}`` value for the single item being previewed (default ""

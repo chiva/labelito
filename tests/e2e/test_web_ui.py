@@ -1869,6 +1869,60 @@ def test_studio_print_draft_seq_hides_copies_and_sends_sequence(authed_page: Pag
     expect(authed_page.locator("#copies-cell")).to_be_visible()
 
 
+def test_studio_large_seq_print_confirms_via_dialog(authed_page: Page) -> None:
+    """A non-dry-run sequence batch at/above the confirm threshold must ask via the in-page
+    <dialog> — NOT native confirm(), which Chromium auto-accepts under Enter-key activation.
+    Cancel → no /print/draft request; confirm ("Print") → exactly one batch prints."""
+    import json as _json
+
+    prints: list[str] = []
+
+    def handle(route: object) -> None:
+        prints.append(route.request.post_data)  # type: ignore[attr-defined]
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_json.dumps(
+                {"job_id": "j", "template": "draft-seq", "copies": 1, "dry_run": False}
+            ),
+        )
+
+    authed_page.route("**/print/draft", handle)
+
+    authed_page.goto("/editor")
+    authed_page.fill(
+        "#yaml",
+        'name: draft-seq\ndescription: seq\nlabel: "62"\nlayout:\n  - {type: title, text: "Box {{seq}}"}\n',
+    )
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    authed_page.fill("#seq-count", "25")
+    if authed_page.is_checked("#dry-run"):
+        authed_page.uncheck("#dry-run")  # a real (non-dry-run) batch triggers the confirm
+
+    # The in-page dialog opens, naming the count + range, with the caller's "Print" label.
+    authed_page.click("#print-draft-btn")
+    dlg = authed_page.locator("#confirm-dialog")
+    expect(dlg).to_be_visible()
+    expect(dlg.locator("#confirm-message")).to_contain_text("25")
+    expect(dlg.locator("#confirm-message")).to_contain_text("1..25")
+    expect(dlg.locator("#confirm-ok")).to_have_text("Print")
+
+    # Cancel → nothing printed.
+    dlg.locator("#confirm-cancel").click()
+    expect(dlg).to_be_hidden()
+    authed_page.wait_for_timeout(200)
+    assert len(prints) == 0, "cancelling the confirm must not print"
+
+    # Confirm → the batch prints exactly once.
+    authed_page.click("#print-draft-btn")
+    expect(dlg).to_be_visible()
+    dlg.locator("#confirm-ok").click()
+    authed_page.wait_for_timeout(300)
+    assert len(prints) == 1, "confirming must print exactly one batch"
+    sent = _json.loads(prints[0] or "{}")
+    assert sent["sequence"]["count"] == 25 and sent["copies"] == 1
+
+
 def test_studio_horizontal_scroll_proxy_shows_and_syncs_for_long_lines(authed_page: Page) -> None:
     """A long, unwrapped line overflows #yaml horizontally: the themed proxy scroller (#yaml-hscroll)
     becomes visible, and its scrollLeft stays mirrored with the textarea's in both directions. The

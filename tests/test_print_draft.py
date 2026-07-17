@@ -207,3 +207,34 @@ def test_print_draft_metrics_use_inline_sentinel(client: TestClient) -> None:
     assert resp.status_code == 200
     metrics = client.get("/metrics").text
     assert 'template="studio-draft"' not in metrics
+
+
+def test_preview_draft_accepts_print_options(client: TestClient) -> None:
+    """/preview/draft applies the print row's dither/threshold (like /preview) so the studio's
+    preview matches what /print/draft will produce; red/high_res ride along inert."""
+    resp = client.post(
+        "/preview/draft",
+        json={
+            "yaml": DRAFT_YAML,
+            "fields": {"title": "x"},
+            "options": {"dither": True, "threshold": 42.5, "red": False, "high_res": False},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "image/png"
+
+
+def test_preview_draft_threshold_changes_the_render(client: TestClient) -> None:
+    """An explicit threshold must actually reach the renderer: two extreme thresholds on a
+    grey-heavy draft yield different rasters (regression guard: options silently dropped)."""
+    grey_yaml = DRAFT_YAML  # anti-aliased glyph edges are grey, so the cutoff moves real pixels
+    low = client.post(
+        "/preview/draft",
+        json={"yaml": grey_yaml, "fields": {"title": "Grey"}, "options": {"threshold": 0.1}},
+    )
+    high = client.post(
+        "/preview/draft",
+        json={"yaml": grey_yaml, "fields": {"title": "Grey"}, "options": {"threshold": 99.9}},
+    )
+    assert low.status_code == 200 and high.status_code == 200
+    assert low.content != high.content

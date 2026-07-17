@@ -2996,7 +2996,8 @@ async def preview_draft(request: DraftPreviewRequest) -> Response:
     input caps as ``/preview`` and ``/print`` apply to ``fields`` (image size/pixel caps, text
     length cap, field-count cap) — a draft does NOT bypass any cap. The render is stateless: it
     does not acquire ``_print_lock``, touch history, or write any file, and like ``/preview`` it is
-    a pre-driver monochrome render (dither/red/high_res are print-only and not accepted here).
+    a pre-driver render — ``options.dither``/``options.threshold`` are applied (so the studio's
+    preview matches what /print/draft will produce) while red/high_res never change a preview.
     """
     tmpl = _validate_draft_template(request.yaml)
 
@@ -3033,10 +3034,29 @@ async def preview_draft(request: DraftPreviewRequest) -> Response:
     # cannot smuggle an oversized image/text field or an unbounded field count past the guards.
     _validate_image_fields(tmpl, request.fields)
     _validate_text_fields(tmpl, request.fields)
+    # Like /preview: high_res never changes a preview render, but an unsupported request is still
+    # rejected up front so the studio discovers the bad combination before the real /print/draft.
+    _validate_high_res_supported(bool(request.options.high_res))
     language = request.language or settings.default_language
+    # Same nullable-inherit resolution as /preview: None inherits the env default, an explicit
+    # value overrides it — so the draft preview's B/W conversion matches the eventual print.
+    effective_dither = (
+        settings.default_dither if request.options.dither is None else request.options.dither
+    )
+    effective_threshold = (
+        settings.default_threshold
+        if request.options.threshold is None
+        else request.options.threshold
+    )
     # Same event-loop offload as /preview: the draft render is the same blocking PIL work.
     png = await run_in_threadpool(
-        _render_template_preview, tmpl, request.fields, language, seq=preview_seq
+        _render_template_preview,
+        tmpl,
+        request.fields,
+        language,
+        dither=effective_dither,
+        threshold=effective_threshold,
+        seq=preview_seq,
     )
     return Response(content=png, media_type="image/png")
 
@@ -3068,13 +3088,21 @@ async def print_draft(request: DraftPrintRequest) -> PrintResponse:
     ``/preview/draft``; printing that same draft is the same trust surface. Gate order matches the
     other studio routes: disabled editor ⇒ 404, not 401.
     """
-    tmpl = _validate_draft_template(request.yaml)
+    # Resolution-stage failures count under label_errors_total exactly like /print's (an invalid
+    # inline body / missing fields both land on the "missing_fields" reason there via
+    # _RESOLVE_ERROR_REASONS' default) — the twin routes must not diverge in metric semantics.
+    try:
+        tmpl = _validate_draft_template(request.yaml)
+    except HTTPException:
+        LABEL_ERRORS.labels(reason="missing_fields").inc()
+        raise
 
     # Enforce the required-field contract up front with the SAME 422 detail shape as
     # /preview/draft, so the studio surfaces the missing names through its existing error
     # flattener. (/print reports this via _resolve_template_for_request; a draft resolves here.)
     missing = _missing_required_fields(tmpl, request.fields)
     if missing:
+        LABEL_ERRORS.labels(reason="missing_fields").inc()
         raise HTTPException(
             422,
             detail={

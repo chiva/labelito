@@ -253,15 +253,16 @@ class DraftPreviewRequest(BaseModel):
     """Live-preview a template that exists only as in-memory YAML text.
 
     Carries the raw template ``yaml`` body (the source of truth, never written to disk), the sample
-    ``fields`` to substitute, and an optional ``language``. Rasterization options are intentionally
-    absent: like ``/preview``, the draft preview is a pre-driver monochrome render and never
-    dithers / goes two-color / 600-dpi (those only affect /print and /reprint), so accepting them
-    would be a misleading divergence.
+    ``fields`` to substitute, and an optional ``language``. ``options`` mirror ``/preview`` exactly:
+    ``dither``/``threshold`` shape the preview's B/W conversion so it matches what ``/print/draft``
+    will produce, while ``red``/``high_res`` never change a preview (both preview routes render the
+    fixed pre-driver image) — ``high_res`` is still validated up front so an unsupported combination
+    is discovered before the real print, and ``red`` is simply inert.
 
-    ``sequence`` is the exception: a draft whose layout uses ``{{seq}}`` needs a spec so the preview
-    can render the first item (at ``start``) instead of a blank number. It is not a rasterization
-    option — it shapes the label content — and mirrors ``/preview`` (the studio sends the same object
-    the Print page does). Only the first item is drawn regardless of ``count``.
+    ``sequence``: a draft whose layout uses ``{{seq}}`` needs a spec so the preview can render the
+    first item (at ``start``) instead of a blank number. It is not a rasterization option — it
+    shapes the label content — and mirrors ``/preview`` (the studio sends the same object the Print
+    page does). Only the first item is drawn regardless of ``count``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -276,6 +277,9 @@ class DraftPreviewRequest(BaseModel):
     )
     fields: dict[str, Any] = Field(default={}, examples=[{"title": "Hello"}])
     language: str | None = Field(default=None, max_length=35, examples=["en"])
+    # Same nullable-inherit semantics as /preview and /print: None inherits the DEFAULT_* server
+    # value; only dither/threshold affect the rendered preview.
+    options: RenderOptions = Field(default_factory=RenderOptions)
     # Auto-numbering spec for a {{seq}} draft — the preview renders the item at `start`. Absent for a
     # non-seq draft (and inert if present on one, matching /preview's preview=True forward-only check).
     sequence: SequenceSpec | None = Field(default=None)

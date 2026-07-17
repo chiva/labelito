@@ -1797,6 +1797,145 @@ def test_studio_draft_preview_unavailable_until_required_field_filled(authed_pag
     expect(authed_page.locator("#draft-status")).to_have_text("valid")
 
 
+def test_studio_print_draft_dry_run_round_trip(authed_page: Page) -> None:
+    """Print the current draft straight from the studio (dry-run) — no save needed. Asserts the
+    /print/draft round-trip: the payload carries the raw YAML + typed fields, the response reports
+    the draft's parsed name, and the sticky success banner appears. The starter seed is used as-is,
+    so this also proves the flow works before the template exists anywhere on disk."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#field-title")).to_be_visible()
+    authed_page.fill("#field-title", "Straight from the studio")
+    authed_page.check("#dry-run")
+
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/print/draft") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("#print-draft-btn")
+
+    import json as _json
+
+    response = resp_info.value
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent["yaml"].startswith("name: my-label"), "payload must carry the draft YAML verbatim"
+    assert sent["fields"]["title"] == "Straight from the studio"
+    assert "options" in sent and "dither" in sent["options"]
+    assert response.status == 200, f"/print/draft must succeed: {response.status}"
+    body = response.json()
+    assert body["dry_run"] is True
+    assert body["template"] == "my-label"  # the draft's parsed internal name
+    assert body["job_id"]
+
+    expect(authed_page.locator(".status.ok")).to_be_visible()
+
+
+def test_studio_copies_input_clamps_typed_value(authed_page: Page) -> None:
+    """Typing an out-of-range Copies value is clamped into 1..10 on input (the min/max attributes
+    only constrain the spinner arrows) — same behavior as the Print page, so a physical print never
+    goes out on a 422 the user has to decode."""
+    authed_page.goto("/editor")
+    copies = authed_page.locator("#copies")
+    expect(copies).to_be_visible()
+    copies.fill("20")
+    expect(copies).to_have_value("10")
+    copies.fill("0")
+    expect(copies).to_have_value("1")
+
+
+def test_studio_print_draft_seq_hides_copies_and_sends_sequence(authed_page: Page) -> None:
+    """A {{seq}} draft swaps the Copies input for the Auto-number panel (mutually exclusive
+    server-side) and a dry-run print carries the sequence spec with copies pinned to 1."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#copies-cell")).to_be_visible()
+
+    seq_yaml = (
+        "name: draft-seq\n"
+        "description: seq draft\n"
+        'label: "62"\n'
+        "layout:\n"
+        '  - {type: title, text: "Box {{seq}}"}\n'
+    )
+    authed_page.fill("#yaml", seq_yaml)
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    expect(authed_page.locator("#copies-cell")).to_be_hidden()
+
+    authed_page.fill("#seq-count", "3")
+    authed_page.check("#dry-run")
+    with authed_page.expect_response(
+        lambda r: r.url.endswith("/print/draft") and r.request.method == "POST"
+    ) as resp_info:
+        authed_page.click("#print-draft-btn")
+
+    import json as _json
+
+    response = resp_info.value
+    sent = _json.loads(response.request.post_data or "{}")
+    assert sent["copies"] == 1, "a seq draft must pin copies=1 (sequence drives the count)"
+    assert sent["sequence"]["count"] == 3
+    assert response.status == 200, f"seq draft must print, not 422: {response.status}"
+
+    # Back to a plain draft: Copies returns, the sequence panel hides.
+    authed_page.fill(
+        "#yaml",
+        'name: d2\ndescription: plain\nlabel: "62"\nlayout:\n  - {type: title, text: "Static"}\n',
+    )
+    expect(authed_page.locator("#sequence-field")).to_be_hidden()
+    expect(authed_page.locator("#copies-cell")).to_be_visible()
+
+
+def test_studio_large_seq_print_confirms_via_dialog(authed_page: Page) -> None:
+    """A non-dry-run sequence batch at/above the confirm threshold must ask via the in-page
+    <dialog> — NOT native confirm(), which Chromium auto-accepts under Enter-key activation.
+    Cancel → no /print/draft request; confirm ("Print") → exactly one batch prints."""
+    import json as _json
+
+    prints: list[str] = []
+
+    def handle(route: object) -> None:
+        prints.append(route.request.post_data)  # type: ignore[attr-defined]
+        route.fulfill(  # type: ignore[attr-defined]
+            status=200,
+            content_type="application/json",
+            body=_json.dumps(
+                {"job_id": "j", "template": "draft-seq", "copies": 1, "dry_run": False}
+            ),
+        )
+
+    authed_page.route("**/print/draft", handle)
+
+    authed_page.goto("/editor")
+    authed_page.fill(
+        "#yaml",
+        'name: draft-seq\ndescription: seq\nlabel: "62"\nlayout:\n  - {type: title, text: "Box {{seq}}"}\n',
+    )
+    expect(authed_page.locator("#sequence-field")).to_be_visible()
+    authed_page.fill("#seq-count", "25")
+    if authed_page.is_checked("#dry-run"):
+        authed_page.uncheck("#dry-run")  # a real (non-dry-run) batch triggers the confirm
+
+    # The in-page dialog opens, naming the count + range, with the caller's "Print" label.
+    authed_page.click("#print-draft-btn")
+    dlg = authed_page.locator("#confirm-dialog")
+    expect(dlg).to_be_visible()
+    expect(dlg.locator("#confirm-message")).to_contain_text("25")
+    expect(dlg.locator("#confirm-message")).to_contain_text("1..25")
+    expect(dlg.locator("#confirm-ok")).to_have_text("Print")
+
+    # Cancel → nothing printed.
+    dlg.locator("#confirm-cancel").click()
+    expect(dlg).to_be_hidden()
+    authed_page.wait_for_timeout(200)
+    assert len(prints) == 0, "cancelling the confirm must not print"
+
+    # Confirm → the batch prints exactly once.
+    authed_page.click("#print-draft-btn")
+    expect(dlg).to_be_visible()
+    dlg.locator("#confirm-ok").click()
+    authed_page.wait_for_timeout(300)
+    assert len(prints) == 1, "confirming must print exactly one batch"
+    sent = _json.loads(prints[0] or "{}")
+    assert sent["sequence"]["count"] == 25 and sent["copies"] == 1
+
+
 def test_studio_horizontal_scroll_proxy_shows_and_syncs_for_long_lines(authed_page: Page) -> None:
     """A long, unwrapped line overflows #yaml horizontally: the themed proxy scroller (#yaml-hscroll)
     becomes visible, and its scrollLeft stays mirrored with the textarea's in both directions. The

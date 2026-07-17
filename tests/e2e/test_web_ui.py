@@ -1828,6 +1828,19 @@ def test_studio_print_draft_dry_run_round_trip(authed_page: Page) -> None:
     expect(authed_page.locator(".status.ok")).to_be_visible()
 
 
+def test_studio_copies_input_clamps_typed_value(authed_page: Page) -> None:
+    """Typing an out-of-range Copies value is clamped into 1..10 on input (the min/max attributes
+    only constrain the spinner arrows) — same behavior as the Print page, so a physical print never
+    goes out on a 422 the user has to decode."""
+    authed_page.goto("/editor")
+    copies = authed_page.locator("#copies")
+    expect(copies).to_be_visible()
+    copies.fill("20")
+    expect(copies).to_have_value("10")
+    copies.fill("0")
+    expect(copies).to_have_value("1")
+
+
 def test_studio_print_draft_seq_hides_copies_and_sends_sequence(authed_page: Page) -> None:
     """A {{seq}} draft swaps the Copies input for the Auto-number panel (mutually exclusive
     server-side) and a dry-run print carries the sequence spec with copies pinned to 1."""

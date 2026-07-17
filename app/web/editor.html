@@ -678,8 +678,8 @@
         fields: {...gatherFields(), ...collectImageFields(contract.image_fields || [])},
         // A {{seq}} draft drives its item count from the sequence spec and rejects copies > 1
         // (server 422) — pin copies=1 and attach the spec, like the Print page's buildPayload.
-        // A plain draft sends the RAW typed value (like the Print page): an out-of-range count is
-        // the server's clear 422, never a silent quantity rewrite on a physical print.
+        // A plain draft reads the input as-is (clamped into 1..10 on every keystroke by the
+        // clampCopies listener below, exactly like the Print page's stepper input).
         copies: draftUsesSeq ? 1 : (parseInt(document.getElementById('copies').value, 10) || 1),
         dry_run: document.getElementById('dry-run').checked,
         language: currentLanguage(),
@@ -1292,6 +1292,14 @@
     });
     syncThresholdToggledByDither();
     document.getElementById('threshold').addEventListener('input', debouncedOptionPreview);
+    // Clamp a typed Copies value into 1..10 on every keystroke — same behavior as the Print page's
+    // stepper input, so an out-of-range count is corrected in the UI rather than 422ing on submit.
+    // (The min/max attributes only constrain the spinner arrows, not typed input.)
+    document.getElementById('copies').addEventListener('input', () => {
+      const el = document.getElementById('copies');
+      const v = parseInt(el.value, 10);
+      if (Number.isFinite(v)) el.value = Math.min(10, Math.max(1, v));
+    });
     // Auto-number inputs re-preview the first item (start/step/padding change the drawn number). One
     // shared debounce so edits across the four inputs coalesce into a single draft render. Preview on
     // `input` (currentSequenceSpec reads clamped values without rewriting the field, so a partial

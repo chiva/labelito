@@ -254,10 +254,13 @@ class DraftPreviewRequest(BaseModel):
 
     Carries the raw template ``yaml`` body (the source of truth, never written to disk), the sample
     ``fields`` to substitute, and an optional ``language``. ``options`` mirror ``/preview`` exactly:
-    ``dither``/``threshold`` shape the preview's B/W conversion so it matches what ``/print/draft``
-    will produce, while ``red``/``high_res`` never change a preview (both preview routes render the
-    fixed pre-driver image) — ``high_res`` is still validated up front so an unsupported combination
-    is discovered before the real print, and ``red`` is simply inert.
+    ``dither``/``threshold`` shape the preview's B/W conversion so the monochrome preview tracks
+    what ``/print/draft`` will produce, while ``red``/``high_res`` never change a preview (both
+    preview routes render the fixed pre-driver image) — ``high_res`` is still validated up front so
+    an unsupported combination is discovered before the real print, and ``red`` is simply inert.
+    Fidelity matches ``/preview``, including its one known gap: a two-color (red) print previews
+    monochrome, and since brother_ql ignores dither under red, a dither+red print thresholds its
+    black layer rather than dithering it.
 
     ``sequence``: a draft whose layout uses ``{{seq}}`` needs a spec so the preview can render the
     first item (at ``start``) instead of a blank number. It is not a rasterization option — it

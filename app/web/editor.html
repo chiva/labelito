@@ -626,7 +626,11 @@
 
     // The rasterization options the print row holds — shared by doPrintDraft (they shape the print)
     // and doPreview (dither/threshold are applied to the draft preview too, exactly like /preview,
-    // so what is shown matches what will print; red/high_res are print-only there as well).
+    // so the monochrome preview tracks the print's B/W conversion; red/high_res are print-only there.
+    // Preview parity is the same as /preview's: a two-color (red) print is previewed monochrome, and
+    // brother_ql ignores dither under red — so with both Dither and Two-color on, the preview shows a
+    // dithered approximation while the red print thresholds the black layer. That red caveat aside,
+    // what is shown matches what will print.
     function currentPrintOptions() {
       const redEl = document.getElementById('red');  // absent on models without two-color support
       const thresholdRaw = document.getElementById('threshold').value;

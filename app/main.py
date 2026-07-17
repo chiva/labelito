@@ -2997,7 +2997,10 @@ async def preview_draft(request: DraftPreviewRequest) -> Response:
     length cap, field-count cap) — a draft does NOT bypass any cap. The render is stateless: it
     does not acquire ``_print_lock``, touch history, or write any file, and like ``/preview`` it is
     a pre-driver render — ``options.dither``/``options.threshold`` are applied (so the studio's
-    preview matches what /print/draft will produce) while red/high_res never change a preview.
+    monochrome preview tracks what /print/draft will produce) while red/high_res never change a
+    preview. Fidelity matches ``/preview`` exactly, including its one known gap: a two-color (red)
+    print is previewed monochrome and, because brother_ql ignores dither under red, a dither+red
+    print thresholds its black layer rather than dithering it.
     """
     tmpl = _validate_draft_template(request.yaml)
 

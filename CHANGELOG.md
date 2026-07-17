@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/chiva/labelito/compare/v0.12.0...v0.13.0) (2026-07-17)
+
+
+### Features
+
+* **devcontainer:** compose-based dev container that works on SELinux/rootless-podman hosts ([#70](https://github.com/chiva/labelito/issues/70)) ([ca2a18c](https://github.com/chiva/labelito/commit/ca2a18c62be5d65fcdb88f2c3a31da0e0cae8138))
+* print the current draft directly from the studio ([#75](https://github.com/chiva/labelito/issues/75)) ([90e6c7d](https://github.com/chiva/labelito/commit/90e6c7d5d35b789fee3438102754de082238f40f))
+
+
+### Bug Fixes
+
+* **web:** guard large sequence prints with in-page dialog, not native confirm() ([#76](https://github.com/chiva/labelito/issues/76)) ([e479b28](https://github.com/chiva/labelito/commit/e479b28f3b2f0d611275b85b5b75cccbfdf3e395))
+
 ## [0.12.0](https://github.com/chiva/labelito/compare/v0.11.0...v0.12.0) (2026-07-11)
 
 

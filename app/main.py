@@ -72,6 +72,7 @@ from app.models import (
     CapabilityResponse,
     DiagnosticsResponse,
     DraftPreviewRequest,
+    DraftPrintRequest,
     HealthResponse,
     HistoryPage,
     LivenessResponse,
@@ -1333,9 +1334,9 @@ def _render_template_preview(
     (:func:`_preview_bw_convert`) — Floyd-Steinberg dither when ``dither`` is True, else brother_ql's
     exact threshold cutoff. ``dither``/``threshold`` fall back to the server default
     (``settings.default_dither`` / ``settings.default_threshold``) when a caller passes ``None``
-    (``/preview/draft`` has no rasterization options at all — see :class:`DraftPreviewRequest`), so a
-    draft still renders byte-identically to ``/preview`` of the same YAML+fields called with no options
-    overridden — including when ``DEFAULT_DITHER`` is on. High-res and two-color (red) are never
+    (both routes resolve their request's nullable options the same way — see
+    :class:`DraftPreviewRequest`), so a draft renders byte-identically to ``/preview`` of the same
+    YAML+fields+options — including when ``DEFAULT_DITHER`` is on. High-res and two-color (red) are never
     applied here regardless of request/template — those remain print-only.
 
     ``seq`` is the pre-formatted ``{{seq}}`` value for the single item being previewed (default ""
@@ -2488,6 +2489,27 @@ async def preview(request: PrintRequest, download: bool = False) -> Response:
     responses={**RESPONSE_401, **RESPONSE_413},
 )
 async def print_label(request: PrintRequest) -> PrintResponse:
+    try:
+        tmpl, template_source = _resolve_template_for_request(request)
+    except HTTPException as exc:
+        LABEL_ERRORS.labels(
+            reason=_RESOLVE_ERROR_REASONS.get(exc.status_code, "missing_fields")
+        ).inc()
+        raise
+    return await _handle_print(request, tmpl, template_source)
+
+
+async def _handle_print(
+    request: PrintRequest, tmpl: Template, template_source: str | None
+) -> PrintResponse:
+    """Validate and execute a print of an already-resolved template.
+
+    Everything /print does AFTER template resolution lives here — option resolution, capability
+    and field validation, and the locked idempotency/preflight/execute sequence — so /print/draft
+    (which resolves its template from a draft YAML body instead of the registry) shares the exact
+    same behavior. A plain helper, not a route: extra handler parameters would surface as
+    client-controllable query params.
+    """
     # Resolve each nullable option against its env default: None inherits the default, an explicit
     # true/false overrides it either way. Resolved here so the concrete options feed the idempotency
     # fingerprint (a key reused with different effective options is a different print, not a retry)
@@ -2533,14 +2555,6 @@ async def print_label(request: PrintRequest) -> PrintResponse:
     fingerprint = (
         _request_fingerprint(request, resolved_options) if request.idempotency_key else None
     )
-
-    try:
-        tmpl, template_source = _resolve_template_for_request(request)
-    except HTTPException as exc:
-        LABEL_ERRORS.labels(
-            reason=_RESOLVE_ERROR_REASONS.get(exc.status_code, "missing_fields")
-        ).inc()
-        raise
 
     # Two-color capability gate: reject a red print up front when the configured model lacks
     # two-color support, so brother_ql's BrotherQLUnsupportedCmd never surfaces as a 500. The check
@@ -2982,7 +2996,11 @@ async def preview_draft(request: DraftPreviewRequest) -> Response:
     input caps as ``/preview`` and ``/print`` apply to ``fields`` (image size/pixel caps, text
     length cap, field-count cap) — a draft does NOT bypass any cap. The render is stateless: it
     does not acquire ``_print_lock``, touch history, or write any file, and like ``/preview`` it is
-    a pre-driver monochrome render (dither/red/high_res are print-only and not accepted here).
+    a pre-driver render — ``options.dither``/``options.threshold`` are applied (so the studio's
+    monochrome preview tracks what /print/draft will produce) while red/high_res never change a
+    preview. Fidelity matches ``/preview`` exactly, including its one known gap: a two-color (red)
+    print is previewed monochrome and, because brother_ql ignores dither under red, a dither+red
+    print thresholds its black layer rather than dithering it.
     """
     tmpl = _validate_draft_template(request.yaml)
 
@@ -3019,12 +3037,114 @@ async def preview_draft(request: DraftPreviewRequest) -> Response:
     # cannot smuggle an oversized image/text field or an unbounded field count past the guards.
     _validate_image_fields(tmpl, request.fields)
     _validate_text_fields(tmpl, request.fields)
+    # Like /preview: high_res never changes a preview render, but an unsupported request is still
+    # rejected up front so the studio discovers the bad combination before the real /print/draft.
+    _validate_high_res_supported(bool(request.options.high_res))
     language = request.language or settings.default_language
+    # Same nullable-inherit resolution as /preview: None inherits the env default, an explicit
+    # value overrides it — so the draft preview's B/W conversion matches the eventual print.
+    effective_dither = (
+        settings.default_dither if request.options.dither is None else request.options.dither
+    )
+    effective_threshold = (
+        settings.default_threshold
+        if request.options.threshold is None
+        else request.options.threshold
+    )
     # Same event-loop offload as /preview: the draft render is the same blocking PIL work.
     png = await run_in_threadpool(
-        _render_template_preview, tmpl, request.fields, language, seq=preview_seq
+        _render_template_preview,
+        tmpl,
+        request.fields,
+        language,
+        dither=effective_dither,
+        threshold=effective_threshold,
+        seq=preview_seq,
     )
     return Response(content=png, media_type="image/png")
+
+
+@app.post(
+    "/print/draft",
+    response_model=PrintResponse,
+    dependencies=[Depends(_require_editor_enabled), Depends(check_token)],
+    tags=["Templates"],
+    responses={
+        **_DRAFT_RESPONSES,
+        409: {"description": "Media mismatch / printer fault preflight, or idempotency conflict"},
+        503: {"description": "Printer unreachable"},
+    },
+)
+async def print_draft(request: DraftPrintRequest) -> PrintResponse:
+    """Print an in-memory draft template — the studio's current YAML, never written to disk.
+
+    The draft body is validated through the SAME path as a saved file (like ``/preview/draft``),
+    then handed to the SAME print machinery as ``/print`` (:func:`_handle_print`): option
+    resolution, capability/image/text/sequence validation, ``_print_lock`` serialization,
+    idempotency lookup, and the SNMP media preflight all apply identically. The YAML is frozen
+    into history as ``template_source`` so ``/reprint`` reproduces the job without a registry
+    entry.
+
+    Deliberately NOT gated by ``INLINE_TEMPLATES_ENABLED``: that flag governs machine-to-machine
+    inline printing on ``/print``/``/preview`` for every token holder. Here ``EDITOR_ENABLED`` is
+    the authorization — a studio user can already render arbitrary draft DSL via
+    ``/preview/draft``; printing that same draft is the same trust surface. Gate order matches the
+    other studio routes: disabled editor ⇒ 404, not 401.
+    """
+    # Resolution-stage failures count under label_errors_total exactly like /print's (an invalid
+    # inline body / missing fields both land on the "missing_fields" reason there via
+    # _RESOLVE_ERROR_REASONS' default) — the twin routes must not diverge in metric semantics.
+    try:
+        tmpl = _validate_draft_template(request.yaml)
+    except HTTPException:
+        LABEL_ERRORS.labels(reason="missing_fields").inc()
+        raise
+
+    # Enforce the required-field contract up front with the SAME 422 detail shape as
+    # /preview/draft, so the studio surfaces the missing names through its existing error
+    # flattener. (/print reports this via _resolve_template_for_request; a draft resolves here.)
+    missing = _missing_required_fields(tmpl, request.fields)
+    if missing:
+        LABEL_ERRORS.labels(reason="missing_fields").inc()
+        raise HTTPException(
+            422,
+            detail={
+                "msg": "Missing required fields",
+                "template": tmpl.name,
+                "missing_required": missing,
+            },
+        )
+
+    # Re-shape into the internal PrintRequest so _handle_print sees exactly what /print sends.
+    # Constructed by hand, so translate ValidationError (e.g. sequence + copies > 1, enforced by
+    # PrintRequest's validator) into the 422 FastAPI would have returned — the multipart shim does
+    # the same. template_inline carries the body only for the model's source-exclusivity check;
+    # resolution already happened above and _handle_print never re-resolves.
+    try:
+        preq = PrintRequest(
+            template_inline=request.yaml,
+            fields=request.fields,
+            copies=request.copies,
+            dry_run=request.dry_run,
+            language=request.language,
+            options=request.options,
+            sequence=request.sequence,
+            idempotency_key=request.idempotency_key,
+        )
+    except ValidationError as exc:
+        # Unlike the multipart shim (whose inputs are plain form strings), errors here can carry
+        # non-JSON-serializable payloads — the offending `input` is a validated sub-model
+        # (SequenceSpec/RenderOptions) and a model-validator's `ctx` holds the raw ValueError — so
+        # exc.errors() passed through verbatim would explode into a 500 at response serialization.
+        # Keep only the serializable keys the FastAPI shape shares and the studio UI reads (msg).
+        raise HTTPException(
+            422,
+            detail=[
+                {"type": e["type"], "loc": list(e["loc"]), "msg": e["msg"]}
+                for e in exc.errors(include_url=False)
+            ],
+        ) from exc
+    return await _handle_print(preq, tmpl, template_source=request.yaml)
 
 
 @app.post(
@@ -3707,6 +3827,17 @@ async def editor_page(request: Request) -> HTMLResponse:
             **_web_ctx("studio", request),
             "templates_writable": settings.templates_writable,
             "labels": labels,
+            # The draft print row mirrors the Print page's options block, so it needs the same
+            # context web_ui() injects: server defaults for each nullable-inherit option plus the
+            # model capabilities that gate the red checkbox (two_color) and disable the high-res
+            # one (high_res_supported; `model` only feeds that hint text).
+            "model": settings.model,
+            "default_dither": settings.default_dither,
+            "default_threshold": settings.default_threshold,
+            "default_high_res": settings.default_high_res,
+            "default_red": settings.default_red,
+            "two_color": _driver_cls.CAPABILITY.two_color,
+            "high_res_supported": _driver_cls.CAPABILITY.high_res,
         },
     )
 

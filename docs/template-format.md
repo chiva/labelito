@@ -499,3 +499,9 @@ The security note: template authoring is otherwise doubly gated (`EDITOR_ENABLED
 DSL. The validator treats an inline body no differently from a saved file, but it is a deliberate
 posture change — hence the opt-in flag, off by default. See
 [configuration.md](configuration.md).
+
+Related but separately gated: the Template Studio (`/editor`) prints its current draft directly via
+`POST /print/draft` (a raw `yaml` body, same shape as `/preview/draft` plus the print knobs —
+copies, dry-run, options, sequence). That route is authorized by `EDITOR_ENABLED` alone and works
+with `INLINE_TEMPLATES_ENABLED` off — it serves the interactive studio, not machine-to-machine
+printing. Draft jobs freeze their YAML into history the same way, so `/reprint` reproduces them.

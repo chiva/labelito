@@ -47,6 +47,21 @@
     }
     #preview-img.preview-stale { opacity: 0.25; filter: grayscale(1); }
 
+    /* Print-the-draft controls — a compact mirror of the Print page's options block, separated
+       from the preview above by a dashed rule so "what it looks like" and "print it" read as two
+       steps of one card. */
+    #print-draft-row { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 12px; }
+    .print-draft-controls { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+    #copies-cell .input { max-width: 90px; }
+    .print-draft-controls .check-label { margin-bottom: 7px; }
+    .print-draft-controls .btn-print { margin-left: auto; }
+    #print-draft-row details { margin-top: 10px; font-size: 13px; }
+    #print-draft-row summary { cursor: pointer; font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink3); }
+    #print-draft-row .section-body { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; }
+    .threshold-row { display: flex; flex-direction: row; align-items: center; gap: 10px; }
+    #threshold { max-width: 110px; }
+    .hint-warn { color: var(--amber); }
+
     /* "Your Printer" callout + match highlighting in the label reference (ids/classes e2e-pinned). */
     .your-printer { background: color-mix(in srgb, var(--blue) 10%, transparent); border: 1px solid color-mix(in srgb, var(--blue) 35%, transparent); border-radius: 11px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; line-height: 1.6; }
     #your-printer:empty { display: none; }
@@ -150,6 +165,51 @@
           </div>
         </div>
         <div id="preview-error" class="printer-detail" role="alert" aria-live="assertive"></div>
+
+        <!-- ── Print the current draft — POST /print/draft, the studio-gated twin of /print. The
+             draft is sent as raw YAML, so nothing needs saving first; the render options mirror the
+             Print page (defaults inherit the server's DEFAULT_* settings when untouched). -->
+        <div id="print-draft-row">
+          <div class="print-draft-controls">
+            <label class="seq-cell" id="copies-cell">Copies
+              <input type="number" id="copies" class="input" value="1" min="1" max="10"></label>
+            <label class="check-label">
+              <input type="checkbox" id="dry-run">
+              Dry run (no print)
+            </label>
+            <button type="button" class="btn btn-primary btn-print" id="print-draft-btn" onclick="doPrintDraft()">{{ icon("print") }}Print draft</button>
+          </div>
+          <details>
+            <summary>Print options</summary>
+            <div class="section-body">
+              <label class="check-label">
+                <input type="checkbox" id="high-res"{% if default_high_res and high_res_supported %} checked{% endif %}{% if not high_res_supported %} disabled{% endif %}>
+                High-res (600 dpi)
+                {% if high_res_supported %}
+                <span class="hint">— improves small text &amp; dense QR; affects the print only</span>
+                {% else %}
+                <span class="hint hint-warn">— not supported by {{ model }}</span>
+                {% endif %}
+              </label>
+              {% if two_color %}
+              <label class="check-label">
+                <input type="checkbox" id="red"{% if default_red %} checked{% endif %}>
+                Two-color (red/black)
+                <span class="hint">— renders <code>color: red</code> elements in red; needs black/red media (e.g. 62red)</span>
+              </label>
+              {% endif %}
+              <label class="check-label">
+                <input type="checkbox" id="dither"{% if default_dither %} checked{% endif %}>
+                Dither (approximate greys)
+              </label>
+              <div class="field threshold-row">
+                <label class="field-label" for="threshold">Threshold&nbsp;%</label>
+                <input type="number" id="threshold" class="input" min="0.1" max="100" step="0.1" placeholder="{{ default_threshold }}">
+                <span class="hint" id="threshold-hint">— blank = default</span>
+              </div>
+            </div>
+          </details>
+        </div>
       </div>
     </div>
 
@@ -240,7 +300,7 @@
       <p id="confirm-message"></p>
       <div class="dialog-actions">
         <button class="btn" id="confirm-cancel" type="submit" value="cancel">Cancel</button>
-        <button class="btn btn-primary" type="submit" value="confirm">Replace YAML</button>
+        <button class="btn btn-primary" id="confirm-ok" type="submit" value="confirm">Replace YAML</button>
       </div>
     </form>
   </dialog>
@@ -381,13 +441,16 @@
       }
     }
 
-    // Reveal the auto-number controls when the draft uses {{seq}}. Unlike the Print page there is no
-    // Copies control to hide — a draft's item count comes only from the sequence spec. Clamps the
-    // inputs so a sent spec is always valid (count is required, ge=1).
+    // Reveal the auto-number controls when the draft uses {{seq}} — and hide the Copies input, like
+    // the Print page: the two are mutually exclusive server-side (sequence drives the item count;
+    // copies > 1 is a 422, and doPrintDraft pins copies=1 for a seq draft). Clamps the inputs so a
+    // sent spec is always valid (count is required, ge=1).
     function syncSequenceForDraft() {
       const seqField = document.getElementById('sequence-field');
       if (!seqField) return;
       seqField.style.display = draftUsesSeq ? '' : 'none';
+      const copiesCell = document.getElementById('copies-cell');
+      if (copiesCell) copiesCell.style.display = draftUsesSeq ? 'none' : '';
       if (draftUsesSeq) clampSequence();
     }
 
@@ -423,18 +486,29 @@
       };
     }
 
-    // Flatten a /preview/draft failure into ONE human sentence for the inline error (never a toast,
-    // never the raw status code). Mirrors index.html#previewErrorMessage but also handles the draft
-    // route's own shapes: the {msg, error} invalid-YAML body from _validate_draft_template and the
-    // {msg, missing_required:[...]} body this route now returns for a blank required field (same shape
-    // /preview sends). The sequence/image/text validators raise plain-string details — surfaced
-    // verbatim. Anything unexpected falls back to the shared formatError rather than leaking JSON.
+    // Flatten a /preview/draft or /print/draft failure into ONE human sentence (never the raw JSON
+    // body, never the raw status code). Mirrors index.html#previewErrorMessage — including its
+    // media-mismatch and printer-fault dict shapes, which /print/draft's preflight can genuinely
+    // return (a wrong roll is the most common real print failure) — plus the draft routes' own
+    // shapes: the {msg, error} invalid-YAML body from _validate_draft_template and the
+    // {msg, missing_required:[...]} body for a blank required field. Plain-string details (e.g. the
+    // 503 printer-unreachable sentence) are surfaced verbatim; anything unexpected falls back to
+    // the shared formatError rather than leaking JSON.
     function previewErrorMessage(status, detail) {
       if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
-        if (Array.isArray(detail.missing_required) && detail.missing_required.length) {
-          return `${detail.msg || 'Missing required fields'}: ${detail.missing_required.join(', ')}`;
+        if (detail.media_loaded !== undefined && detail.media_required !== undefined) {
+          return `The loaded roll is ${detail.media_loaded} but this template needs ${detail.media_required}`;
+        }
+        const list = Array.isArray(detail.missing_required) ? detail.missing_required
+          : Array.isArray(detail.errors) ? detail.errors
+          : null;
+        if (list && list.length) {
+          return `${detail.msg || 'Invalid template fields'}: ${list.join(', ')}`;
         }
         if (detail.error) return detail.msg ? `${detail.msg}: ${detail.error}` : detail.error;
+        // A {msg, ...} preflight dict with no list payload (e.g. {msg, phase}) — the msg alone is
+        // the human sentence.
+        if (typeof detail.msg === 'string' && detail.msg) return detail.msg;
       } else if (Array.isArray(detail)) {
         const msgs = detail.map((d) => d && d.msg).filter(Boolean);
         if (msgs.length) return `Invalid request: ${msgs.join('; ')}`;
@@ -493,7 +567,10 @@
       // gatherFields() is text-only; merge base64 for any image fields so the draft preview renders
       // the uploaded image (the /preview/draft route applies the same image caps as /print).
       const fields = {...gatherFields(), ...collectImageFields(contract.image_fields || [])};
-      const payload = {yaml, fields, language: currentLanguage()};
+      // Send the print row's options so the preview matches what Print draft will produce —
+      // /preview/draft applies dither/threshold exactly like /preview (red/high_res are print-only
+      // on both preview routes).
+      const payload = {yaml, fields, language: currentLanguage(), options: currentPrintOptions()};
       // A {{seq}} draft renders its first item — send the auto-number spec so the preview shows a
       // real number instead of 422ing (the biconditional guard rejects a {{seq}} draft with no spec).
       if (draftUsesSeq) payload.sequence = currentSequenceSpec();
@@ -524,6 +601,148 @@
         if (seq !== previewSeq) return;
         showPreviewError('Network error: ' + e.message);
         setDraftStatus('unknown');
+      }
+    }
+
+    // ── Print the current draft — POST /print/draft, the same print machinery as /print but fed the
+    //    in-memory YAML, so nothing needs saving first. Editor-gated server-side (404 when the studio
+    //    is off); NOT gated by INLINE_TEMPLATES_ENABLED. Success/failure lands in the status toast (a
+    //    print is an action), unlike the passive preview which reports inline in the card.
+
+    // Mirror of the Print page's large-batch guard: a sequence print is an irreversible physical
+    // action of up to 500 labels, so confirm a non-dry-run batch at/above this count.
+    const SEQ_CONFIRM_THRESHOLD = 10;
+
+    // "first..last" for a sequence spec, zero-padded like the server's format_seq — same helper as
+    // the Print page's batch confirm/readout.
+    function seqRangeLabel(spec) {
+      const pad = (n) => {
+        const s = String(Math.abs(n)).padStart(spec.padding || 0, '0');
+        return n < 0 ? `-${s}` : s;
+      };
+      const last = spec.start + (spec.count - 1) * spec.step;
+      return spec.count > 1 ? `${pad(spec.start)}..${pad(last)}` : pad(spec.start);
+    }
+
+    // The rasterization options the print row holds — shared by doPrintDraft (they shape the print)
+    // and doPreview (dither/threshold are applied to the draft preview too, exactly like /preview,
+    // so the monochrome preview tracks the print's B/W conversion; red/high_res are print-only there.
+    // Preview parity is the same as /preview's: a two-color (red) print is previewed monochrome, and
+    // brother_ql ignores dither under red — so with both Dither and Two-color on, the preview shows a
+    // dithered approximation while the red print thresholds the black layer. That red caveat aside,
+    // what is shown matches what will print.
+    function currentPrintOptions() {
+      const redEl = document.getElementById('red');  // absent on models without two-color support
+      const thresholdRaw = document.getElementById('threshold').value;
+      return {
+        dither: document.getElementById('dither').checked,
+        high_res: document.getElementById('high-res').checked,
+        red: redEl ? redEl.checked : false,
+        // Blank means "inherit the server default" (null), not 0.
+        threshold: thresholdRaw ? parseFloat(thresholdRaw) : null,
+      };
+    }
+
+    // A unique idempotency key per submission — same helper as the Print page (crypto.randomUUID
+    // with a plain-HTTP fallback; unique per submission is all that is needed).
+    function newIdempotencyKey() {
+      if (window.crypto && crypto.randomUUID) {
+        try { return crypto.randomUUID(); } catch (e) { /* insecure context — fall through */ }
+      }
+      return 'ik-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+    }
+
+    // Ambiguous-failure retry state: a network error means the server may or may not have printed,
+    // so a byte-identical resubmit reuses the same key and the server dedups it (prints exactly
+    // once). Any definitive response — success OR HTTP error — clears it, so intentional repeats
+    // still print. In-tab globals only (unlike the Print page's sessionStorage persistence): the
+    // draft itself lives only in this tab, so there is no cross-reload payload to rebuild.
+    let retryIdempotencyKey = null;
+    let retryIdempotencyBody = null;
+
+    // In-flight latch: disables the Print button for the whole request lifetime so a double-click
+    // (or keyboard re-activation) can't queue a duplicate job behind the server's print lock.
+    let printInFlight = false;
+
+    async function doPrintDraft() {
+      // Never build a print from a half-loaded image — same guard as the Print page.
+      if (imageReadsPending()) {
+        showStatus('Still reading the selected image — try again in a moment.', 'info');
+        return;
+      }
+      if (printInFlight) return;
+      const yaml = currentYaml();
+      if (!yaml.trim()) {
+        showStatus('Nothing to print — the draft is empty.', 'err');
+        return;
+      }
+      const payload = {
+        yaml,
+        // gatherFields() is text-only; merge base64 for any image fields, exactly like doPreview.
+        fields: {...gatherFields(), ...collectImageFields(contract.image_fields || [])},
+        // A {{seq}} draft drives its item count from the sequence spec and rejects copies > 1
+        // (server 422) — pin copies=1 and attach the spec, like the Print page's buildPayload.
+        // A plain draft reads the input as-is (clamped into 1..10 on every keystroke by the
+        // clampCopies listener below, exactly like the Print page's stepper input).
+        copies: draftUsesSeq ? 1 : (parseInt(document.getElementById('copies').value, 10) || 1),
+        dry_run: document.getElementById('dry-run').checked,
+        language: currentLanguage(),
+        options: currentPrintOptions(),
+      };
+      if (draftUsesSeq) payload.sequence = currentSequenceSpec();
+      if (!payload.dry_run && payload.sequence && payload.sequence.count >= SEQ_CONFIRM_THRESHOLD) {
+        // The in-page <dialog>, NOT native confirm(): an Enter-key activation of the Print button
+        // would auto-dismiss a native confirm as OK on Chromium (same keystroke's keyup — see the
+        // #confirm-dialog comment), silently waving through the exact batch this guard exists for.
+        const range = seqRangeLabel(payload.sequence);
+        if (!(await confirmAction(
+          `Print ${payload.sequence.count} labels (${range})? This can't be undone.`, 'Print'))) {
+          return;
+        }
+      }
+      // Reuse the retry key ONLY for a byte-identical resubmit after a network error (the payload
+      // is compared WITHOUT the key, then the key is attached) — everything else is a fresh job.
+      const payloadBody = JSON.stringify(payload);
+      const idempotencyKey =
+        retryIdempotencyKey && retryIdempotencyBody === payloadBody
+          ? retryIdempotencyKey
+          : newIdempotencyKey();
+      payload.idempotency_key = idempotencyKey;
+      printInFlight = true;
+      const btn = document.getElementById('print-draft-btn');
+      btn.disabled = true;
+      try {
+        const res = await fetch(api('/print/draft'), {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify(payload),
+        });
+        // A response (any status) is definitive — the ambiguity that justifies reusing the key only
+        // exists when the request never got one (the catch below).
+        retryIdempotencyKey = null;
+        retryIdempotencyBody = null;
+        if (!res.ok) {
+          if (handleAuthError(res)) return;
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          // previewErrorMessage flattens every shape this route emits: {msg, missing_required},
+          // {msg, error}, the preflight media/fault dicts, and plain strings (503 unreachable).
+          showStatus('Print error: ' + previewErrorMessage(res.status, err.detail), 'err');
+          return;
+        }
+        const json = await res.json();
+        // A sequence batch reports copies:1 (one printer job per numbered label) — describe it from
+        // the spec instead, mirroring the Print page's readout.
+        const countLabel = payload.sequence
+          ? `sequence: ×${payload.sequence.count} (${seqRangeLabel(payload.sequence)})`
+          : `copies: ${json.copies}`;
+        showStatus(`Printed! Job ${json.job_id} · template: ${json.template} · ${countLabel}${json.dry_run ? ' (dry run)' : ''}`, 'ok', {sticky: true});
+      } catch (e) {
+        // Network error → the server may or may not have printed. Retain the key + payload so an
+        // identical retry dedups server-side instead of printing a duplicate batch.
+        retryIdempotencyKey = idempotencyKey;
+        retryIdempotencyBody = payloadBody;
+        showStatus('Network error: ' + e.message, 'err');
+      } finally {
+        printInFlight = false;
+        btn.disabled = false;
       }
     }
 
@@ -625,11 +844,19 @@
     }
 
     // Promise-based replacement for native confirm() — resolves true only when the user explicitly
-    // chooses "Replace YAML". The message is set via textContent (never innerHTML) so a server-supplied
-    // template name can't inject markup into this token-bearing page — same XSS discipline as showStatus.
-    function confirmDiscard(message) {
+    // activates the confirm button (labelled per caller: "Replace YAML" for a load, "Print" for a
+    // large batch). Both message and label are set via textContent (never innerHTML) so a
+    // server-supplied template name can't inject markup into this token-bearing page — same XSS
+    // discipline as showStatus.
+    function confirmAction(message, confirmLabel) {
       const dlg = document.getElementById('confirm-dialog');
+      // Already open (only reachable programmatically, e.g. the ?load= deep-link resolving while a
+      // print confirm is up — the modal makes user-initiated double-opens impossible): resolve
+      // false rather than rewrite the open dialog under its first caller (showModal would throw
+      // and the relabelled dialog could confirm the WRONG action). Declining is always safe.
+      if (dlg.open) return Promise.resolve(false);
       document.getElementById('confirm-message').textContent = message;
+      document.getElementById('confirm-ok').textContent = confirmLabel;
       return new Promise((resolve) => {
         function onClose() {
           dlg.removeEventListener('close', onClose);
@@ -655,7 +882,7 @@
     async function loadByName(name) {
       if (!name) return;
       if (currentYaml().trim() && currentYaml() !== lastLoadedYaml &&
-          !(await confirmDiscard(`Replace the current YAML with template "${name}"? Unsaved edits will be lost.`))) {
+          !(await confirmAction(`Replace the current YAML with template "${name}"? Unsaved edits will be lost.`, 'Replace YAML'))) {
         return;
       }
       try {
@@ -1048,6 +1275,35 @@
     new ResizeObserver(refreshYamlHscroll).observe(yamlTextarea);
 
     document.getElementById('yaml').addEventListener('input', debounce(doPreview, 600));
+    // ── Print-option listeners — mirror the Print page: dither greys out threshold (a no-op under
+    //    Floyd-Steinberg in brother_ql), and the B/W options re-preview so the draft render matches
+    //    what Print draft will produce. red/high_res don't change the preview (print-only on both
+    //    preview routes) so they aren't wired.
+    function syncThresholdToggledByDither() {
+      const ditherOn = document.getElementById('dither').checked;
+      const tInput = document.getElementById('threshold');
+      const tHint = document.getElementById('threshold-hint');
+      tInput.disabled = ditherOn;
+      tInput.style.opacity = ditherOn ? '0.4' : '';
+      tHint.textContent = ditherOn
+        ? '— ignored when dithering is on'
+        : '— blank = default';
+    }
+    const debouncedOptionPreview = debounce(doPreview, 600);
+    document.getElementById('dither').addEventListener('change', () => {
+      syncThresholdToggledByDither();
+      debouncedOptionPreview();
+    });
+    syncThresholdToggledByDither();
+    document.getElementById('threshold').addEventListener('input', debouncedOptionPreview);
+    // Clamp a typed Copies value into 1..10 on every keystroke — same behavior as the Print page's
+    // stepper input, so an out-of-range count is corrected in the UI rather than 422ing on submit.
+    // (The min/max attributes only constrain the spinner arrows, not typed input.)
+    document.getElementById('copies').addEventListener('input', () => {
+      const el = document.getElementById('copies');
+      const v = parseInt(el.value, 10);
+      if (Number.isFinite(v)) el.value = Math.min(10, Math.max(1, v));
+    });
     // Auto-number inputs re-preview the first item (start/step/padding change the drawn number). One
     // shared debounce so edits across the four inputs coalesce into a single draft render. Preview on
     // `input` (currentSequenceSpec reads clamped values without rewriting the field, so a partial

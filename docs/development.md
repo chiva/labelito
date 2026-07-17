@@ -29,13 +29,32 @@ printer).
 
 ## Option A — Dev container (recommended)
 
-Open the repo in VS Code → **"Reopen in Container"** (or GitHub Codespaces). `.devcontainer/`
-provisions Python 3.13 + uv, installs the system libs above, runs `uv sync`, enables pre-commit, and
-installs the Playwright browser. Port **8765** is forwarded. Then:
+Open the repo in VS Code → **"Reopen in Container"** (or GitHub Codespaces). `.devcontainer/` is a
+compose-based container that provisions everything: Python 3.13 + uv, the system libs above,
+node/pnpm (so `scripts/fetch-icons.sh` works — it runs automatically), the GitHub CLI, Claude Code,
+and a full CLI tool belt (ripgrep, jq, yq, …). On create it runs `uv sync`, enables pre-commit,
+installs the Playwright browser, and fetches the icon collections. Port **8765** is forwarded.
+
+It also works on SELinux/rootless-podman hosts (Fedora Atomic, Bazzite) out of the box — the compose
+file sets `security_opt: label=disable` and runs as in-container root, which rootless podman maps to
+your host user. No VS Code needed either: `podman compose -f .devcontainer/docker-compose.yml up -d`
+then `exec` into the `dev` service gives you the same environment.
+
+Inside the container there is no display, so run the harness headless and open the forwarded port in
+your host browser:
 
 ```bash
-uv run python scripts/dev_harness.py      # browser opens to the UI, ready to preview/print
+uv run python scripts/dev_harness.py --no-browser   # then open http://localhost:8765
 ```
+
+Two extras worth knowing:
+
+- **Git/GitHub auth**: run `gh auth login` once inside the container — the token persists on a named
+  volume across rebuilds, and `postCreate.sh` derives your git identity and credential helper from
+  it. Claude Code logins persist the same way.
+- **USB printers**: uncomment the `devices:` block in `.devcontainer/docker-compose.yml` to pass
+  `/dev/bus/usb` through. Network printers (`tcp://…`) and the default `file://` transport need
+  nothing.
 
 ## Option B — Local setup
 

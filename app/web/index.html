@@ -125,6 +125,10 @@
     .option-group { display: flex; flex-direction: column; gap: 10px; margin-top: 2px; padding: 12px 13px; border: 1px solid var(--line); border-radius: 9px; background: color-mix(in srgb, var(--panel2) 60%, transparent); }
     .option-group-head { font-size: 12.5px; font-weight: 600; color: var(--ink2); }
     .option-group-sub { margin-top: -4px; }
+
+    #confirm-dialog p { margin: 0; font-size: 14px; line-height: 1.55; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+    .dialog-actions .btn-primary { padding: 9px 16px; font-size: 13.5px; box-shadow: none; }
   </style>
 </head>
 <body>
@@ -283,6 +287,21 @@
   </div>
 
   <div id="status-area"></div>
+
+  <!-- In-page confirm modal. A native confirm() opened by activating "Print" with the Enter key is
+       instantly auto-dismissed by that same keystroke's keyup (a Chromium quirk that defaults to OK),
+       which would silently wave through the exact large batch this guard exists for. A <dialog>
+       submits on keydown only, so the residual keyup can't dismiss it; Cancel is focused so a stray
+       key can't confirm. -->
+  <dialog id="confirm-dialog" aria-labelledby="confirm-message">
+    <form method="dialog">
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button class="btn" id="confirm-cancel" type="submit" value="cancel">Cancel</button>
+        <button class="btn btn-primary" id="confirm-ok" type="submit" value="confirm">Print</button>
+      </div>
+    </form>
+  </dialog>
 
   <script>
     const TEMPLATES = {{ templates | tojson }};
@@ -1471,6 +1490,31 @@
       mediaEl.textContent = t && t.media ? mediaDesc(t.media) : '';
     });
 
+    // Promise-based replacement for native confirm() — resolves true only when the user explicitly
+    // activates the confirm button (labelled per caller: "Print" for a large batch). Both message and
+    // label are set via textContent (never innerHTML) so nothing rendered here can inject markup into
+    // this token-bearing page (the API token lives in localStorage) — same XSS discipline as showStatus.
+    function confirmAction(message, confirmLabel) {
+      const dlg = document.getElementById('confirm-dialog');
+      // Already open (only reachable programmatically — the modal makes user-initiated double-opens
+      // impossible): resolve false rather than rewrite the open dialog under its first caller
+      // (showModal would throw and the relabelled dialog could confirm the WRONG action). Declining
+      // is always safe.
+      if (dlg.open) return Promise.resolve(false);
+      document.getElementById('confirm-message').textContent = message;
+      document.getElementById('confirm-ok').textContent = confirmLabel;
+      return new Promise((resolve) => {
+        function onClose() {
+          dlg.removeEventListener('close', onClose);
+          resolve(dlg.returnValue === 'confirm');
+        }
+        dlg.returnValue = 'cancel';  // default when dismissed via Esc or backdrop
+        dlg.addEventListener('close', onClose);
+        dlg.showModal();
+        document.getElementById('confirm-cancel').focus();  // safe default — a stray key can't confirm
+      });
+    }
+
     async function doPrint() {
       // A print must never be built from a half-loaded image. The Print button is disabled while any
       // image read is in flight (syncPrintButtonState), so this is normally unreachable — but guard
@@ -1495,8 +1539,12 @@
         payload.sequence &&
         payload.sequence.count >= SEQ_CONFIRM_THRESHOLD
       ) {
+        // The in-page <dialog>, NOT native confirm(): an Enter-key activation of the Print button
+        // would auto-dismiss a native confirm as OK on Chromium (same keystroke's keyup — see the
+        // #confirm-dialog comment), silently waving through the exact batch this guard exists for.
         const range = seqRangeLabel(payload.sequence);
-        if (!confirm(`Print ${payload.sequence.count} labels (${range})? This can't be undone.`)) {
+        if (!(await confirmAction(
+          `Print ${payload.sequence.count} labels (${range})? This can't be undone.`, 'Print'))) {
           return;
         }
       }

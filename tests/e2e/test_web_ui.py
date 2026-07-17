@@ -311,9 +311,10 @@ def test_seq_retry_after_network_error_reuses_idempotency_key(authed_page: Page)
 
 
 def test_seq_large_print_confirms_before_printing(authed_page: Page) -> None:
-    """A non-dry-run sequence batch at/above the confirm threshold must ask before printing (an
-    irreversible physical batch of up to 500 labels). Dismiss → no /print; accept → prints. Mirrors
-    the history page's large-reprint confirmation."""
+    """A non-dry-run sequence batch at/above the confirm threshold must ask via the in-page <dialog>
+    — NOT native confirm(), which Chromium auto-accepts under Enter-key activation, waving through an
+    irreversible physical batch of up to 500 labels. Cancel → no /print request; confirm ("Print") →
+    exactly one batch prints. Mirrors the studio's test_studio_large_seq_print_confirms_via_dialog."""
     import json as _json
 
     prints: list[str] = []
@@ -330,15 +331,6 @@ def test_seq_large_print_confirms_before_printing(authed_page: Page) -> None:
 
     authed_page.route("**/print", handle)
 
-    dialogs: list[str] = []
-    decision = {"accept": False}
-
-    def on_dialog(dialog: object) -> None:
-        dialogs.append(dialog.message)  # type: ignore[attr-defined]
-        (dialog.accept if decision["accept"] else dialog.dismiss)()  # type: ignore[attr-defined]
-
-    authed_page.on("dialog", on_dialog)
-
     authed_page.goto("/")
     _select_template(authed_page, SEQ_TEMPLATE)
     _fill_all_fields(authed_page)
@@ -346,17 +338,28 @@ def test_seq_large_print_confirms_before_printing(authed_page: Page) -> None:
     if authed_page.is_checked("#dry-run"):
         authed_page.uncheck("#dry-run")  # a real (non-dry-run) batch triggers the confirm
 
-    # Dismiss → nothing printed, and the prompt named the count + range.
+    # The in-page dialog opens, naming the count + range, with the caller's "Print" label.
     authed_page.click("button.btn-print")
-    authed_page.wait_for_timeout(200)
-    assert len(prints) == 0, "dismissing the confirm must not print"
-    assert dialogs and "25" in dialogs[-1] and "1..25" in dialogs[-1]
+    dlg = authed_page.locator("#confirm-dialog")
+    expect(dlg).to_be_visible()
+    expect(dlg.locator("#confirm-message")).to_contain_text("25")
+    expect(dlg.locator("#confirm-message")).to_contain_text("1..25")
+    expect(dlg.locator("#confirm-ok")).to_have_text("Print")
 
-    # Accept → the batch prints.
-    decision["accept"] = True
+    # Cancel → nothing printed.
+    dlg.locator("#confirm-cancel").click()
+    expect(dlg).to_be_hidden()
+    authed_page.wait_for_timeout(200)
+    assert len(prints) == 0, "cancelling the confirm must not print"
+
+    # Confirm → the batch prints exactly once.
     authed_page.click("button.btn-print")
+    expect(dlg).to_be_visible()
+    dlg.locator("#confirm-ok").click()
     authed_page.wait_for_timeout(300)
-    assert len(prints) == 1, "accepting the confirm must print exactly one batch"
+    assert len(prints) == 1, "confirming must print exactly one batch"
+    sent = _json.loads(prints[0] or "{}")
+    assert sent["sequence"]["count"] == 25
 
 
 def test_seq_retry_after_reload_reuses_idempotency_key(authed_page: Page) -> None:

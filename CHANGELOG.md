@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/chiva/labelito/compare/v0.13.0...v0.14.0) (2026-07-18)
+
+
+### Features
+
+* **web:** show render-option pills on history rows ([#78](https://github.com/chiva/labelito/issues/78)) ([27f52fd](https://github.com/chiva/labelito/commit/27f52fd9629997dc633601b57efcb148797a7bf1))
+
+
+### Bug Fixes
+
+* **web:** keep Studio toolbar on one row when the page is re-expanded ([#77](https://github.com/chiva/labelito/issues/77)) ([df9c103](https://github.com/chiva/labelito/commit/df9c103f54506237465503bce7ad2c8143d6107e))
+
 ## [0.13.0](https://github.com/chiva/labelito/compare/v0.12.0...v0.13.0) (2026-07-17)
 
 

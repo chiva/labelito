@@ -225,10 +225,12 @@
       return span;
     }
 
-    // Render pills only for options in their active / non-default state, so default jobs stay clean.
-    // Booleans default to false (see config.py), so "on" == worth surfacing; threshold is compared to
-    // the server default and suppressed under dither (where it is inert — the server canonicalizes it).
-    // Returns [] for legacy records with no options object.
+    // Render pills only for options worth surfacing, so a plain job stays clean. High-res, two-color
+    // and dither are shown whenever active — their "on" state is the notable deviation from the baseline
+    // 300dpi mono raster (so with a server default of DEFAULT_HIGH_RES/DEFAULT_RED=true they'd show on
+    // every row, by design — the pill reports the raster mode actually used). Threshold is continuous, so
+    // it's shown only when it differs from the server default AND dither is off (where threshold is inert
+    // — the server canonicalizes it to the default). Returns [] for legacy records with no options object.
     function optionPills(rec) {
       const opt = rec.options || {};
       const pills = [];

@@ -18,6 +18,8 @@ pytest.importorskip("playwright.sync_api")
 
 from playwright.sync_api import Browser, Locator, Page, expect
 
+from app.config import settings
+
 pytestmark = pytest.mark.e2e
 
 # A shipped template with plain text fields (templates/62-title-subtitle.yaml, name: title-subtitle)
@@ -2129,9 +2131,22 @@ def test_history_keeps_reprint_enabled_when_roll_unknown(authed_page_snmp: Page)
     expect(authed_page_snmp.locator("#roll-note")).to_be_hidden()
 
 
+# A cutoff provably different from the server default, so it always yields a threshold pill,
+# whatever config.py's default_threshold happens to be. Both are within the (0, 100] constraint.
+_DEFAULT_THRESHOLD = settings.default_threshold
+_CUSTOM_THRESHOLD = 55.0 if _DEFAULT_THRESHOLD != 55.0 else 40.0
+
+
+def _thr_pill_text(value: float) -> str:
+    """Mirror the page's `thr ${+opt.threshold.toFixed(1)}%` formatting (1 decimal, no trailing .0)."""
+    return f"thr {round(value, 1):g}%"
+
+
 def _history_options_body() -> str:
-    """A /history/list page whose rows exercise each render-option pill. The server default threshold
-    in the e2e harness is the config default (70.0), so a 70.0 cutoff must show NO threshold pill."""
+    """A /history/list page whose rows exercise each render-option pill. A cutoff equal to the server
+    default (``_DEFAULT_THRESHOLD``) must show NO threshold pill; ``_CUSTOM_THRESHOLD`` differs from it,
+    so it always does. Deriving both from ``settings`` keeps the test correct if the config default
+    ever changes (the e2e harness sets no DEFAULT_THRESHOLD override)."""
     import json
 
     def row(job: str, marker: str, options: dict[str, object]) -> dict[str, object]:
@@ -2148,18 +2163,22 @@ def _history_options_body() -> str:
             "sequence": None,
         }
 
-    base = {"dither": False, "threshold": 70.0, "high_res": False, "red": False}
+    base = {"dither": False, "threshold": _DEFAULT_THRESHOLD, "high_res": False, "red": False}
     # Markers must be mutually non-substring — the row locator filters on has_text (substring match).
     entries = [
         row("aaaaaaaa-0000-0000-0000-000000000001", "mk-defaults", {**base}),
         row("aaaaaaaa-0000-0000-0000-000000000002", "mk-hires", {**base, "high_res": True}),
         row("aaaaaaaa-0000-0000-0000-000000000003", "mk-twocolor", {**base, "red": True}),
         row("aaaaaaaa-0000-0000-0000-000000000004", "mk-ditheronly", {**base, "dither": True}),
-        row("aaaaaaaa-0000-0000-0000-000000000005", "mk-thronly", {**base, "threshold": 55.0}),
+        row(
+            "aaaaaaaa-0000-0000-0000-000000000005",
+            "mk-thronly",
+            {**base, "threshold": _CUSTOM_THRESHOLD},
+        ),
         row(
             "aaaaaaaa-0000-0000-0000-000000000006",
             "mk-both",
-            {**base, "dither": True, "threshold": 55.0},
+            {**base, "dither": True, "threshold": _CUSTOM_THRESHOLD},
         ),
     ]
     return json.dumps({"entries": entries, "total": len(entries), "offset": 0, "limit": 20})
@@ -2196,7 +2215,7 @@ def test_history_shows_render_option_pills(authed_page: Page) -> None:
     expect(pills("mk-twocolor")).to_have_text(["two-color"])
     expect(pills("mk-ditheronly")).to_have_text(["dither"])
     # Non-default threshold with dither off → the threshold pill.
-    expect(pills("mk-thronly")).to_have_text(["thr 55%"])
+    expect(pills("mk-thronly")).to_have_text([_thr_pill_text(_CUSTOM_THRESHOLD)])
     # Dither on suppresses the (inert) threshold pill: only the dither pill remains.
     expect(pills("mk-both")).to_have_text(["dither"])
 

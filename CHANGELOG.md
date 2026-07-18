@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/chiva/labelito/compare/v0.14.0...v0.14.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* **web:** wrap Studio toolbar buttons instead of overflowing when narrow ([#80](https://github.com/chiva/labelito/issues/80)) ([41c24c1](https://github.com/chiva/labelito/commit/41c24c14e8ce364cb841db0935bb319f3fc921b5))
+
 ## [0.14.0](https://github.com/chiva/labelito/compare/v0.13.0...v0.14.0) (2026-07-18)
 
 

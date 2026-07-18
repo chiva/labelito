@@ -16,7 +16,7 @@ from harness import DEFAULT_API_TOKEN, web_token_init_script
 
 pytest.importorskip("playwright.sync_api")
 
-from playwright.sync_api import Browser, Page, expect
+from playwright.sync_api import Browser, Locator, Page, expect
 
 pytestmark = pytest.mark.e2e
 
@@ -2127,6 +2127,78 @@ def test_history_keeps_reprint_enabled_when_roll_unknown(authed_page_snmp: Page)
     expect(authed_page_snmp.locator("#history-body .tag-mismatch")).to_have_count(0)
     expect(authed_page_snmp.locator("#history-body .job-row.row-incompatible")).to_have_count(0)
     expect(authed_page_snmp.locator("#roll-note")).to_be_hidden()
+
+
+def _history_options_body() -> str:
+    """A /history/list page whose rows exercise each render-option pill. The server default threshold
+    in the e2e harness is the config default (70.0), so a 70.0 cutoff must show NO threshold pill."""
+    import json
+
+    def row(job: str, marker: str, options: dict[str, object]) -> dict[str, object]:
+        return {
+            "job_id": job,
+            "template": "text-62",
+            "fields": {"title": marker},
+            "copies": 1,
+            "dry_run": False,
+            "timestamp": "2026-06-30T12:00:00",
+            "status": "printed",
+            "options": options,
+            "image_stripped": False,
+            "sequence": None,
+        }
+
+    base = {"dither": False, "threshold": 70.0, "high_res": False, "red": False}
+    # Markers must be mutually non-substring — the row locator filters on has_text (substring match).
+    entries = [
+        row("aaaaaaaa-0000-0000-0000-000000000001", "mk-defaults", {**base}),
+        row("aaaaaaaa-0000-0000-0000-000000000002", "mk-hires", {**base, "high_res": True}),
+        row("aaaaaaaa-0000-0000-0000-000000000003", "mk-twocolor", {**base, "red": True}),
+        row("aaaaaaaa-0000-0000-0000-000000000004", "mk-ditheronly", {**base, "dither": True}),
+        row("aaaaaaaa-0000-0000-0000-000000000005", "mk-thronly", {**base, "threshold": 55.0}),
+        row(
+            "aaaaaaaa-0000-0000-0000-000000000006",
+            "mk-both",
+            {**base, "dither": True, "threshold": 55.0},
+        ),
+    ]
+    return json.dumps({"entries": entries, "total": len(entries), "offset": 0, "limit": 20})
+
+
+def test_history_shows_render_option_pills(authed_page: Page) -> None:
+    """Each history row surfaces its non-default render options as pills: a defaults-only job shows
+    none; high-res/two-color/dither each show their pill; a custom threshold shows `thr N%` — but only
+    when dither is off (it is inert under dither, so no threshold pill appears on a dithered row)."""
+    import json
+
+    authed_page.route(
+        "**/templates",
+        lambda r: r.fulfill(
+            status=200, content_type="application/json", body=json.dumps(_HISTORY_TEMPLATES)
+        ),
+    )
+    authed_page.route(
+        "**/history/list*",
+        lambda r: r.fulfill(
+            status=200, content_type="application/json", body=_history_options_body()
+        ),
+    )
+    authed_page.goto("/history")
+
+    def pills(marker: str) -> Locator:
+        row = authed_page.locator("#history-body .job-row").filter(has_text=marker)
+        return row.locator(".job-opts .pill")
+
+    # Defaults only → no option pills at all (no .job-opts line rendered).
+    expect(pills("mk-defaults")).to_have_count(0)
+    # Each active boolean option → exactly its pill.
+    expect(pills("mk-hires")).to_have_text(["600 dpi"])
+    expect(pills("mk-twocolor")).to_have_text(["two-color"])
+    expect(pills("mk-ditheronly")).to_have_text(["dither"])
+    # Non-default threshold with dither off → the threshold pill.
+    expect(pills("mk-thronly")).to_have_text(["thr 55%"])
+    # Dither on suppresses the (inert) threshold pill: only the dither pill remains.
+    expect(pills("mk-both")).to_have_text(["dither"])
 
 
 def test_history_regates_reprints_live_on_roll_swap(authed_page_snmp: Page) -> None:

@@ -26,6 +26,8 @@
     .tag-muted { background: color-mix(in srgb, var(--ink3) 16%, transparent); color: var(--ink3); }
 
     .job-meta .pill { vertical-align: middle; }
+    /* Render-option pills cluster together and wrap to the meta column width. */
+    .job-opts { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
 
     /* Tiny inline copy-id button in the meta column. */
     .btn-copy { background: none; border: none; color: var(--ink3); cursor: pointer; padding: 0 2px; vertical-align: -1px; }
@@ -97,6 +99,7 @@
     // (the read takes _print_lock) — the roll is read once at load instead.
     const LIVE_STATUS_POLL = {{ live_status_poll | tojson }};   // background-poll /printer/status (SNMP only)
     const STATUS_SUPPORTED = {{ status_supported | tojson }};   // a loaded-media read is possible at all (SNMP or USB)
+    const DEFAULT_THRESHOLD = {{ default_threshold | tojson }}; // server default B/W cutoff — a matching threshold is not shown as a pill
     // Only HARD-disable a size-mismatched reprint when the loaded roll is kept live by the background
     // poll (SNMP). On USB the roll is read ONCE at load and never refreshed (no poll), so a stale
     // disable would block a reprint the server would now accept after a roll swap — with no recovery
@@ -213,6 +216,30 @@
       span.className = `pill ${STATUS_PILLS[kind]}`;
       span.textContent = kind;
       return span;
+    }
+
+    function optionPill(text) {
+      const span = document.createElement('span');
+      span.className = 'pill pill-muted';
+      span.textContent = text;
+      return span;
+    }
+
+    // Render pills only for options in their active / non-default state, so default jobs stay clean.
+    // Booleans default to false (see config.py), so "on" == worth surfacing; threshold is compared to
+    // the server default and suppressed under dither (where it is inert — the server canonicalizes it).
+    // Returns [] for legacy records with no options object.
+    function optionPills(rec) {
+      const opt = rec.options || {};
+      const pills = [];
+      if (opt.high_res) pills.push(optionPill('600 dpi'));
+      if (opt.red) pills.push(optionPill('two-color'));
+      if (opt.dither) {
+        pills.push(optionPill('dither'));
+      } else if (opt.threshold != null && opt.threshold !== DEFAULT_THRESHOLD) {
+        pills.push(optionPill(`thr ${+opt.threshold.toFixed(1)}%`));
+      }
+      return pills;
     }
 
     // Build the fields summary via DOM (textContent) — label contents are user-controlled, never innerHTML.
@@ -432,12 +459,13 @@
         idLine.appendChild(document.createTextNode(' · '));
         idLine.appendChild(jobIdFragment(rec));
         meta.appendChild(idLine);
-        const ditherLine = document.createElement('div');
-        const dither = document.createElement('span');
-        dither.className = 'pill pill-muted';
-        dither.textContent = rec.dither ? 'dither on' : 'dither off';
-        ditherLine.appendChild(dither);
-        meta.appendChild(ditherLine);
+        const pills = optionPills(rec);
+        if (pills.length) {
+          const optsLine = document.createElement('div');
+          optsLine.className = 'job-opts';
+          pills.forEach(p => optsLine.appendChild(p));
+          meta.appendChild(optsLine);
+        }
         row.appendChild(meta);
 
         row.appendChild(jobActions(rec, gated));

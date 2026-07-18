@@ -2825,6 +2825,8 @@ async def history_page(request: Request) -> HTMLResponse:
             #    the page does its one-shot roll detection + reprint gating on USB too, without polling.
             "live_status_poll": _snmp_guard_applies(),
             "status_supported": _status_query_supported(),
+            # The browse UI shows a threshold pill only when a job's cutoff differs from this default.
+            "default_threshold": settings.default_threshold,
         },
     )
 

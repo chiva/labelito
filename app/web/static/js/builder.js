@@ -230,27 +230,40 @@
   }
 
   // ── Token scanning ───────────────────────────────────────────────────────────
-  const TOKEN_RE = /\{\{\s*([^}]*?)\s*\}\}/g;
-  function isFieldToken(inner) {
-    if (!/^[A-Za-z0-9_]+$/.test(inner)) return false;         // only a bare name is a field token
-    return !COMPUTED_TOKENS.has(inner);                       // date/now/seq are computed, not fields
+  const TOKEN_RE = /\{\{([^}]*)\}\}/g;
+  // Mirror the engine's _FIELD_RE ({{(\w+)([+-]\d+[dwmy])?(?::([^}]*))?}}): a token is a field
+  // reference to its leading name, optionally followed by a date offset and/or a :format. So
+  // {{title}}, {{title:fmt}} and {{title+3d}} all reference the field `title`; date/now/seq are
+  // computed tokens and never a user field. Extracting the name (not requiring a bare name) keeps
+  // referencedFields consistent with what the loader treats as referenced — otherwise a template
+  // using {{name:fmt}} on a user field would lose its declaration on re-emit and be rejected.
+  const FIELD_TOKEN_RE = /^([A-Za-z0-9_]+)(?:[+-]\d+[dwmy])?(?::[^}]*)?$/;
+  function fieldNameOf(inner) {
+    const m = inner.match(FIELD_TOKEN_RE);
+    if (!m) return null;                                      // malformed span — not a field token
+    return COMPUTED_TOKENS.has(m[1]) ? null : m[1];           // date/now/seq are computed, not fields
   }
   function scanTokens(text, out) {
     if (typeof text !== 'string') return;
     TOKEN_RE.lastIndex = 0;
     let m;
     while ((m = TOKEN_RE.exec(text))) {
-      const inner = m[1].trim();
-      if (isFieldToken(inner) && !out.includes(inner)) out.push(inner);
+      const name = fieldNameOf(m[1]);
+      if (name && !out.includes(name)) out.push(name);
     }
   }
+  // The exact attributes the engine substitutes tokens in (app/render/engine.py `_TEMPLATED_ATTRS`).
+  // Scanning these — not just the schema's single canonical `text` pointer — keeps referencedFields
+  // in lockstep with the loader for ANY loadable template, e.g. one that (unusually) carries a token
+  // in an off-type attr; scanning only the canonical attr would drop that field on re-emit while
+  // emitLeaf still emits the token, desyncing declared⇔referenced.
+  const TEMPLATED_ATTRS = ['text', 'data', 'name'];
   // Field names referenced by {{tokens}} across the whole layout, in first-seen order. The emitted
   // `fields` block is derived from exactly these, so the loader's declared⇔referenced rule always holds.
   function referencedFields(layout) {
     const out = [];
     const walk = (el) => {
-      const sc = schemaOf(el.type);
-      if (sc && sc.text) scanTokens(el[sc.text], out);
+      for (const k of TEMPLATED_ATTRS) scanTokens(el[k], out);
       if (Array.isArray(el.children)) el.children.forEach(walk);
     };
     (layout || []).forEach(walk);
@@ -267,6 +280,10 @@
     if (typeof v === 'number') return String(v);
     if (typeof v === 'boolean') return v ? 'true' : 'false';
     if (v === null || v === undefined) return 'null';
+    // A list value (only the CSS-style `padding: [t, r, b, l]` shorthand, preserved verbatim from a
+    // loaded template) must emit as a real flow sequence — NOT qstr(String(v)) = "8,4", which the
+    // loader rejects as neither an int nor a list.
+    if (Array.isArray(v)) return '[' + v.map(emitScalar).join(', ') + ']';
     return qstr(v);
   }
   // Ordered own keys of an element for stable, readable output: schema order first, then any extras
@@ -290,15 +307,31 @@
     for (const k of orderedKeys(el)) parts.push(k + ': ' + emitScalar(el[k]));
     return '{' + parts.join(', ') + '}';
   }
+  // A container is only worth emitting if it will contribute at least one child. A leaf always
+  // contributes; a container contributes only if it (recursively) holds an emittable descendant. This
+  // must be recursive: a row whose ONLY child is an emptied column would otherwise emit a `- type:
+  // row / children:` header with nothing under it (a bare `children:` the loader rejects), one level
+  // up from the leaf-level skip.
+  function isEmittable(el) {
+    if (!el || !el.type) return false;
+    if (!isContainer(el.type)) return true;
+    const kids = Array.isArray(el.children) ? el.children : [];
+    return kids.some(isEmittable);
+  }
   function emitElement(el, indent, out) {
     if (!isContainer(el.type)) {
       out.push(indent + '- ' + emitLeaf(el));
       return;
     }
+    // A container's `children` must be non-empty (loader rejects `children: []` / a bare `children:`).
+    // A container can legitimately be emptied mid-build (delete its last child, or drag every child
+    // out), so skip emitting an empty one rather than producing YAML that fails the whole preview —
+    // the canvas still shows it as a "Drop elements here" work-in-progress until it's filled.
+    const kids = (Array.isArray(el.children) ? el.children : []).filter(isEmittable);
+    if (!kids.length) return;
     out.push(indent + '- type: ' + el.type);
     for (const k of orderedKeys(el)) out.push(indent + '  ' + k + ': ' + emitScalar(el[k]));
     out.push(indent + '  children:');
-    const kids = Array.isArray(el.children) ? el.children : [];
     for (const c of kids) emitElement(c, indent + '    ', out);
   }
   function emitYaml() {
@@ -314,22 +347,34 @@
     const optional = refs.filter((f) => fieldOptional.has(f));
     if (required.length || optional.length) {
       out.push('fields:');
-      if (required.length) out.push('  required: [' + required.join(', ') + ']');
-      if (optional.length) out.push('  optional: [' + optional.join(', ') + ']');
+      // Quote every field name: a bare name that is a YAML 1.1 keyword (no/yes/on/off/true/false/null)
+      // or looks numeric (010, 0x1f) would otherwise parse to a bool/int, so the declared field would
+      // no longer string-match its {{token}} and the loader would reject a template the user just
+      // built. Field names are [A-Za-z0-9_] so quoting needs no escaping, but qstr is safe regardless.
+      if (required.length) out.push('  required: [' + required.map(qstr).join(', ') + ']');
+      if (optional.length) out.push('  optional: [' + optional.map(qstr).join(', ') + ']');
     }
+    // Collect the layout body first so a layout of only empty containers (each skipped by
+    // emitElement) still falls back to the explicit empty-list marker instead of a bare `layout:`.
+    const layoutLines = [];
+    for (const el of model.layout) emitElement(el, '  ', layoutLines);
     out.push('layout:');
-    if (!model.layout.length) {
-      // An empty layout is invalid; leave a harmless comment so the preview reports "add an element"
-      // rather than a bare parse error the moment the builder opens on a blank template.
+    if (!layoutLines.length) {
+      // An empty layout is invalid; the explicit `[]` makes the preview report the empty label
+      // cleanly rather than emitting a bare `layout:` that parses to null.
       out.push('  []');
     } else {
-      for (const el of model.layout) emitElement(el, '  ', out);
+      out.push(...layoutLines);
     }
     return out.join('\n') + '\n';
   }
 
   // ── Commit: re-emit YAML → repaint highlight → server preview ─────────────────
   function commit() {
+    // Only the builder owns #yaml while Visual mode is active. In YAML mode the textarea is authored
+    // by hand, so a trailing debounced commit (e.g. an inline edit's timer firing just after the user
+    // switched to YAML and started typing) must not clobber those manual edits.
+    if (!visualActive) return;
     const yaml = emitYaml();
     els.yaml.value = yaml;
     if (typeof window.syncYamlHighlight === 'function') window.syncYamlHighlight();
@@ -529,21 +574,24 @@
     if (!el || !node) { tb.style.display = 'none'; return; }
     clear(tb);
     const sc = schemaOf(el.type);
-    if (sc && sc.attrs.some((a) => a.control === 'align')) {
+    const alignAttr = sc && sc.attrs.find((x) => x.key === 'align');
+    if (alignAttr) {
       for (const a of ALIGN) {
-        const b = toolbarBtn(a === 'left' ? '₇' : a, a, () => { el.align = a; commit(); renderInspector(); });
+        // Route through setAttr so toggling back to the default (left) drops the key rather than
+        // leaving redundant `align: left` noise in the emitted YAML.
+        const b = toolbarBtn('', a, () => { setAttr(el, alignAttr, a); renderInspector(); positionToolbar(); });
         b.textContent = { left: '⇤', center: '≡', right: '⇥' }[a];
-        b.classList.toggle('active', (el.align || (sc.attrs.find((x) => x.key === 'align') || {}).default) === a);
+        b.classList.toggle('active', (el.align ?? alignAttr.default) === a);
         tb.appendChild(b);
       }
     }
-    if (sc && sc.attrs.some((a) => a.key === 'bold')) {
+    const boldAttr = sc && sc.attrs.find((x) => x.key === 'bold');
+    if (boldAttr) {
+      const def = boldAttr.default || false;
       const b = toolbarBtn('B', 'Bold', () => {
-        const def = (sc.attrs.find((x) => x.key === 'bold') || {}).default || false;
-        el.bold = !(el.bold ?? def); commit(); renderInspector(); positionToolbar();
+        setAttr(el, boldAttr, !(el.bold ?? def)); renderInspector(); positionToolbar();
       });
       b.style.fontWeight = '700';
-      const def = (sc.attrs.find((x) => x.key === 'bold') || {}).default || false;
       b.classList.toggle('active', !!(el.bold ?? def));
       tb.appendChild(b);
     }
@@ -607,7 +655,10 @@
     const list = findParentList(el);
     if (!list) return;
     list.splice(list.indexOf(el), 1);
-    if (selectedEl === el) selectedEl = null;
+    // Clear the selection if the selected element is no longer reachable in the model — this covers
+    // both deleting the selected element itself AND deleting a container whose selected DESCENDANT
+    // went with it (else the inspector shows a ghost whose edits silently do nothing).
+    if (selectedEl && findParentList(selectedEl) === null) selectedEl = null;
     renderCanvas();
     commit();
     renderInspector();
@@ -1142,5 +1193,21 @@
     init();
   }
 
-  window.LabelBuilder = { enterVisual, enterYaml, syncFromYaml, _model: model };
+  window.LabelBuilder = {
+    enterVisual, enterYaml, syncFromYaml, _model: model,
+    // Side-effect-free test hook: emit YAML for an explicit layout + optional-field set without
+    // touching builder state, so the emitter can be validated against the real loader in e2e.
+    _emitForTest(layout, optional) {
+      const savedLayout = model.layout;
+      const savedOpt = new Set(fieldOptional);
+      model.layout = layout || [];
+      fieldOptional.clear();
+      (optional || []).forEach((f) => fieldOptional.add(f));
+      try { return emitYaml(); } finally {
+        model.layout = savedLayout;
+        fieldOptional.clear();
+        savedOpt.forEach((f) => fieldOptional.add(f));
+      }
+    },
+  };
 })();

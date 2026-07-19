@@ -3747,3 +3747,60 @@ def test_edit_pencil_hidden_when_templates_not_loadable(authed_page_examples_no_
     expect(legend).to_be_visible()
     expect(legend).to_contain_text("Dashed = bundled example")
     expect(legend).not_to_contain_text("pencil")
+
+
+# ── Visual label builder (drag-and-drop alternative to the YAML editor) ─────────
+def test_studio_visual_builder_round_trips_yaml(authed_page: Page) -> None:
+    """Switching to Visual mode parses the current YAML into an editable block canvas, and edits made
+    on the canvas re-emit valid YAML into the (shared) #yaml textarea — the two-way sync contract.
+
+    Drives the real builder: the seed template must materialise as blocks, a palette add must append
+    an element, and an inline text edit must land back in the YAML that the rest of the Studio (field
+    detection, preview, print, save) reads.
+    """
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#yaml")).to_be_visible()
+
+    # Enter Visual mode → the seed (title + subtitle) becomes two blocks on the canvas.
+    authed_page.get_by_role("button", name="Visual", exact=True).click()
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    expect(authed_page.locator(".lb-canvas .lb-block")).to_have_count(2)
+
+    # The model serialises back to YAML with a consistent fields block.
+    yaml = authed_page.eval_on_selector("#yaml", "el => el.value")
+    assert "type: title" in yaml and "type: subtitle" in yaml
+    assert "required: [title]" in yaml and "optional: [subtitle]" in yaml
+
+    # Add an element from the palette → a third block, reflected in the YAML.
+    authed_page.locator(".lb-palette").get_by_text("Text", exact=True).click()
+    expect(authed_page.locator(".lb-canvas .lb-block")).to_have_count(3)
+
+    # Selecting a block opens the inspector and the floating quick-toolbar.
+    authed_page.locator(".lb-canvas .lb-block").first.click()
+    expect(authed_page.locator(".lb-inspector .lb-field").first).to_be_visible()
+    expect(authed_page.locator(".lb-toolbar")).to_be_visible()
+
+    # Inline edit the first block's text; it must round-trip into the YAML.
+    content = authed_page.locator(".lb-canvas .lb-block .lb-content[contenteditable]").first
+    content.click()
+    authed_page.keyboard.press("Control+A")
+    authed_page.keyboard.type("Coffee Beans")
+    authed_page.keyboard.press("Tab")
+    expect(authed_page.locator("#yaml")).to_have_value(re.compile("Coffee Beans"))
+
+    # Back to YAML mode: the code panel returns and the builder hides.
+    authed_page.get_by_role("button", name="YAML", exact=True).click()
+    expect(authed_page.locator(".code-panel")).to_be_visible()
+    expect(authed_page.locator("#lb-root")).to_be_hidden()
+
+
+def test_studio_visual_builder_invalid_yaml_stays_in_yaml_mode(authed_page: Page) -> None:
+    """If the current YAML is invalid, entering Visual mode fails soft — it surfaces the reason and
+    keeps the YAML editor visible rather than opening an empty/broken canvas."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#yaml")).to_be_visible()
+    authed_page.fill("#yaml", "name: incomplete")  # missing label/description/layout → 422
+    authed_page.get_by_role("button", name="Visual", exact=True).click()
+    # The builder root never becomes visible; an error toast explains why.
+    expect(authed_page.locator("#lb-root")).to_be_hidden()
+    expect(authed_page.locator(".code-panel")).to_be_visible()

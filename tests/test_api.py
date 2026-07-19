@@ -4486,6 +4486,77 @@ def test_templates_parse_reports_uses_seq(client: TestClient) -> None:
     assert resp.json()["uses_seq"] is False
 
 
+def test_templates_parse_layout_returns_layout_and_meta(client: TestClient) -> None:
+    """The visual builder's parse endpoint returns the validated layout plus the same meta + field
+    contract as /templates/parse, so an existing YAML template can be round-tripped into the builder."""
+    resp = client.post("/templates/parse-layout", json={"yaml": _DRAFT_YAML})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "draft-simple"
+    assert data["label"] == "62"
+    assert data["fields"]["required"] == ["title"]
+    assert data["fields"]["optional"] == ["subtitle"]
+    assert data["uses_seq"] is False
+    # The layout is the validated element list, verbatim — element mappings with type + attributes.
+    assert data["layout"] == [
+        {"type": "title", "text": "{{title}}"},
+        {"type": "subtitle", "text": "{{subtitle}}"},
+    ]
+
+
+def test_templates_parse_layout_preserves_containers(client: TestClient) -> None:
+    """A row/column layout round-trips through the endpoint with its `children` (and per-child column
+    hints) intact, so the builder can reconstruct the nested single-level grid exactly."""
+    yaml = """\
+name: draft-row
+description: A row with a text column and a QR
+label: "62"
+rotate: 0
+fields:
+  required: [title]
+layout:
+  - type: row
+    align_items: center
+    children:
+      - {type: title, text: "{{title}}", align: left}
+      - {type: qr, data: "{{title}}", width: 120}
+"""
+    resp = client.post("/templates/parse-layout", json={"yaml": yaml})
+    assert resp.status_code == 200
+    layout = resp.json()["layout"]
+    assert layout == [
+        {
+            "type": "row",
+            "align_items": "center",
+            "children": [
+                {"type": "title", "text": "{{title}}", "align": "left"},
+                {"type": "qr", "data": "{{title}}", "width": 120},
+            ],
+        }
+    ]
+
+
+def test_templates_parse_layout_invalid_yaml_is_422(client: TestClient) -> None:
+    """An invalid draft returns the same 422 {msg, error} shape the builder already surfaces inline
+    (shared _validate_draft_template), never a 500."""
+    resp = client.post("/templates/parse-layout", json={"yaml": "name: incomplete"})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["msg"] == "Invalid template YAML"
+    assert "error" in detail
+
+
+def test_templates_parse_layout_editor_disabled_is_404(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The editor gate precedes auth on the new route too: EDITOR_ENABLED=false → 404 (route appears
+    absent), like every other studio endpoint."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "editor_enabled", False)
+    assert client.post("/templates/parse-layout", json={"yaml": _DRAFT_YAML}).status_code == 404
+
+
 def test_template_field_contract_image_fields_defaults_empty() -> None:
     """image_fields defaults to [] so pre-existing constructors and serialized payloads that omit it
     stay backward-compatible."""

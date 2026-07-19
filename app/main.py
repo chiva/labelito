@@ -87,6 +87,7 @@ from app.models import (
     SequenceSpec,
     TemplateFieldContract,
     TemplateInfo,
+    TemplateLayoutResponse,
     TemplateMedia,
     TemplateParseRequest,
     TemplateParseResponse,
@@ -3179,6 +3180,40 @@ async def parse_template(request: TemplateParseRequest) -> TemplateParseResponse
         # Lets the studio reveal its sequence controls for a {{seq}} draft (seq is a computed token,
         # so it never appears in required/optional — this is the only signal the form has).
         uses_seq=uses_seq(tmpl.layout),
+    )
+
+
+@app.post(
+    "/templates/parse-layout",
+    response_model=TemplateLayoutResponse,
+    dependencies=[Depends(_require_editor_enabled), Depends(check_token)],
+    tags=["Templates"],
+    responses=_PARSE_RESPONSES,
+)
+async def parse_template_layout(request: TemplateParseRequest) -> TemplateLayoutResponse:
+    """Validate a draft YAML body and return its full structure for the visual builder.
+
+    A superset of ``/templates/parse``: alongside the field contract it returns the validated
+    ``layout`` (the ordered element mappings, with ``children`` on ``row``/``column``), so the studio
+    can round-trip an existing YAML template into its drag-and-drop editor — the browser has no YAML
+    parser, so this endpoint IS the YAML→model direction. Validation is identical to every other
+    draft route (shared :func:`_validate_draft_template`), so an invalid body returns the same
+    ``422 {msg, error}`` the builder already surfaces inline. Nothing is written or rendered.
+    """
+    tmpl = _validate_draft_template(request.yaml)
+    return TemplateLayoutResponse(
+        name=tmpl.name,
+        description=tmpl.description,
+        label=tmpl.label,
+        rotate=tmpl.rotate,
+        valign=tmpl.valign,
+        fields=TemplateFieldContract(
+            required=tmpl.required_fields,
+            optional=tmpl.optional_fields,
+            image_fields=sorted(_image_field_names(tmpl.layout)),
+        ),
+        uses_seq=uses_seq(tmpl.layout),
+        layout=tmpl.layout,
     )
 
 

@@ -356,6 +356,24 @@ class TemplateParseResponse(BaseModel):
     uses_seq: bool = False
 
 
+class TemplateLayoutResponse(TemplateParseResponse):
+    """The full validated structure of a draft template, for the studio's *visual* builder.
+
+    A superset of :class:`TemplateParseResponse`: it adds the raw, validated ``layout`` list so the
+    visual builder can round-trip an existing YAML template into an editable block model (there is no
+    YAML parser in the browser stack, so the server does the parse). ``layout`` is the same
+    list-of-dicts the loader validated — every element mapping with its ``type`` and per-type
+    attributes, and ``children`` on ``row``/``column`` — carried verbatim on ``Template.layout``, so
+    the client reads exactly what the renderer and validator agree on. Editor-gated like its siblings;
+    it never writes a file or renders an image.
+    """
+
+    layout: list[dict[str, Any]] = Field(
+        description="The validated layout: an ordered list of element mappings (each a `type` plus "
+        "its attributes; `row`/`column` carry a `children` list). Same shape as the YAML `layout`.",
+    )
+
+
 class SaveTemplateRequest(BaseModel):
     """Persist a draft template YAML to TEMPLATES_DIR (gated by TEMPLATES_WRITABLE).
 

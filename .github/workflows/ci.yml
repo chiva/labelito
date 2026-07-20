@@ -144,27 +144,44 @@ jobs:
         run: uv run pytest --e2e -m e2e -q
 
   docker:
-    name: Docker smoke test
-    runs-on: ubuntu-latest
+    name: Docker smoke test (${{ matrix.arch }})
+    # arm64 is a primary deploy target (Home Assistant / Raspberry Pi), so smoke-test it on a native
+    # arm64 hosted runner rather than trust that a successful emulated build in release-please also
+    # boots and renders. Both legs build their own single-platform image natively — no QEMU.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `buildkit` is build-push-action's default gha scope, so this leg shares the layer cache
+          # with the release-please docker job's amd64 build (and vice versa).
+          - arch: amd64
+            runner: ubuntu-latest
+            cache_scope: buildkit
+          # A distinct scope keeps the two matrix legs (which run concurrently) from racing on the
+          # same cache manifest. The release arm64 build is emulated and rarely runs, so it keeps its
+          # own default scope and is intentionally not warmed from here.
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            cache_scope: arm64
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-      # Build the amd64 image with Buildx so it can read/write the shared GHA layer cache. `load`
-      # imports the result into the runner's docker daemon so the smoke-test `docker run` below can
-      # use it. cache-from/-to type=gha means this per-PR build reuses warm layers instead of
-      # rebuilding from scratch every run; the release-please docker job reads the same cache to warm
-      # its amd64 build (its emulated arm64 build stays cold — nothing here produces those layers).
+      # Build the native-arch image with Buildx so it can read/write the shared GHA layer cache.
+      # `load` imports the result into the runner's docker daemon so the smoke-test `docker run` below
+      # can use it. cache-from/-to type=gha means this per-PR build reuses warm layers instead of
+      # rebuilding from scratch every run.
       - name: Build image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           load: true
           tags: labelito:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
       - name: Smoke test
         run: |
           docker run -d --name label-test \

@@ -419,6 +419,9 @@ API_VERSION = 3
 # license mirrors the stable SPDX id. The fallback matches the canonical Homepage for source checkouts.
 REPO_URL = _project_url("Homepage", "https://github.com/chiva/labelito")
 APP_LICENSE = "GPL-3.0-or-later"
+# One-line tagline reused by the FastAPI OpenAPI description and the boot welcome banner, so the two
+# can't drift. Kept as a literal (not read from dist metadata) to stay legible on a source checkout.
+APP_SUMMARY = "Self-hosted Brother QL label print service"
 
 
 # ── Update check ─────────────────────────────────────────────────────────────────
@@ -576,7 +579,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="labelito",
     version=APP_VERSION,
-    description="Self-hosted label printing for Brother QL printers.",
+    description=APP_SUMMARY,
     license_info={"name": "GPL-3.0-or-later"},
     openapi_tags=OPENAPI_TAGS,
     lifespan=_lifespan,
@@ -1057,9 +1060,34 @@ def _warn_if_templates_writable_but_readonly() -> None:
         )
 
 
+def _log_welcome_banner() -> None:
+    """Emit an identifying banner as the first thing at boot: app name, version, and environment.
+
+    A single multi-line ``log.info`` (atomic in the stream). It reuses the same module constants the
+    rest of the app surfaces, so it can't drift from them: version/API from ``/health``, repo/license
+    from the About modal, and the tagline single-sourced with the OpenAPI ``description`` (both are
+    ``APP_SUMMARY``). Plain ASCII, no color, to stay legible in Docker/systemd logs. Suppressed when
+    LOG_LEVEL is raised above INFO.
+    """
+    rule = "=" * 54
+    log.info(
+        "\n%s\n  labelito  v%s  (API v%d)\n  %s\n  Python %s | %s | %s\n  %s\n%s",
+        rule,
+        APP_VERSION,
+        API_VERSION,
+        APP_SUMMARY,
+        platform.python_version(),
+        platform.platform(),
+        APP_LICENSE,
+        REPO_URL,
+        rule,
+    )
+
+
 async def startup() -> None:
     """Boot-time initialization, invoked by ``_lifespan`` before the server accepts requests."""
     global _history
+    _log_welcome_banner()
     _history.close()  # release the import-time placeholder before swapping in the configured store
     # Fail closed but legibly: on a fresh Linux clone Docker used to auto-create the ./data
     # bind-mount source as root, so the non-root container could neither create the data dir nor

@@ -167,6 +167,11 @@ class Settings(BaseSettings):
     # Set EDITOR_ENABLED=true to expose GET /editor, POST /preview/draft, POST /templates/parse, and
     # POST /templates (the server-save route still also requires TEMPLATES_WRITABLE=true).
     editor_enabled: bool = False
+    # Which authoring surface the Studio (GET /editor) opens in. "visual" is the drag-and-drop block
+    # builder (the primary surface); "yaml" opens the raw YAML editor. Both remain one toggle-click
+    # apart at runtime — this only picks the default on page load. Set EDITOR_DEFAULT_MODE=yaml to open
+    # the code editor first.
+    editor_default_mode: Literal["visual", "yaml"] = "visual"
     # Accept a full template body inline on POST /print and POST /preview (the `template_inline`
     # field), instead of only a stored template name. Lets a client / git repo / integration hold
     # the template off-platform and submit it per request, with no save step or writable templates

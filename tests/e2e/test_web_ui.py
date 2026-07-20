@@ -22,6 +22,15 @@ from app.config import settings
 
 pytestmark = pytest.mark.e2e
 
+
+def _studio_yaml_mode(page: Page) -> None:
+    """Reveal the raw #yaml editor. The Studio now opens in Visual mode by default, so tests that
+    drive the YAML textarea directly must first click the YAML toggle. Waits for #yaml to be visible
+    so a following fill/assert never races the (async) mode switch."""
+    page.get_by_role("button", name="YAML", exact=True).click()
+    expect(page.locator("#yaml")).to_be_visible()
+
+
 # A shipped template with plain text fields (templates/62-title-subtitle.yaml, name: title-subtitle)
 # — stable to drive the UI
 # without needing an image upload or QR/barcode payload.
@@ -719,7 +728,7 @@ def test_studio_undeclared_image_field_renders_picker(authed_page: Page) -> None
     must render a picker for it — otherwise the image is unfillable and the draft previews blank.
     """
     authed_page.goto("/editor")
-    expect(authed_page.locator("#yaml")).to_be_visible()
+    _studio_yaml_mode(authed_page)
     yaml = (
         "name: draft-undeclared\n"
         "description: image field not declared in fields\n"
@@ -1244,7 +1253,7 @@ def test_editor_download_yaml_uses_yaml_extension(authed_page: Page) -> None:
     name is deterministic.
     """
     authed_page.goto("/editor")
-    expect(authed_page.locator("#yaml")).to_be_visible()
+    _studio_yaml_mode(authed_page)
 
     with authed_page.expect_download() as download_info:
         authed_page.click("button:has-text('Download YAML')")
@@ -1258,7 +1267,7 @@ def test_studio_image_field_renders_picker_and_previews(authed_page: Page) -> No
     """The Template Studio's sample-field panel renders a file picker for an image field detected in
     the draft YAML, and an uploaded image renders a real draft preview."""
     authed_page.goto("/editor")
-    expect(authed_page.locator("#yaml")).to_be_visible()
+    _studio_yaml_mode(authed_page)
 
     yaml = (
         "name: draft-image\n"
@@ -1291,7 +1300,7 @@ def test_studio_seq_template_shows_controls_and_previews_first_item(authed_page:
     FIRST item — a {{seq}} draft is no longer preview-blind in the editor. Toggling the YAML back to
     a non-seq layout hides the controls again."""
     authed_page.goto("/editor")
-    expect(authed_page.locator("#yaml")).to_be_visible()
+    _studio_yaml_mode(authed_page)
 
     seq_yaml = (
         "name: draft-seq\n"
@@ -1337,7 +1346,7 @@ def test_studio_seq_inputs_normalize_on_commit_not_while_typing(authed_page: Pag
     valid throughout. Clamping is deferred to `change` (blur/Enter/spinner); the preview reads
     clamped values purely, without touching the field."""
     authed_page.goto("/editor")
-    expect(authed_page.locator("#yaml")).to_be_visible()
+    _studio_yaml_mode(authed_page)
     authed_page.fill(
         "#yaml",
         "name: draft-seq\ndescription: seq\n"
@@ -1730,7 +1739,7 @@ def test_editor_yaml_highlight_overlay_smoke(authed_page: Page) -> None:
     for the current draft, while #yaml stays the real, authoritative textarea whose .value
     round-trips typed input unchanged. The overlay also mirrors the textarea's scroll offset."""
     authed_page.goto("/editor")
-    expect(authed_page.locator("#yaml")).to_be_visible()
+    _studio_yaml_mode(authed_page)
 
     # The seeded starter template is painted immediately (a programmatic write fires no `input`,
     # so the page calls syncYamlHighlight explicitly after the seed).
@@ -1850,6 +1859,7 @@ def test_studio_print_draft_seq_hides_copies_and_sends_sequence(authed_page: Pag
     """A {{seq}} draft swaps the Copies input for the Auto-number panel (mutually exclusive
     server-side) and a dry-run print carries the sequence spec with copies pinned to 1."""
     authed_page.goto("/editor")
+    _studio_yaml_mode(authed_page)
     expect(authed_page.locator("#copies-cell")).to_be_visible()
 
     seq_yaml = (
@@ -1908,6 +1918,7 @@ def test_studio_large_seq_print_confirms_via_dialog(authed_page: Page) -> None:
     authed_page.route("**/print/draft", handle)
 
     authed_page.goto("/editor")
+    _studio_yaml_mode(authed_page)
     authed_page.fill(
         "#yaml",
         'name: draft-seq\ndescription: seq\nlabel: "62"\nlayout:\n  - {type: title, text: "Box {{seq}}"}\n',
@@ -1947,6 +1958,7 @@ def test_studio_horizontal_scroll_proxy_shows_and_syncs_for_long_lines(authed_pa
     proxy exists because Chromium paints its own text cursor over a textarea's own scrollbars — the
     cursor itself isn't assertable here, only the mirrored scroll range/position."""
     authed_page.goto("/editor")
+    _studio_yaml_mode(authed_page)
     hscroll = authed_page.locator("#yaml-hscroll")
 
     authed_page.fill("#yaml", "key: " + "x" * 500)
@@ -1966,6 +1978,7 @@ def test_studio_horizontal_scroll_proxy_shows_and_syncs_for_long_lines(authed_pa
 def test_studio_horizontal_scroll_proxy_hidden_for_short_drafts(authed_page: Page) -> None:
     """A draft that fits within the panel's width shows no dead scrollbar strip below it."""
     authed_page.goto("/editor")
+    _studio_yaml_mode(authed_page)
     authed_page.fill("#yaml", "name: short\ndescription: fits on screen\n")
     expect(authed_page.locator("#yaml-hscroll")).to_have_class(re.compile(r"\bhscroll-hidden\b"))
 
@@ -2581,6 +2594,7 @@ def test_stale_parse_response_does_not_overwrite_the_studio_field_form(authed_pa
         authed_page.goto("/editor")
     # Let the initial seeded preview chain drain completely before installing the route.
     authed_page.wait_for_timeout(700)
+    _studio_yaml_mode(authed_page)
 
     held: dict[str, object] = {}
 
@@ -3719,11 +3733,19 @@ def test_edit_pencil_on_every_card_deep_links_to_studio(authed_page_examples: Pa
 
 
 def test_edit_pencil_deep_link_preloads_editor(authed_page_examples: Page) -> None:
-    """Opening /editor?load=<name> preloads that template's YAML into the studio textarea — the
-    landing target of the Print page's per-card edit pencil."""
+    """Opening /editor?load=<name> preloads that template's YAML into the studio — the landing target
+    of the Print page's per-card edit pencil. With the Studio defaulting to Visual, the LOADED template
+    (a single title block) must materialise on the canvas, not the two-block starter seed — the load
+    lands while the initial auto-enter parse is in flight, so this guards that race."""
     authed_page_examples.goto("/editor?load=shipped-example")
     yaml_box = authed_page_examples.locator("#yaml")
     expect(yaml_box).to_have_value(re.compile(r"name:\s*shipped-example"))
+
+    # Visual canvas reflects the loaded template (1 block "hi"), NOT the 2-block seed (title+subtitle).
+    expect(authed_page_examples.locator("#lb-root")).to_be_visible()
+    blocks = authed_page_examples.locator(".lb-canvas .lb-block")
+    expect(blocks).to_have_count(1)
+    expect(blocks.first.locator(".lb-content")).to_contain_text("hi")
 
 
 def test_edit_pencil_hidden_when_templates_not_loadable(authed_page_examples_no_load: Page) -> None:
@@ -3747,3 +3769,173 @@ def test_edit_pencil_hidden_when_templates_not_loadable(authed_page_examples_no_
     expect(legend).to_be_visible()
     expect(legend).to_contain_text("Dashed = bundled example")
     expect(legend).not_to_contain_text("pencil")
+
+
+# ── Visual label builder (drag-and-drop alternative to the YAML editor) ─────────
+def test_studio_visual_builder_round_trips_yaml(authed_page: Page) -> None:
+    """Switching to Visual mode parses the current YAML into an editable block canvas, and edits made
+    on the canvas re-emit valid YAML into the (shared) #yaml textarea — the two-way sync contract.
+
+    Drives the real builder: the seed template must materialise as blocks, a palette add must append
+    an element, and an inline text edit must land back in the YAML that the rest of the Studio (field
+    detection, preview, print, save) reads.
+    """
+    authed_page.goto("/editor")
+    # The Studio opens in Visual mode by default: the seed (title + subtitle) is parsed into two
+    # blocks on the canvas without any toggle click.
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    expect(authed_page.locator(".lb-canvas .lb-block")).to_have_count(2)
+
+    # The model serialises back to YAML with a consistent fields block.
+    yaml = authed_page.eval_on_selector("#yaml", "el => el.value")
+    assert "type: title" in yaml and "type: subtitle" in yaml
+    assert "required: [title]" in yaml and "optional: [subtitle]" in yaml
+
+    # Add an element from the palette → a third block, reflected in the YAML.
+    authed_page.locator(".lb-palette").get_by_text("Text", exact=True).click()
+    expect(authed_page.locator(".lb-canvas .lb-block")).to_have_count(3)
+
+    # Selecting a block opens the inspector and the floating quick-toolbar.
+    authed_page.locator(".lb-canvas .lb-block").first.click()
+    expect(authed_page.locator(".lb-inspector .lb-field").first).to_be_visible()
+    expect(authed_page.locator(".lb-toolbar")).to_be_visible()
+
+    # Inline edit the first block's text; it must round-trip into the YAML.
+    content = authed_page.locator(".lb-canvas .lb-block .lb-content[contenteditable]").first
+    content.fill("Coffee Beans")  # fill() clears the existing text and works on contenteditable
+    authed_page.keyboard.press("Tab")
+    expect(authed_page.locator("#yaml")).to_have_value(re.compile("Coffee Beans"))
+
+    # Back to YAML mode: the code panel returns and the builder hides.
+    authed_page.get_by_role("button", name="YAML", exact=True).click()
+    expect(authed_page.locator(".code-panel")).to_be_visible()
+    expect(authed_page.locator("#lb-root")).to_be_hidden()
+
+
+def test_studio_visual_builder_invalid_yaml_stays_in_yaml_mode(authed_page: Page) -> None:
+    """If the current YAML is invalid, entering Visual mode fails soft — it surfaces the reason and
+    keeps the YAML editor visible rather than opening an empty/broken canvas."""
+    authed_page.goto("/editor")
+    # Switch to the YAML editor (the Studio defaults to Visual), then make the draft invalid.
+    _studio_yaml_mode(authed_page)
+    authed_page.fill("#yaml", "name: incomplete")  # missing label/description/layout → 422
+    authed_page.get_by_role("button", name="Visual", exact=True).click()
+    # The builder root never becomes visible; an error toast explains why.
+    expect(authed_page.locator("#lb-root")).to_be_hidden()
+    expect(authed_page.locator(".code-panel")).to_be_visible()
+
+
+def test_studio_defaults_to_visual_mode(authed_page: Page) -> None:
+    """With EDITOR_DEFAULT_MODE at its product default ("visual"), the Studio opens in the visual
+    builder — #lb-root visible, the raw YAML code panel hidden — without any toggle click."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    expect(authed_page.locator(".code-panel")).to_be_hidden()
+    expect(authed_page.get_by_role("button", name="Visual", exact=True)).to_have_class(
+        re.compile(r"\bactive\b")
+    )
+
+
+def test_studio_yaml_default_mode_opens_code_editor(authed_page_yaml_default: Page) -> None:
+    """EDITOR_DEFAULT_MODE=yaml opens the Studio in the raw YAML editor — code panel visible, the
+    visual builder hidden — and the visual builder stays one toggle-click away."""
+    authed_page_yaml_default.goto("/editor")
+    expect(authed_page_yaml_default.locator("#yaml")).to_be_visible()
+    expect(authed_page_yaml_default.locator("#lb-root")).to_be_hidden()
+    expect(authed_page_yaml_default.get_by_role("button", name="YAML", exact=True)).to_have_class(
+        re.compile(r"\bactive\b")
+    )
+
+    # The visual builder is still reachable on demand: the seed opens as two blocks.
+    authed_page_yaml_default.get_by_role("button", name="Visual", exact=True).click()
+    expect(authed_page_yaml_default.locator("#lb-root")).to_be_visible()
+    expect(authed_page_yaml_default.locator(".lb-canvas .lb-block")).to_have_count(2)
+
+
+def test_studio_warns_before_leaving_with_unsaved_edits(authed_page: Page) -> None:
+    """Leaving the Studio (tab close, nav away, reload) with unsaved edits arms the browser's native
+    beforeunload prompt; an untouched seed — or a just-saved draft — leaves without one. Asserted by
+    dispatching a cancelable beforeunload and checking whether the page's handler cancels it (which is
+    what triggers the UA dialog), since Playwright auto-dismisses the real dialog."""
+    fire = (
+        "() => { const e = new Event('beforeunload', {cancelable: true});"
+        " window.dispatchEvent(e); return e.defaultPrevented; }"
+    )
+    authed_page.goto("/editor")
+    _studio_yaml_mode(authed_page)
+    # Clean seed → no prompt.
+    assert authed_page.evaluate(fire) is False
+
+    # Any edit → dirty → the handler cancels the unload (would show the prompt).
+    authed_page.fill(
+        "#yaml",
+        'name: my-label\ndescription: edited\nlabel: "62"\nlayout:\n  - {type: title, text: hi}\n',
+    )
+    assert authed_page.evaluate(fire) is True
+
+
+def test_studio_leave_guard_flushes_pending_visual_inline_edit(authed_page: Page) -> None:
+    """Regression: a Visual-mode inline edit re-emits YAML on a 400ms debounce, so leaving within that
+    window would leave #yaml stale and the beforeunload guard would miss the unsaved edit (data loss).
+    The guard flushes the pending commit first, so an edit made moments before unload still arms the
+    prompt. Dispatch beforeunload synchronously right after typing — the debounce cannot have fired."""
+    fire = (
+        "() => { const e = new Event('beforeunload', {cancelable: true});"
+        " window.dispatchEvent(e); return e.defaultPrevented; }"
+    )
+    authed_page.goto("/editor")
+    # Opens in Visual mode; the untouched seed is the clean baseline → no prompt.
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    assert authed_page.evaluate(fire) is False
+
+    # Inline-edit a block but do NOT blur (blur would commit synchronously). fill() fires `input`,
+    # updating the model and scheduling the debounced commit, but leaves #yaml stale for ~400ms.
+    content = authed_page.locator(".lb-canvas .lb-block .lb-content[contenteditable]").first
+    content.fill("Coffee Beans")
+    # Immediately (well inside the debounce window) leaving must still arm the prompt: the guard
+    # flushes the pending commit so currentYaml() reflects the edit.
+    assert authed_page.evaluate(fire) is True
+
+
+def test_studio_visual_builder_validates_font_size(authed_page: Page) -> None:
+    """The inspector's Font size field prefills the default and rejects values the server would 422 on
+    — here the strip-area cap (size x max_lines <= 4000): 512 x the default 10 lines = 5120 flags the
+    field invalid with an inline message and never commits, so no invalid YAML escapes to a print."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+
+    # Add a Text element from the palette and select it.
+    authed_page.locator(".lb-palette").get_by_text("Text", exact=True).click()
+    authed_page.locator(".lb-canvas .lb-block").last.click()
+
+    size = authed_page.locator(".lb-inspector .lb-field", has_text="Font size").locator("input")
+    expect(size).to_have_value("32")  # the effective default is prefilled, not blank
+
+    # Over the strip-area cap → invalid state + inline error, and the value is not committed.
+    size.fill("512")
+    err = authed_page.locator(".lb-inspector .lb-field-error")
+    expect(err).to_be_visible()
+    expect(size).to_have_class(re.compile(r"\blb-invalid\b"))
+    assert "size: 512" not in authed_page.locator("#yaml").input_value()
+
+    # A valid value clears the error and commits.
+    size.fill("40")
+    expect(err).to_have_count(0)
+    assert "size: 40" in authed_page.locator("#yaml").input_value()
+
+    # Clearing a SIBLING field must not bypass the area cap. Set max_lines=1 so a large size commits
+    # (512 x 1 = 512 <= 4000), then empty max_lines: reverting to the default 10 would make 512 x 10 =
+    # 5120, so the clear is rejected — max_lines is kept (not deleted) and the field is flagged, so the
+    # emitted YAML stays valid rather than 422-ing the server.
+    max_lines = authed_page.locator(".lb-inspector .lb-field", has_text="Max lines").locator(
+        "input"
+    )
+    max_lines.fill("1")
+    size.fill("512")
+    assert "size: 512" in authed_page.locator("#yaml").input_value()
+    max_lines.fill("")  # clear → would revert to default 10 → over the cap
+    ml_err = authed_page.locator(".lb-inspector .lb-field", has_text="Max lines").locator(
+        ".lb-field-error"
+    )
+    expect(ml_err).to_be_visible()
+    assert "max_lines: 1" in authed_page.locator("#yaml").input_value()  # kept, not deleted

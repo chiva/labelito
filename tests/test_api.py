@@ -51,12 +51,21 @@ def test_welcome_banner_logs_identity_at_info(caplog: pytest.LogCaptureFixture) 
     operator raises LOG_LEVEL above INFO."""
     import app.main as main_mod
 
+    def is_banner(r: logging.LogRecord) -> bool:
+        return "labelito" in r.getMessage() and main_mod.APP_VERSION in r.getMessage()
+
     with caplog.at_level(logging.INFO, logger="app.main"):
         main_mod._log_welcome_banner()
-    assert any(
-        "labelito" in r.getMessage() and main_mod.APP_VERSION in r.getMessage()
-        for r in caplog.records
-    ), caplog.text
+    banner = next((r for r in caplog.records if is_banner(r)), None)
+    assert banner is not None, caplog.text
+    # Specifically INFO — not a stray print, and not a higher level that would nag on every boot.
+    assert banner.levelno == logging.INFO
+
+    # Raising the level above INFO suppresses it entirely: quiet boots stay quiet.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        main_mod._log_welcome_banner()
+    assert not any(is_banner(r) for r in caplog.records), caplog.text
 
 
 # ── Update check (/update-check) ──────────────────────────────────────────────────────────────────

@@ -3802,9 +3802,7 @@ def test_studio_visual_builder_round_trips_yaml(authed_page: Page) -> None:
 
     # Inline edit the first block's text; it must round-trip into the YAML.
     content = authed_page.locator(".lb-canvas .lb-block .lb-content[contenteditable]").first
-    content.click()
-    authed_page.keyboard.press("Control+A")
-    authed_page.keyboard.type("Coffee Beans")
+    content.fill("Coffee Beans")  # fill() clears the existing text and works on contenteditable
     authed_page.keyboard.press("Tab")
     expect(authed_page.locator("#yaml")).to_have_value(re.compile("Coffee Beans"))
 
@@ -3873,6 +3871,29 @@ def test_studio_warns_before_leaving_with_unsaved_edits(authed_page: Page) -> No
         "#yaml",
         'name: my-label\ndescription: edited\nlabel: "62"\nlayout:\n  - {type: title, text: hi}\n',
     )
+    assert authed_page.evaluate(fire) is True
+
+
+def test_studio_leave_guard_flushes_pending_visual_inline_edit(authed_page: Page) -> None:
+    """Regression: a Visual-mode inline edit re-emits YAML on a 400ms debounce, so leaving within that
+    window would leave #yaml stale and the beforeunload guard would miss the unsaved edit (data loss).
+    The guard flushes the pending commit first, so an edit made moments before unload still arms the
+    prompt. Dispatch beforeunload synchronously right after typing — the debounce cannot have fired."""
+    fire = (
+        "() => { const e = new Event('beforeunload', {cancelable: true});"
+        " window.dispatchEvent(e); return e.defaultPrevented; }"
+    )
+    authed_page.goto("/editor")
+    # Opens in Visual mode; the untouched seed is the clean baseline → no prompt.
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    assert authed_page.evaluate(fire) is False
+
+    # Inline-edit a block but do NOT blur (blur would commit synchronously). fill() fires `input`,
+    # updating the model and scheduling the debounced commit, but leaves #yaml stale for ~400ms.
+    content = authed_page.locator(".lb-canvas .lb-block .lb-content[contenteditable]").first
+    content.fill("Coffee Beans")
+    # Immediately (well inside the debounce window) leaving must still arm the prompt: the guard
+    # flushes the pending commit so currentYaml() reflects the edit.
     assert authed_page.evaluate(fire) is True
 
 

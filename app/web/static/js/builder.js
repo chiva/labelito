@@ -376,6 +376,7 @@
     // by hand, so a trailing debounced commit (e.g. an inline edit's timer firing just after the user
     // switched to YAML and started typing) must not clobber those manual edits.
     if (!visualActive) return;
+    inlineCommitPending = false;  // whatever we emit now IS #yaml — no pending edit left to flush
     const yaml = emitYaml();
     els.yaml.value = yaml;
     if (typeof window.syncYamlHighlight === 'function') window.syncYamlHighlight();
@@ -538,6 +539,7 @@
     });
     content.addEventListener('input', () => {
       el[key] = content.textContent;
+      inlineCommitPending = true;  // #yaml is now stale until the debounce (or a flush) re-emits
       debouncedInlineCommit();
     });
     content.addEventListener('blur', () => {
@@ -552,6 +554,10 @@
     });
   }
   let debouncedInlineCommit = () => {}; // reassigned in init() once debounce is available
+  // True between an inline-edit keystroke and the debounced commit that re-emits #yaml. Lets the
+  // leave-guard flush ONLY a genuinely pending edit — flushing an untouched builder would re-emit the
+  // canonical (quoted) YAML over the verbatim seed and trip the "unsaved changes" prompt for nothing.
+  let inlineCommitPending = false;
 
   function renderCanvas() {
     uidMap.clear();
@@ -1358,6 +1364,14 @@
 
   window.LabelBuilder = {
     enterVisual, enterYaml, syncFromYaml, _model: model,
+    // Synchronously push a not-yet-committed inline edit into #yaml. The inline-edit `input` handler
+    // updates the model immediately but only re-emits YAML on a 400ms debounce (debouncedInlineCommit),
+    // so a tab close / reload within that window would otherwise leave #yaml stale and the page's
+    // beforeunload guard would miss the unsaved edit. That guard calls this first. Gated on a genuine
+    // pending edit: on an untouched builder this is a no-op, so it never rewrites the verbatim seed
+    // into canonical YAML and never trips a spurious prompt. No-op in YAML mode too — commit() bails
+    // when Visual is inactive, so the hand-authored textarea (the source of truth there) is untouched.
+    flushPending() { if (inlineCommitPending) commit(); },
     // Side-effect-free test hook: emit YAML for an explicit layout + optional-field set without
     // touching builder state, so the emitter can be validated against the real loader in e2e.
     _emitForTest(layout, optional) {

@@ -1448,6 +1448,12 @@ layout:
     // template — is the clean baseline (lastLoadedYaml), so an untouched or saved draft never prompts.
     // Only a set returnValue triggers the browser's native "Leave site?" dialog; its text is UA-fixed.
     window.addEventListener('beforeunload', (e) => {
+      // Flush any pending debounced inline-edit commit so #yaml reflects the freshest Visual-mode
+      // edit even when the user leaves within the 400ms debounce window — otherwise currentYaml()
+      // reads a stale value and this guard skips the warning (the data-loss race it exists to catch).
+      if (window.LabelBuilder && typeof window.LabelBuilder.flushPending === 'function') {
+        window.LabelBuilder.flushPending();
+      }
       if (currentYaml().trim() && currentYaml() !== lastLoadedYaml) {
         e.preventDefault();
         e.returnValue = '';

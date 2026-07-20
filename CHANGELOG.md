@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/chiva/labelito/compare/v0.15.0...v0.16.0) (2026-07-20)
+
+
+### Features
+
+* **app:** log a welcome banner at startup ([#84](https://github.com/chiva/labelito/issues/84)) ([75b5d9d](https://github.com/chiva/labelito/commit/75b5d9d0d4b5b1afbea599a8252fbf83eab80b48))
+
 ## [0.15.0](https://github.com/chiva/labelito/compare/v0.14.1...v0.15.0) (2026-07-20)
 
 

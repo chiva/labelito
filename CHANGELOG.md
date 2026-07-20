@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/chiva/labelito/compare/v0.14.1...v0.15.0) (2026-07-20)
+
+
+### Features
+
+* **web:** visual drag-and-drop label builder in the Studio ([#82](https://github.com/chiva/labelito/issues/82)) ([3dca06f](https://github.com/chiva/labelito/commit/3dca06fee7ae985a6ac79e9f5b2d4578ea3fc1ac))
+
 ## [0.14.1](https://github.com/chiva/labelito/compare/v0.14.0...v0.14.1) (2026-07-18)
 
 

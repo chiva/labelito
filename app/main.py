@@ -3863,6 +3863,9 @@ async def editor_page(request: Request) -> HTMLResponse:
         {
             **_web_ctx("studio", request),
             "templates_writable": settings.templates_writable,
+            # Which authoring surface the Studio opens in ("visual" | "yaml"); a runtime toggle still
+            # switches between them. Read by builder.js to decide whether to auto-enter Visual on load.
+            "editor_default_mode": settings.editor_default_mode,
             "labels": labels,
             # The draft print row mirrors the Print page's options block, so it needs the same
             # context web_ui() injects: server defaults for each nullable-inherit option plus the

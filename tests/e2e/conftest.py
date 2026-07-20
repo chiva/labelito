@@ -100,6 +100,26 @@ def authed_page_low_res(browser: Browser, live_server_low_res: str) -> Iterator[
 
 
 @pytest.fixture(scope="session")
+def live_server_yaml_default() -> Iterator[str]:
+    """A server with EDITOR_DEFAULT_MODE=yaml, so the Studio opens in the raw YAML editor rather than
+    the (product-default) visual builder."""
+    with LiveServer(env_overrides={"EDITOR_DEFAULT_MODE": "yaml"}) as server:
+        yield server.base_url
+
+
+@pytest.fixture
+def authed_page_yaml_default(browser: Browser, live_server_yaml_default: str) -> Iterator[Page]:
+    """Authenticated page against a server whose Studio defaults to the YAML editor."""
+    context = browser.new_context(base_url=live_server_yaml_default)
+    context.add_init_script(web_token_init_script(DEFAULT_API_TOKEN))
+    page = context.new_page()
+    try:
+        yield page
+    finally:
+        context.close()
+
+
+@pytest.fixture(scope="session")
 def live_server_examples(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """A server whose bundled examples live in a SEPARATE dir from the user's templates (mirroring the
     Docker split layout), so the print page can render the example/user distinction — muted cards +

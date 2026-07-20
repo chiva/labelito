@@ -171,7 +171,8 @@
       ],
     },
     column: {
-      label: 'Column', badge: '∥', container: true,
+      // ⇅ (vertical) pairs with row's ⇆ (horizontal) and is clearly distinct from barcode's ‖ bars.
+      label: 'Column', badge: '⇅', container: true,
       attrs: [
         { key: 'spacing', label: 'Spacing (px)', control: 'number', min: 0, max: 10000, default: 0 },
       ],
@@ -423,6 +424,31 @@
     }
   }
 
+  // Canvas font preview. The block editor is schematic, but a flat 14px for every text element hides
+  // the real size hierarchy (title 60pt ≫ subtitle 40pt ≫ text's author-set size), so title/subtitle/
+  // text/list all looked identically tiny and the "Font size (pt)" control appeared inert. Mirror the
+  // renderer's fixed sizes (app/render/elements.py FONT_SIZES) and the author-set `size` for text/list,
+  // then map points → canvas px with a scale + clamp so a preview stays legible without dwarfing a block.
+  const PREVIEW_FONT_PT = { title: 60, subtitle: 40, text: 32, list: 32 };
+  const PREVIEW_BOLD_DEFAULT = { title: true, subtitle: false, text: false, list: false };
+  function previewFontPt(el) {
+    if (el.type === 'text' || el.type === 'list') {
+      const s = el.size;
+      if (typeof s === 'number' && isFinite(s) && s > 0) return s;
+    }
+    return PREVIEW_FONT_PT[el.type] || 32;
+  }
+  // pt → px: 0.5 scale reads well (title 30px / subtitle 20px / text@32pt 16px), clamped so tiny or
+  // huge author sizes still render a sane, non-overflowing preview line.
+  function applyTextPreviewStyle(content, el) {
+    if (!Object.prototype.hasOwnProperty.call(PREVIEW_FONT_PT, el.type)) return;
+    const px = Math.max(12, Math.min(34, Math.round(previewFontPt(el) * 0.5)));
+    content.style.fontSize = px + 'px';
+    const bold = (typeof el.bold === 'boolean') ? el.bold : PREVIEW_BOLD_DEFAULT[el.type];
+    content.style.fontWeight = bold ? '700' : '400';
+    content.style.textAlign = (el.align === 'center' || el.align === 'right') ? el.align : 'left';
+  }
+
   function renderBlock(el, listKind) {
     const uid = nextUid();
     uidMap.set(uid, el);
@@ -459,6 +485,7 @@
       content.className = 'lb-content';
       content.dataset.textkey = sc.text;
       renderText(content, el[sc.text] || '');
+      applyTextPreviewStyle(content, el);
       makeInlineEditable(content, el, sc.text);
       block.appendChild(content);
     } else if (isContainer(el.type)) {
@@ -557,6 +584,15 @@
   }
   function selectBlockByEl(el) {
     selectedEl = el;
+    applySelectionHighlight();
+    renderInspector();
+    positionToolbar();
+  }
+  // Clear the selection, returning the inspector to the Template settings panel. Reachable three ways:
+  // the inspector's "‹ Template settings" back link, a click on empty canvas background, and Escape.
+  function deselect() {
+    if (!selectedEl) return;
+    selectedEl = null;
     applySelectionHighlight();
     renderInspector();
     positionToolbar();
@@ -750,6 +786,12 @@
     if (!el) { renderTemplateSettings(insp); return; }
 
     const sc = schemaOf(el.type);
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'lb-insp-back';
+    back.textContent = '‹ Template settings';
+    back.addEventListener('click', deselect);
+    insp.appendChild(back);
     const title = document.createElement('div');
     title.className = 'lb-insp-title';
     title.textContent = (sc ? sc.label : el.type) + ' settings';
@@ -791,6 +833,50 @@
     h.textContent = text;
     return h;
   }
+  // Client-side numeric validation that mirrors app/loader.py bounds, so the inspector rejects a value
+  // the server would reject (with inline feedback) instead of letting it through to a post-submit
+  // "Invalid template YAML" error. The text/list strip is AREA-guarded server-side: size × max_lines
+  // (text) or size × max_items (list) must stay ≤ MAX_TEXT_STRIP_PRODUCT. The per-key defaults mirror
+  // render/elements.py FONT_SIZES and the SCHEMA defaults so the product check matches when the sibling
+  // attr is absent (omitted == default).
+  const MAX_TEXT_STRIP_PRODUCT = 4000;
+  const PRODUCT_CONSTRAINTS = {
+    text: { keys: ['size', 'max_lines'], defaults: { size: 32, max_lines: 10 } },
+    list: { keys: ['size', 'max_items'], defaults: { size: 32, max_items: 20 } },
+  };
+  // Message if setting `changingKey` to `proposed` would push the strip area over the cap, else null.
+  function productError(el, changingKey, proposed) {
+    const c = PRODUCT_CONSTRAINTS[el.type];
+    if (!c || !c.keys.includes(changingKey)) return null;
+    const val = (k) => (k === changingKey ? proposed
+      : (typeof el[k] === 'number' && isFinite(el[k]) ? el[k] : c.defaults[k]));
+    const a = val(c.keys[0]);
+    const b = val(c.keys[1]);
+    if (a * b <= MAX_TEXT_STRIP_PRODUCT) return null;
+    const other = changingKey === c.keys[0] ? c.keys[1] : c.keys[0];
+    return c.keys[0] + ' × ' + c.keys[1] + ' (' + a + ' × ' + b + ' = ' + (a * b) +
+      ') exceeds ' + MAX_TEXT_STRIP_PRODUCT + '. Lower this or reduce ' + other + '.';
+  }
+  // Toggle a field's invalid state: red border + an inline message (empty msg clears it).
+  function setFieldError(wrap, inp, msg) {
+    let err = wrap.querySelector('.lb-field-error');
+    if (msg) {
+      inp.classList.add('lb-invalid');
+      inp.setAttribute('aria-invalid', 'true');
+      if (!err) {
+        err = document.createElement('span');
+        err.className = 'lb-field-error';
+        err.setAttribute('role', 'alert');
+        wrap.appendChild(err);
+      }
+      err.textContent = msg;
+    } else {
+      inp.classList.remove('lb-invalid');
+      inp.removeAttribute('aria-invalid');
+      if (err) err.remove();
+    }
+  }
+
   function buildControl(el, attr) {
     const wrap = document.createElement('label');
     wrap.className = 'lb-field';
@@ -829,15 +915,34 @@
       inp.type = 'number';
       if (attr.min !== undefined) inp.min = String(attr.min);
       if (attr.max !== undefined) inp.max = String(attr.max);
-      inp.value = (cur ?? '');
+      // Prefill the effective default (e.g. text font size 32) when the attr is unset, so the field
+      // shows the value actually in force rather than a blank — the model stays clean (an untouched
+      // default is never written to YAML; setAttr still drops it if re-entered).
+      inp.value = (cur ?? attr.default ?? '');
       if (attr.placeholder) inp.placeholder = attr.placeholder;
       inp.addEventListener('input', () => {
         const raw = inp.value.trim();
-        if (raw === '') { deleteAttr(el, attr.key); commit(); return; }
-        let n = parseInt(raw, 10);
-        if (!Number.isFinite(n)) return;
-        if (attr.min !== undefined) n = Math.max(attr.min, n);
-        if (attr.max !== undefined) n = Math.min(attr.max, n);
+        // Cleared field → drop the attr (revert to default). But a reverted default can itself blow the
+        // strip-area cap (e.g. clear max_lines while size=512: default 10 → 512×10=5120), so re-check the
+        // product against the DEFAULT the deletion would restore; if it fails, keep the attr and flag the
+        // field rather than emitting YAML the server would 422. This bypasses setAttr, so refresh here too.
+        if (raw === '') {
+          const pc = PRODUCT_CONSTRAINTS[el.type];
+          const reverted = pc && pc.keys.includes(attr.key) ? pc.defaults[attr.key] : undefined;
+          const cerr = reverted !== undefined ? productError(el, attr.key, reverted) : null;
+          if (cerr) { setFieldError(wrap, inp, cerr); return; }
+          setFieldError(wrap, inp, ''); deleteAttr(el, attr.key); commit(); refreshBlockPreview(el); return;
+        }
+        // type=number still admits 'e'/'+'/'-'/'.', so validate explicitly: whole non-negative integers
+        // only, within [min,max], and within the server's strip-area cap. On any failure, flag the field
+        // and DON'T commit — the model keeps its last valid value so the emitted YAML never goes invalid.
+        if (!/^\d+$/.test(raw)) { setFieldError(wrap, inp, 'Enter a whole number.'); return; }
+        const n = parseInt(raw, 10);
+        if (attr.min !== undefined && n < attr.min) { setFieldError(wrap, inp, 'Minimum is ' + attr.min + '.'); return; }
+        if (attr.max !== undefined && n > attr.max) { setFieldError(wrap, inp, 'Maximum is ' + attr.max + '.'); return; }
+        const perr = productError(el, attr.key, n);
+        if (perr) { setFieldError(wrap, inp, perr); return; }
+        setFieldError(wrap, inp, '');
         setAttr(el, attr, n);
       });
     } else {
@@ -863,6 +968,18 @@
       renderText(node, el[schemaOf(el.type).text] || '');
     }
   }
+  // Re-apply the canvas font preview for one block after a size/bold/align change. The inspector and
+  // toolbar commit the model but don't re-render the canvas, so without this the schematic block
+  // wouldn't echo the new size/weight/align until the next full render. Cheap and safe to call for any
+  // element: it no-ops when the block isn't on the canvas and applyTextPreviewStyle ignores non-text
+  // types, so it lives inside setAttr() — the single choke point every attribute edit flows through
+  // (inspector toggle/select/number, toolbar bold/align) — rather than at each scattered call site.
+  function refreshBlockPreview(el) {
+    const uid = uidByEl(el);
+    if (!uid) return;
+    const node = els.canvas.querySelector('[data-uid="' + uid + '"] > .lb-content');
+    if (node) applyTextPreviewStyle(node, el);
+  }
   // Apply an attribute, dropping it when it equals its schema default so the emitted YAML stays clean.
   function setAttr(el, attr, value) {
     const isDefault = attr.default !== undefined && value === attr.default && attr.key !== 'field';
@@ -873,6 +990,7 @@
       el[attr.key] = value;
     }
     commit();
+    refreshBlockPreview(el);
   }
   function deleteAttr(el, key) { delete el[key]; }
 
@@ -1046,9 +1164,24 @@
     }
   }
 
+  // Monotonic mode-switch token. enterVisual awaits a network parse, so a YAML click (or a second
+  // enterVisual) that lands mid-flight must win — otherwise the stale fetch resolves and snaps the
+  // page back to Visual. Each switch bumps the token; enterVisual bails if it's no longer current.
+  let modeSeq = 0;
+  // The mode the user/config wants to be in — distinct from `visualActive`, which only flips true
+  // AFTER enterVisual's async parse resolves. An out-of-band #yaml change (loadByName/useLabel) must
+  // re-sync the builder whenever visual is INTENDED, even while the first parse is still in flight.
+  let intendedMode = 'yaml';
   async function enterVisual() {
+    intendedMode = 'visual';
+    const my = ++modeSeq;
     const ok = await syncFromYaml();
-    if (!ok) { setMode('yaml'); return; }
+    if (my !== modeSeq) return;            // superseded by a later mode switch / reload while parsing
+    // Parse failed (bad YAML, or a transient network/auth error on /templates/parse-layout): fall back
+    // to the raw editor. Reset visualActive too — enterVisual can now be re-entered FROM an active
+    // visual session (loadByName/useLabel), so a stale `true` would leave the code panel showing while
+    // commit()'s `!visualActive` guard is defeated, letting a pending debounced commit clobber #yaml.
+    if (!ok) { visualActive = false; setMode('yaml'); return; }
     visualActive = true;
     setMode('visual');
     renderPalette();
@@ -1056,6 +1189,8 @@
     renderInspector();
   }
   function enterYaml() {
+    intendedMode = 'yaml';
+    modeSeq++;
     visualActive = false;
     setMode('yaml');
     // Model already emitted into #yaml on every edit; nothing else to sync.
@@ -1106,6 +1241,10 @@
     canvasWrap.className = 'lb-canvas-wrap';
     const canvas = document.createElement('div');
     canvas.className = 'lb-canvas';
+    // Click on empty canvas background (not on a block) clears the selection → back to Template settings.
+    // Block clicks stopPropagation (renderBlock), so a mousedown reaching here with no ancestor block is
+    // genuinely a background click — guard on .lb-block so clicking into a block's text never deselects.
+    canvas.addEventListener('mousedown', (e) => { if (!e.target.closest('.lb-block')) deselect(); });
     const toolbar = document.createElement('div');
     toolbar.className = 'lb-toolbar';
     toolbar.style.display = 'none';
@@ -1151,7 +1290,9 @@
     seg.className = 'lb-mode-toggle';
     els.btnVisual = segBtn('Visual', () => { enterVisual(); });
     els.btnYaml = segBtn('YAML', () => { enterYaml(); });
-    els.btnYaml.classList.add('active');
+    const startVisual = editorDefaultMode() === 'visual';
+    els.btnVisual.classList.toggle('active', startVisual);
+    els.btnYaml.classList.toggle('active', !startVisual);
     seg.append(els.btnVisual, els.btnYaml);
     toolbar.insertBefore(seg, toolbar.firstChild);
   }
@@ -1168,21 +1309,43 @@
     buildModeToggle();
     buildDom();
 
+    // Escape clears the selection (blurring an active inline edit first) → back to Template settings.
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || !visualActive || !selectedEl) return;
+      if (document.activeElement && document.activeElement.isContentEditable) document.activeElement.blur();
+      deselect();
+    });
+
     // Rebuild the model when the YAML is replaced out-of-band while Visual mode is open (Load a
     // template, or "Use" a label id from the reference). Monkey-patch the page globals so no edit to
     // the inline editor.html script is needed.
     wrapGlobal('loadByName');
     wrapGlobal('useLabel');
+
+    // Open in the configured default authoring surface (EDITOR_DEFAULT_MODE, default "visual"). The
+    // raw editor is the DOM's resting state, so "yaml" needs nothing; "visual" auto-enters the builder
+    // (enterVisual re-parses the seed and falls back to YAML on a parse error).
+    if (editorDefaultMode() === 'visual') enterVisual();
+  }
+  // The Studio's default authoring surface, from the EDITOR_DEFAULT_MODE page global (a lexical const
+  // set by editor.html, so it's reachable by bare name but not a window property — guard with typeof).
+  function editorDefaultMode() {
+    // eslint-disable-next-line no-undef
+    return (typeof EDITOR_DEFAULT_MODE !== 'undefined' && EDITOR_DEFAULT_MODE === 'yaml') ? 'yaml' : 'visual';
   }
   function wrapGlobal(name) {
     const orig = window[name];
     if (typeof orig !== 'function') return;
     window[name] = async function (...args) {
+      const before = els.yaml.value;
       const r = await orig.apply(this, args);
-      if (visualActive) {
-        const ok = await syncFromYaml();
-        if (ok) { renderCanvas(); renderInspector(); }
-      }
+      // Re-enter Visual only when orig actually replaced #yaml (loaded a template / used a label) AND
+      // visual is the intended surface — NOT merely when `visualActive` is already true, so a load that
+      // lands while the initial auto-enter parse is still in flight isn't lost (enterVisual bumps
+      // modeSeq so the stale seed parse bails and re-parses the new #yaml). The `before` guard skips a
+      // cancelled/no-op load (unsaved-edits confirm declined), which would otherwise clear the
+      // selection and drop in-progress empty containers via a pointless re-parse.
+      if (intendedMode === 'visual' && els.yaml.value !== before) await enterVisual();
       return r;
     };
   }

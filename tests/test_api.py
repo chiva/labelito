@@ -45,6 +45,20 @@ def test_health_reports_version_contract(client: TestClient) -> None:
     assert openapi["info"]["version"] == data["version"]
 
 
+def test_welcome_banner_logs_identity_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    """The boot banner is a plain INFO log (not a stray print) naming the app and its version, so
+    the first lines of a fresh boot identify what started. Being INFO, it is suppressed when the
+    operator raises LOG_LEVEL above INFO."""
+    import app.main as main_mod
+
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        main_mod._log_welcome_banner()
+    assert any(
+        "labelito" in r.getMessage() and main_mod.APP_VERSION in r.getMessage()
+        for r in caplog.records
+    ), caplog.text
+
+
 # ── Update check (/update-check) ──────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     ("latest", "current", "expected"),

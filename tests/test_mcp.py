@@ -114,18 +114,23 @@ def test_list_templates(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> 
     assert simple["fields"]["required"] == ["title"]
 
 
-def test_get_template(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_get_template(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The client fixture enables the editor, so source is exposed by default.
     tools = _tools(_build_server(monkeypatch, writable=False))
-    result = tools["get_template"]("simple")
+    result = await tools["get_template"]("simple")
     assert result["name"] == "simple"
     assert result["required_fields"] == ["title"]
     assert "layout" in result["yaml"]
 
 
-def test_get_template_unknown_raises(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_get_template_unknown_raises(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     tools = _tools(_build_server(monkeypatch, writable=False))
     with pytest.raises(ToolError):
-        tools["get_template"]("does-not-exist")
+        await tools["get_template"]("does-not-exist")
 
 
 def test_get_capabilities(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,6 +196,31 @@ async def test_preview_ephemeral_invalid_yaml_raises(
         await tools["preview_ephemeral_label"]("not: a: valid: template", {})
 
 
+@pytest.mark.asyncio
+async def test_preview_label_supports_seq_template(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A stored {{seq}} template must be previewable — that needs the sequence parameter, else
+    # main.preview 422s and the template can never be previewed via MCP.
+    (main.settings.templates_dir / "seq.yaml").write_text(
+        "name: seq\n"
+        "description: auto-numbered\n"
+        'label: "62"\n'
+        "rotate: 0\n"
+        "fields:\n  required: []\n  optional: []\n"
+        'layout:\n  - {type: title, text: "{{seq}}"}\n'
+    )
+    main.registry.load_all()
+    tools = _tools(_build_server(monkeypatch, writable=False))
+    # Without a sequence spec it is rejected (mirrors the REST 422) ...
+    with pytest.raises(ToolError):
+        await tools["preview_label"]("seq", {})
+    # ... and with one it renders the first item.
+    result = await tools["preview_label"]("seq", {}, sequence={"start": 1, "count": 3})
+    assert isinstance(result, Image)
+    assert result.data.startswith(b"\x89PNG")
+
+
 # ── Write tools + history round-trip ─────────────────────────────────────────────
 
 
@@ -204,11 +234,11 @@ async def test_print_label_and_history_flow(
     assert printed["template"] == "simple"
 
     # The job is retrievable and appears in the browse listing.
-    record = tools["get_history_label"](job_id)
+    record = await tools["get_history_label"](job_id)
     assert record["job_id"] == job_id
     assert record["fields"] == {"title": "Milk"}
 
-    page = tools["list_history"]()
+    page = await tools["list_history"]()
     assert page["total"] >= 1
     assert any(e["job_id"] == job_id for e in page["entries"])
     # The frozen inline body is redacted from the listing.
@@ -236,7 +266,7 @@ async def test_print_ephemeral_label_and_reprint(
     printed = await tools["print_ephemeral_label"](yaml, {"title": "Ephemeral"})
     job_id = printed["job_id"]
     # The frozen inline body is redacted from the tool output (never surfaced by any REST GET) ...
-    record = tools["get_history_label"](job_id)
+    record = await tools["get_history_label"](job_id)
     assert "template_source" not in record
     # ... but is retained internally, so a reprint still reproduces the inline job.
     reprinted = await tools["reprint_history_label"](job_id)
@@ -273,20 +303,29 @@ async def test_print_dry_run_does_not_error(
 # ── Feature-flag / bounds hardening (MCP tools honor the same operator-intent gates as REST) ──────
 
 
-def test_get_template_omits_source_when_not_loadable(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("editor", "loadable", "source_visible"),
+    [(True, True, True), (True, False, False), (False, True, False), (False, False, False)],
+)
+async def test_get_template_source_gated_on_editor_and_loadable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    editor: bool,
+    loadable: bool,
+    source_visible: bool,
 ) -> None:
-    monkeypatch.setattr(main.settings, "templates_loadable", False)
+    # The raw YAML source is exposed only when BOTH EDITOR_ENABLED and TEMPLATES_LOADABLE are on,
+    # matching the gates the REST /templates/{name}/source route sits behind.
+    monkeypatch.setattr(main.settings, "editor_enabled", editor)
+    monkeypatch.setattr(main.settings, "templates_loadable", loadable)
     tools = _tools(_build_server(monkeypatch, writable=False))
-    result = tools["get_template"]("simple")
-    assert result["yaml"] is None  # source hidden ...
-    assert result["required_fields"] == ["title"]  # ... but the field contract still returned
-    # Default (loadable) still returns the source.
-    monkeypatch.setattr(main.settings, "templates_loadable", True)
-    assert (
-        "layout"
-        in _tools(_build_server(monkeypatch, writable=False))["get_template"]("simple")["yaml"]
-    )
+    result = await tools["get_template"]("simple")
+    assert result["required_fields"] == ["title"]  # field contract always returned
+    if source_visible:
+        assert "layout" in result["yaml"]
+    else:
+        assert result["yaml"] is None
 
 
 @pytest.mark.asyncio
@@ -295,28 +334,30 @@ async def test_get_history_label_redacts_template_source(
 ) -> None:
     tools = _tools(_build_server(monkeypatch, writable=True))
     printed = await tools["print_label"]("simple", {"title": "Hi"})
-    record = tools["get_history_label"](printed["job_id"])
+    record = await tools["get_history_label"](printed["job_id"])
     assert "template_source" not in record
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("bad", [{"limit": 0}, {"limit": -1}, {"limit": 101}, {"offset": -1}])
-def test_list_history_rejects_out_of_range(
+async def test_list_history_rejects_out_of_range(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, bad: dict[str, int]
 ) -> None:
     tools = _tools(_build_server(monkeypatch, writable=False))
     with pytest.raises(ToolError):
-        tools["list_history"](**bad)
+        await tools["list_history"](**bad)
 
 
-def test_history_tools_hidden_when_history_ui_off(
+@pytest.mark.asyncio
+async def test_history_tools_hidden_when_history_ui_off(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(main.settings, "history_ui", False)
     tools = _tools(_build_server(monkeypatch, writable=True))
     with pytest.raises(ToolError):
-        tools["list_history"]()
+        await tools["list_history"]()
     with pytest.raises(ToolError):
-        tools["get_history_label"]("whatever")
+        await tools["get_history_label"]("whatever")
 
 
 @pytest.mark.asyncio

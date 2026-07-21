@@ -34,6 +34,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from app.models import (
     DraftPreviewRequest,
@@ -151,20 +152,26 @@ def build_mcp_server() -> FastMCP:
             return [t.model_dump(mode="json") for t in main.list_templates()]
 
     @mcp.tool()
-    def get_template(name: str) -> dict[str, Any]:
+    async def get_template(name: str) -> dict[str, Any]:
         """Get one template's field contract, plus its raw YAML source when source-loading is enabled.
 
         The field contract (name, fields, media) is always returned — it is the same non-sensitive
-        data ``list_templates`` exposes. The raw ``yaml`` source is included only when
-        ``TEMPLATES_LOADABLE`` is true (else ``None``): that flag governs whether template source may
-        be read (the REST ``/templates/{name}/source`` route 404s when it is off), so honoring it here
-        keeps the MCP surface from disclosing source an operator has deliberately hidden.
+        data ``list_templates`` exposes. The raw ``yaml`` source is included only when the operator
+        has enabled source-loading, i.e. BOTH ``EDITOR_ENABLED`` and ``TEMPLATES_LOADABLE`` are true
+        (else ``None``) — the same gates the REST ``/templates/{name}/source`` route sits behind (it
+        404s when either is off, and ``EDITOR_ENABLED`` defaults to false). Honoring both here keeps
+        the MCP surface from disclosing template source an operator has deliberately kept hidden. The
+        blocking file read is offloaded (FastMCP runs a sync tool on the event loop; a threadpool
+        keeps a slow disk from stalling it), matching the REST route's threadpool dispatch.
         """
         with _as_tool_error():
             tmpl = main.registry.get(name)
             if tmpl is None:
                 raise ToolError(f"No template named {name!r}")
-            yaml = main.get_template_source(name).yaml if settings.templates_loadable else None
+            expose_source = settings.editor_enabled and settings.templates_loadable
+            source = (
+                await run_in_threadpool(main.get_template_source, name) if expose_source else None
+            )
             return {
                 "name": tmpl.name,
                 "description": tmpl.description,
@@ -174,7 +181,7 @@ def build_mcp_server() -> FastMCP:
                 "required_fields": tmpl.required_fields,
                 "optional_fields": tmpl.optional_fields,
                 "is_example": tmpl.is_example,
-                "yaml": yaml,
+                "yaml": source.yaml if source is not None else None,
             }
 
     @mcp.tool()
@@ -201,11 +208,14 @@ def build_mcp_server() -> FastMCP:
         language: str | None = None,
         dither: bool | None = None,
         threshold: float | None = None,
+        sequence: dict[str, Any] | None = None,
     ) -> Image:
         """Render a PNG preview of a STORED template (no print). Ephemeral — nothing is sent or saved.
 
         `fields` supplies the template's field values. `dither`/`threshold` control the black/white
-        conversion (None inherits the server defaults), matching what print_label would produce.
+        conversion (None inherits the server defaults), matching what print_label would produce. A
+        template that uses the `{{seq}}` auto-numbering token requires a `sequence` spec
+        (`{start, count, step, padding}`); the preview renders its first item.
         """
         with _as_tool_error():
             request = PrintRequest(
@@ -213,6 +223,7 @@ def build_mcp_server() -> FastMCP:
                 fields=fields or {},
                 language=language,
                 options=RenderOptions(dither=dither, threshold=threshold),
+                sequence=_sequence_spec(sequence),
             )
             response = await main.preview(request)
             return Image(data=bytes(response.body), format="png")
@@ -243,14 +254,15 @@ def build_mcp_server() -> FastMCP:
             return Image(data=bytes(response.body), format="png")
 
     @mcp.tool()
-    def list_history(
+    async def list_history(
         limit: int = main.DEFAULT_HISTORY_PAGE_SIZE, offset: int = 0
     ) -> dict[str, Any]:
         """Browse recorded print jobs, newest first. Returns entries plus the total for pagination.
 
         Each entry's frozen inline template body is omitted; use get_history_label(job_id) for a
         single job's full detail, or reprint_history_label(job_id) to reprint it. Hidden (errors)
-        when HISTORY_UI=false, mirroring the REST browse routes.
+        when HISTORY_UI=false, mirroring the REST browse routes. The blocking SQLite read is offloaded
+        to a threadpool (FastMCP runs a sync tool on the event loop), as the REST route does.
         """
         with _as_tool_error():
             _require_history_browsing()
@@ -263,7 +275,7 @@ def build_mcp_server() -> FastMCP:
                 raise ToolError(f"limit must be between 1 and {main.MAX_HISTORY_PAGE_SIZE}")
             if not 0 <= offset <= main.MAX_HISTORY_OFFSET:
                 raise ToolError(f"offset must be between 0 and {main.MAX_HISTORY_OFFSET}")
-            page = main.history_list(offset=offset, limit=limit)
+            page = await run_in_threadpool(main.history_list, offset=offset, limit=limit)
             # Redact the frozen inline template body from the listing, exactly as GET /history/list
             # does — it is retained only so reprint can reconstruct an inline job, never browsed.
             return page.model_dump(
@@ -271,16 +283,17 @@ def build_mcp_server() -> FastMCP:
             )
 
     @mcp.tool()
-    def get_history_label(job_id: str) -> dict[str, Any]:
+    async def get_history_label(job_id: str) -> dict[str, Any]:
         """Get one recorded print job's detail by its job id (template, fields, options, status).
 
         Hidden (errors) when HISTORY_UI=false, mirroring the REST browse routes. The frozen inline
         template body (``template_source``) is redacted — the REST API never surfaces it through any
-        GET route (it is retained only so reprint can reconstruct an inline job internally).
+        GET route (it is retained only so reprint can reconstruct an inline job internally). The
+        blocking SQLite read is offloaded to a threadpool, as ``main.reprint`` does for the same read.
         """
         with _as_tool_error():
             _require_history_browsing()
-            record = main._load_job(job_id)
+            record = await run_in_threadpool(main._load_job, job_id)
             if record is None:
                 raise ToolError(f"Job {job_id!r} not found in history")
             return record.model_dump(mode="json", exclude={"template_source"})

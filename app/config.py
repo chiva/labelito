@@ -274,6 +274,21 @@ class Settings(BaseSettings):
             )
         return path
 
+    # Model Context Protocol (MCP) server. OFF by default (opt-in), mirroring METRICS_ENABLED /
+    # EDITOR_ENABLED: it exposes a streamable-HTTP MCP endpoint at /mcp on the SAME port/app as the
+    # web UI, letting an AI client (Claude Desktop, etc.) generate/preview labels, print stored or
+    # ephemeral (designed-on-the-fly) labels, and reprint history labels. While disabled the /mcp
+    # mount is absent entirely (404). The endpoint reuses the SAME auth as the rest of the protected
+    # API — a valid API_TOKEN bearer or HTTP Basic — so it inherits the fail-closed startup guard.
+    mcp_enabled: bool = False
+    # Read-only vs read+write gate for the MCP tools, independent of MCP_ENABLED. Default false:
+    # with it off, only read-only tools are registered (list/get templates, capabilities, printer
+    # status, ephemeral/stored-template *preview*, and history browse) — nothing drives the printer
+    # or mutates state. Set MCP_WRITABLE=true to ALSO register the write tools (print a stored
+    # template, print an ephemeral label, and reprint a history label). A client connected while this
+    # is false simply never sees the write tools in tools/list, so an AI cannot print by mistake.
+    mcp_writable: bool = False
+
     # Root log level for the process, applied by app.main's logging.basicConfig at import. Standard
     # python level names (LOG_LEVEL_NAMES), case-insensitive; an unknown name fails at settings load
     # so a typo'd LOG_LEVEL aborts boot instead of silently logging at the hardcoded default.

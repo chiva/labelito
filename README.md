@@ -238,10 +238,29 @@ mismatch with **`409 Conflict`**; the web UI flags it advisorily. If the status 
 (or `SNMP_ENABLED=false`), the guard **fails open** — it never turns a working print into a hard
 failure. Full details and the verified OID map: [docs/snmp-status.md](docs/snmp-status.md).
 
+## MCP server (AI clients)
+
+labelito can expose a **[Model Context Protocol](https://modelcontextprotocol.io) server** so an AI
+client (Claude Desktop, etc.) can drive it directly — set `MCP_ENABLED=true` and it mounts at `/mcp`
+on the same port, behind the **same `Authorization: Bearer $API_TOKEN`** (or HTTP Basic) as the REST
+API. It is **read-only by default**; set `MCP_WRITABLE=true` to also expose the printing tools.
+
+| Tool | Access | What |
+|---|---|---|
+| `list_templates`, `get_template`, `get_capabilities`, `get_printer_status` | read | Discover templates, fields, and printer/media state. |
+| `preview_label`, `preview_ephemeral_label` | read | Render a PNG of a stored **or** designed-on-the-fly label — nothing printed. |
+| `list_history`, `get_history_label` | read | Browse recorded print jobs. |
+| `print_label` | write | Print a stored template. |
+| `print_ephemeral_label` | write | Print an **ephemeral** label from an inline YAML body designed on the fly. |
+| `reprint_history_label` | write | Reprint a past job exactly. |
+
+Full details: [docs/mcp.md](docs/mcp.md).
+
 ## More docs
 
 - [Configuration reference](docs/configuration.md) — every env var, `PRINTER_URI` formats, label sizes, history modes.
 - [Template format](docs/template-format.md) — elements, tokens, rows/columns, icons, languages.
+- [MCP server](docs/mcp.md) — the `/mcp` endpoint, tools, read/write gating, client setup.
 - [Printer status & the media guard](docs/snmp-status.md) — SNMP/USB status, the 409 guard, OID map.
 - [Known limitations](docs/known-limitations.md) — the silent back-channel, reprint/dedup semantics, single-worker assumptions.
 - [Development guide](docs/development.md) — dev container, local setup, tests, project layout.

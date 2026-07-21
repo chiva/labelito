@@ -24,10 +24,10 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import urlparse
 
 from brother_ql.exceptions import BrotherQLUnsupportedCmd
@@ -55,7 +55,9 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from prometheus_client import Counter, Gauge, generate_latest
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
 from starlette.routing import Match
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import settings
 from app.drivers.brother_ql import BrotherQLDriver
@@ -557,6 +559,14 @@ def _latest_release_cached() -> tuple[str | None, str | None]:
         _update_lock.release()
 
 
+# The mounted MCP server, set by the mount block at the end of this module when MCP_ENABLED is true
+# (None otherwise). Kept module-level so ``_lifespan`` can run its streamable-HTTP session manager.
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
+
+_mcp_server: FastMCP | None = None
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Startup/shutdown lifecycle — the supported replacement for the removed-in-future
@@ -568,10 +578,17 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     server still closes the history store. The bodies live in the module-level ``startup`` /
     ``shutdown`` functions (defined later in the module; resolved by name only when the app
     actually starts) so tests keep driving them directly.
+
+    When the MCP server is mounted (MCP_ENABLED), its streamable-HTTP session manager's task group
+    must be running for the ``/mcp`` route to serve requests. Starlette does not run a mounted
+    sub-app's own lifespan, so it is entered here (after ``startup``, exited before ``shutdown``).
     """
     await startup()
     try:
-        yield
+        async with AsyncExitStack() as stack:
+            if _mcp_server is not None:
+                await stack.enter_async_context(_mcp_server.session_manager.run())
+            yield
     finally:
         await shutdown()
 
@@ -1121,6 +1138,11 @@ async def startup() -> None:
         )
     log.info("Loaded %d translation catalogs: %s", len(langs), langs)
     _require_auth_or_optout()
+    if settings.mcp_enabled:
+        log.info(
+            "MCP server enabled at /mcp (%s)",
+            "read+write" if settings.mcp_writable else "read-only",
+        )
     # Resolve the transport from PRINTER_URI now so an unsupported scheme fails at boot, not on the
     # first print. For the network transport, also construct it to validate host:port eagerly.
     if infer_transport(settings.printer_uri) == "network":
@@ -1280,6 +1302,81 @@ def _require_web_auth(
         detail="Authentication required",
         headers=_auth_challenge(),
     )
+
+
+def _mcp_authorized(authorization: str | None) -> bool:
+    """Authorize a request to the mounted ``/mcp`` app from its raw ``Authorization`` header.
+
+    The MCP endpoint is a mounted ASGI sub-app, so it cannot use ``check_token`` (a FastAPI route
+    dependency) directly. This reuses the SAME credential primitives (:func:`_bearer_ok` /
+    :func:`_basic_ok`) so the /mcp gate can never drift from the REST API's: a valid API_TOKEN bearer
+    OR valid HTTP Basic credentials. No-ops (returns True) in unauthenticated mode, exactly like
+    ``check_token``. A malformed/other-scheme header is a clean deny.
+    """
+    if not settings.api_token and not settings.basic_auth_enabled:
+        return True
+    if not authorization:
+        return False
+    scheme, _, param = authorization.partition(" ")
+    scheme_lower = scheme.lower()
+    if scheme_lower == "bearer":
+        return _bearer_ok(HTTPAuthorizationCredentials(scheme=scheme, credentials=param))
+    if scheme_lower == "basic":
+        try:
+            user, sep, password = base64.b64decode(param).decode("utf-8").partition(":")
+        except (binascii.Error, ValueError):
+            return False
+        if not sep:
+            return False
+        return _basic_ok(HTTPBasicCredentials(username=user, password=password))
+    return False
+
+
+def _mcp_cross_site_rejected(scope: Scope, headers: Headers) -> bool:
+    """CSRF guard for the /mcp mount, mirroring :func:`_reject_cross_site` for the REST routes.
+
+    Under HTTP Basic auth the browser attaches ambient credentials to any same-registrable-domain
+    request, so a cross-site page could otherwise drive the (state-changing) MCP tool calls. Every
+    MCP JSON-RPC request is a POST, so — like the REST unsafe-method guard — permit only same-origin
+    or a top-level navigation (Sec-Fetch-Site same-origin/none) when Basic auth is on. Non-browser
+    clients omit the header and pass through (they present an explicit credential, not a CSRF vector);
+    bearer/open modes carry no ambient credential, so the guard is inert there.
+    """
+    if not settings.basic_auth_enabled or scope.get("method") not in _UNSAFE_METHODS:
+        return False
+    site = headers.get("sec-fetch-site")
+    return site is not None and site not in ("same-origin", "none")
+
+
+def _guard_mcp(inner: ASGIApp) -> ASGIApp:
+    """Wrap the mounted MCP ASGI app in the same auth + CSRF guards as the rest of the protected API.
+
+    Runs before the MCP handler on every HTTP request: an unauthenticated request (in a mode that
+    requires auth) gets a 401 — with the Basic ``WWW-Authenticate`` challenge when Basic auth is on —
+    identical to ``check_token``'s reply, and a cross-site state-changing request under Basic auth
+    gets a 403 (see :func:`_mcp_cross_site_rejected`). Neither reaches the MCP session manager.
+    Non-HTTP scopes (there are none for streamable HTTP, but be exhaustive) pass straight through.
+    """
+
+    async def guarded(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await inner(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        if not _mcp_authorized(headers.get("authorization")):
+            response = Response(
+                "Invalid or missing credentials",
+                status_code=401,
+                headers=_auth_challenge(),
+            )
+            await response(scope, receive, send)
+            return
+        if _mcp_cross_site_rejected(scope, headers):
+            await Response("Cross-site request rejected", status_code=403)(scope, receive, send)
+            return
+        await inner(scope, receive, send)
+
+    return guarded
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -2328,6 +2425,29 @@ def _template_media(label: str) -> TemplateMedia | None:
     )
 
 
+def _template_info(t: Template) -> TemplateInfo:
+    """Build the public :class:`TemplateInfo` for one loaded template.
+
+    The single source of the listing shape, shared by ``GET /templates`` and the MCP ``get_template``
+    tool so the two can never drift field-by-field (and so a single-template lookup need not build
+    the whole list)."""
+    return TemplateInfo(
+        name=t.name,
+        description=t.description,
+        label=t.label,
+        rotate=t.rotate,
+        valign=t.valign,
+        fields=TemplateFieldContract(
+            required=t.required_fields,
+            optional=t.optional_fields,
+            image_fields=sorted(_image_field_names(t.layout)),
+        ),
+        media=_template_media(t.label),
+        is_example=t.is_example,
+        uses_seq=uses_seq(t.layout),
+    )
+
+
 @app.get(
     "/templates",
     response_model=list[TemplateInfo],
@@ -2339,24 +2459,7 @@ def _template_media(label: str) -> TemplateMedia | None:
     dependencies=[Depends(check_token)],
 )
 def list_templates() -> list[TemplateInfo]:
-    return [
-        TemplateInfo(
-            name=t.name,
-            description=t.description,
-            label=t.label,
-            rotate=t.rotate,
-            valign=t.valign,
-            fields=TemplateFieldContract(
-                required=t.required_fields,
-                optional=t.optional_fields,
-                image_fields=sorted(_image_field_names(t.layout)),
-            ),
-            media=_template_media(t.label),
-            is_example=t.is_example,
-            uses_seq=uses_seq(t.layout),
-        )
-        for t in registry.all()
-    ]
+    return [_template_info(t) for t in registry.all()]
 
 
 # The source route lists ``_require_editor_enabled`` and ``_require_templates_loadable`` *before*
@@ -4026,6 +4129,19 @@ def _register_metrics_route() -> None:
         tags=["System"],
         include_in_schema=False,  # not advertised via the unauthenticated /openapi.json
     )
+
+
+# ── MCP server mount ─────────────────────────────────────────────────────────────
+# Mount the Model Context Protocol server at /mcp when MCP_ENABLED, behind the same bearer/Basic auth
+# as the REST API (_guard_mcp). Imported lazily (only when enabled) to avoid the app.main <-> app.mcp
+# import cycle — app.mcp imports app.main, which is fully defined by the time this block runs. The
+# server object is stashed in the module-level _mcp_server so _lifespan can run its streamable-HTTP
+# session manager. Mounted BEFORE the metrics route registers so metrics still registers last.
+if settings.mcp_enabled:
+    from app.mcp import build_mcp_asgi_app
+
+    _mcp_server, _mcp_asgi_app = build_mcp_asgi_app()
+    app.mount("/mcp", _guard_mcp(_mcp_asgi_app))
 
 
 _register_metrics_route()

@@ -140,6 +140,23 @@ async def test_get_template_degrades_when_source_missing(
 
 
 @pytest.mark.asyncio
+async def test_get_template_reraises_unexpected_source_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A 500 (unexpected OSError, e.g. a permissions misconfig) is NOT swallowed as yaml=None — it
+    # surfaces as a ToolError so the operator sees the real failure. Only 404/413 degrade.
+    from fastapi import HTTPException
+
+    def _boom(name: str) -> None:
+        raise HTTPException(500, "Failed to read template source")
+
+    monkeypatch.setattr(main, "get_template_source", _boom)
+    tools = _tools(_build_server(monkeypatch, writable=False))
+    with pytest.raises(ToolError):
+        await tools["get_template"]("simple")
+
+
+@pytest.mark.asyncio
 async def test_get_template_unknown_raises(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

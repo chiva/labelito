@@ -2425,6 +2425,29 @@ def _template_media(label: str) -> TemplateMedia | None:
     )
 
 
+def _template_info(t: Template) -> TemplateInfo:
+    """Build the public :class:`TemplateInfo` for one loaded template.
+
+    The single source of the listing shape, shared by ``GET /templates`` and the MCP ``get_template``
+    tool so the two can never drift field-by-field (and so a single-template lookup need not build
+    the whole list)."""
+    return TemplateInfo(
+        name=t.name,
+        description=t.description,
+        label=t.label,
+        rotate=t.rotate,
+        valign=t.valign,
+        fields=TemplateFieldContract(
+            required=t.required_fields,
+            optional=t.optional_fields,
+            image_fields=sorted(_image_field_names(t.layout)),
+        ),
+        media=_template_media(t.label),
+        is_example=t.is_example,
+        uses_seq=uses_seq(t.layout),
+    )
+
+
 @app.get(
     "/templates",
     response_model=list[TemplateInfo],
@@ -2436,24 +2459,7 @@ def _template_media(label: str) -> TemplateMedia | None:
     dependencies=[Depends(check_token)],
 )
 def list_templates() -> list[TemplateInfo]:
-    return [
-        TemplateInfo(
-            name=t.name,
-            description=t.description,
-            label=t.label,
-            rotate=t.rotate,
-            valign=t.valign,
-            fields=TemplateFieldContract(
-                required=t.required_fields,
-                optional=t.optional_fields,
-                image_fields=sorted(_image_field_names(t.layout)),
-            ),
-            media=_template_media(t.label),
-            is_example=t.is_example,
-            uses_seq=uses_seq(t.layout),
-        )
-        for t in registry.all()
-    ]
+    return [_template_info(t) for t in registry.all()]
 
 
 # The source route lists ``_require_editor_enabled`` and ``_require_templates_loadable`` *before*

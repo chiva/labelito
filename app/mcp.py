@@ -167,19 +167,23 @@ def build_mcp_server() -> FastMCP:
         blocking read is offloaded to a threadpool (FastMCP runs a sync tool on the event loop).
         """
         with _as_tool_error():
-            info = next((t for t in main.list_templates() if t.name == name), None)
-            if info is None:
+            tmpl = main.registry.get(name)
+            if tmpl is None:
                 raise ToolError(f"No template named {name!r}")
-            result = info.model_dump(mode="json")
+            result = main._template_info(tmpl).model_dump(mode="json")
             result["yaml"] = None
             if settings.editor_enabled and settings.templates_loadable:
                 try:
                     source = await run_in_threadpool(main.get_template_source, name)
                     result["yaml"] = source.yaml
-                except HTTPException:
-                    # Source unreadable now (deleted/replaced/oversized) — keep the in-memory contract
-                    # and leave yaml=None, as /templates does while only /source fails.
-                    pass
+                except HTTPException as exc:
+                    # Only the "source no longer available" cases degrade to yaml=None (the contract
+                    # is still served, as /templates does while /source 404/413s): a file deleted
+                    # after load (404) or grown past MAX_TEMPLATE_SOURCE_BYTES (413). A 500 (an
+                    # unexpected OSError, e.g. a permissions misconfig) is re-raised so the operator
+                    # sees the real failure instead of a misleading "source-loading is off".
+                    if exc.status_code not in (404, 413):
+                        raise
             return result
 
     @mcp.tool()

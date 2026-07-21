@@ -24,10 +24,11 @@
       "groupName": "icon collections"
     },
     {
-      "description": "Python runtime: the builder stage (ghcr.io/astral-sh/uv) creates the venv under lib/pythonX.Y and the runtime stage (python) copies it in, so both images MUST stay on the same Python minor version. Group them into one PR (overriding the non-major group) so a version bump lands as a single, coherent, attributable change and the two stages can never drift.",
+      "description": "Python runtime: the builder stage (ghcr.io/astral-sh/uv) creates the venv under lib/pythonX.Y and the runtime stage (python) copies it in, so both images MUST stay on the same Python minor version. Group them into one PR (overriding the non-major group) so a version bump lands as a single, coherent, attributable change and the two stages can never drift. PINNED to <3.14 for now: 3.14 is not mature enough yet and we gain nothing from the bump. To adopt 3.14 later, raise allowedVersions to <3.15 and all image references across both Dockerfiles move together in one grouped PR.",
       "matchManagers": ["dockerfile"],
       "matchPackageNames": ["python", "ghcr.io/astral-sh/uv"],
-      "groupName": "python runtime"
+      "groupName": "python runtime",
+      "allowedVersions": "<3.14"
     },
     {
       "description": "Teach Renovate to read the Python version out of the uv image's compound tag (e.g. python3.14-trixie-slim) so it tracks minor bumps in step with the python image and never leaves the builder stranded a minor behind. Pinned to the trixie-slim compatibility flavor via the named capture group.",

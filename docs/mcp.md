@@ -9,6 +9,7 @@ identically to the corresponding endpoint.
 - [Enabling it](#enabling-it)
 - [Transport & endpoint](#transport--endpoint)
 - [Authentication](#authentication)
+- [Behind a reverse proxy](#behind-a-reverse-proxy)
 - [Tools](#tools)
 - [Connecting a client](#connecting-a-client)
 
@@ -40,9 +41,14 @@ MCP server enabled at /mcp (read+write)
 
 The server speaks **streamable HTTP** and is mounted at **`/mcp`** on the *same* port and app as the
 web UI and REST API (there is no separate MCP port). Responses are plain JSON and each call is
-stateless, so a bare `POST /mcp` (which 307-redirects to `/mcp/`, followed automatically by clients)
-carries a full JSON-RPC request. The full URL for a local deployment is
-`http://localhost:8765/mcp`.
+stateless, so a single `POST` carries a full JSON-RPC request. The canonical URL for a local
+deployment is **`http://localhost:8765/mcp/`** — note the **trailing slash**.
+
+The route lives at `/mcp/`; a bare `POST /mcp` (no slash) **307-redirects** to `/mcp/`, which most
+clients follow automatically. Prefer the trailing-slash form: it skips the redirect hop and is
+robust behind a **TLS-terminating reverse proxy**, where following the 307 can drop the
+`Authorization` header or downgrade the redirect to `http://` (see
+[Behind a reverse proxy](#behind-a-reverse-proxy)).
 
 ## Authentication
 
@@ -55,6 +61,28 @@ token. In unauthenticated mode the endpoint is open, exactly like the rest of th
 > DNS-rebinding Host/Origin validation is disabled on the `/mcp` mount (a self-hosted service is
 > reached at an arbitrary, deployment-specific host/IP), so the bearer/Basic auth above plus network
 > placement are the access controls — keep `API_TOKEN` set on any network-reachable deployment.
+
+## Behind a reverse proxy
+
+Two things make a proxied deployment (Traefik, nginx, Caddy, …) work cleanly:
+
+1. **Use the trailing-slash URL** — point the client at `https://your-host/mcp/`, not `/mcp`. This
+   avoids the `/mcp` → `/mcp/` 307 entirely, so there is no redirect hop for the proxy or client to
+   mishandle. If the proxy serves labelito under a **path prefix** (`PROXY_PATH_HEADER`), include it:
+   `https://your-host/labelito/mcp/`.
+2. **Let the app trust the proxy's forwarded headers** so it knows the request arrived over `https`.
+   The server (uvicorn) ignores `X-Forwarded-Proto`/`-For`/`-Host` unless the request's source IP is
+   trusted, so with a TLS-terminating proxy any redirect it *does* emit (e.g. the bare-`/mcp` 307) is
+   built as `http://…` and breaks. Set **`FORWARDED_ALLOW_IPS`** to the source address the proxy
+   connects from (the peer IP labelito sees) — its container subnet (e.g. `172.18.0.0/16`) or the
+   Docker bridge gateway, not necessarily `127.0.0.1`. The [reverse-proxy guide](reverse-proxy.md#trusting-the-proxy-forwarded_allow_ips)
+   explains how to find the right value (and why the container case surprises people).
+
+With both in place, a client pointed at `https://your-host/mcp/` with `Authorization: Bearer
+$API_TOKEN` connects with no redirect and no scheme downgrade.
+
+For proxy setup itself — Traefik/nginx/Caddy examples, sub-path hosting, and the forwarded-header
+settings — see [reverse-proxy deployment](reverse-proxy.md).
 
 ## Tools
 
@@ -94,24 +122,84 @@ History tools follow the same two gates as the REST browse routes:
 
 ## Connecting a client
 
-For an HTTP-capable MCP client, point it at the endpoint and add the bearer token, e.g. Claude
-Desktop's `claude_desktop_config.json`:
+Any MCP client that speaks **streamable HTTP** can connect: point it at the trailing-slash URL
+(`http://localhost:8765/mcp/`, or `https://your-host/mcp/` behind a proxy — add the external path
+prefix under a `PROXY_PATH_HEADER` sub-path deployment, e.g. `https://your-host/labelito/mcp/`) and
+add an `Authorization: Bearer <API_TOKEN>` header. Below are the three most common clients; each links
+to its own MCP docs, which are the source of truth if the syntax has moved on. Prefer keeping the
+token in an environment variable over hardcoding it.
+
+### Claude Code
+
+Add it with one command ([MCP docs](https://code.claude.com/docs/en/mcp)):
+
+```bash
+claude mcp add --transport http --header "Authorization: Bearer $API_TOKEN" \
+  labelito https://your-host/mcp/
+```
+
+`--scope user` makes it available in every project; `--scope project` writes a shared `.mcp.json`
+you can commit. The resulting entry is:
 
 ```json
 {
   "mcpServers": {
     "labelito": {
-      "url": "http://localhost:8765/mcp",
+      "type": "http",
+      "url": "https://your-host/mcp/",
       "headers": { "Authorization": "Bearer a-long-random-secret" }
     }
   }
 }
 ```
 
-A quick smoke test with `curl` (JSON-RPC `initialize`):
+### Claude Desktop
+
+Claude Desktop's `claude_desktop_config.json` loads **stdio** servers, not a remote `url`, so pick
+one of ([connector docs](https://modelcontextprotocol.io/quickstart/user)):
+
+- **Connectors UI** — Settings → Connectors → *Add custom connector*, paste `https://your-host/mcp/`.
+  This path suits OAuth or unauthenticated servers; it has no field for a static bearer header, so for
+  labelito's token auth use the bridge below.
+- **`mcp-remote` bridge** — wrap the remote endpoint as a stdio server with
+  [`mcp-remote`](https://github.com/geelen/mcp-remote) and restart the app. Pass the header value
+  through an env var (`AUTH_HEADER`) and reference it **without a space** so `mcp-remote` parses it
+  correctly:
+
+  ```json
+  {
+    "mcpServers": {
+      "labelito": {
+        "command": "npx",
+        "args": ["-y", "mcp-remote", "https://your-host/mcp/", "--header", "Authorization:${AUTH_HEADER}"],
+        "env": { "AUTH_HEADER": "Bearer a-long-random-secret" }
+      }
+    }
+  }
+  ```
+
+### Codex CLI
+
+Add a Streamable-HTTP server to `~/.codex/config.toml`
+([MCP docs](https://developers.openai.com/codex/mcp)). Codex reads the token from a **named env var**
+(export `LABELITO_TOKEN` first):
+
+```toml
+[mcp_servers.labelito]
+url = "https://your-host/mcp/"
+bearer_token_env_var = "LABELITO_TOKEN"
+```
+
+Or set a static header directly with `[mcp_servers.labelito.http_headers]` → `Authorization = "Bearer
+…"`. If an older Codex doesn't detect the HTTP server, add `experimental_use_rmcp_client = true` at
+the top of the file or upgrade.
+
+### curl smoke test
+
+A quick JSON-RPC `initialize` to confirm the endpoint and token before wiring up a client:
 
 ```bash
-curl -sS http://localhost:8765/mcp \
+curl -sS http://localhost:8765/mcp/ \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \

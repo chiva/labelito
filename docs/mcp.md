@@ -66,7 +66,7 @@ Read-only tools are always registered when `MCP_ENABLED=true`; write tools requi
 | Tool | What |
 |---|---|
 | `list_templates` | List templates with their field contracts and required media. |
-| `get_template(name)` | One template's fields plus its raw YAML source. |
+| `get_template(name)` | One template's fields (always), plus its raw `yaml` source — included only when both `EDITOR_ENABLED` and `TEMPLATES_LOADABLE` are true, else `null`. |
 | `get_capabilities` | Printer model, dpi, supported labels, and geometries. |
 | `get_printer_status` | Live printer state: loaded media, model, fault/error bits. |
 | `preview_label(template, fields, …)` | Render a PNG preview of a **stored** template — nothing printed or saved. |

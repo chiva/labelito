@@ -116,12 +116,27 @@ def test_list_templates(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.asyncio
 async def test_get_template(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The client fixture enables the editor, so source is exposed by default.
+    # The client fixture enables the editor, so source is exposed by default. The info block mirrors
+    # a list_templates entry (TemplateInfo shape), with the raw YAML added on.
     tools = _tools(_build_server(monkeypatch, writable=False))
     result = await tools["get_template"]("simple")
     assert result["name"] == "simple"
-    assert result["required_fields"] == ["title"]
+    assert result["fields"]["required"] == ["title"]
+    assert result["media"] is not None and "uses_seq" in result
     assert "layout" in result["yaml"]
+
+
+@pytest.mark.asyncio
+async def test_get_template_degrades_when_source_missing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Editor + loadable on, but the source file vanished after load: the contract is still served
+    # from the in-memory registry and yaml degrades to None, rather than failing the whole call.
+    (main.settings.templates_dir / "simple.yaml").unlink()
+    tools = _tools(_build_server(monkeypatch, writable=False))
+    result = await tools["get_template"]("simple")
+    assert result["fields"]["required"] == ["title"]
+    assert result["yaml"] is None
 
 
 @pytest.mark.asyncio
@@ -321,7 +336,7 @@ async def test_get_template_source_gated_on_editor_and_loadable(
     monkeypatch.setattr(main.settings, "templates_loadable", loadable)
     tools = _tools(_build_server(monkeypatch, writable=False))
     result = await tools["get_template"]("simple")
-    assert result["required_fields"] == ["title"]  # field contract always returned
+    assert result["fields"]["required"] == ["title"]  # field contract always returned
     if source_visible:
         assert "layout" in result["yaml"]
     else:

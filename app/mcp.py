@@ -153,36 +153,34 @@ def build_mcp_server() -> FastMCP:
 
     @mcp.tool()
     async def get_template(name: str) -> dict[str, Any]:
-        """Get one template's field contract, plus its raw YAML source when source-loading is enabled.
+        """Get one template's full info (the same shape as a list_templates entry) plus its YAML source.
 
-        The field contract (name, fields, media) is always returned — it is the same non-sensitive
-        data ``list_templates`` exposes. The raw ``yaml`` source is included only when the operator
-        has enabled source-loading, i.e. BOTH ``EDITOR_ENABLED`` and ``TEMPLATES_LOADABLE`` are true
-        (else ``None``) — the same gates the REST ``/templates/{name}/source`` route sits behind (it
-        404s when either is off, and ``EDITOR_ENABLED`` defaults to false). Honoring both here keeps
-        the MCP surface from disclosing template source an operator has deliberately kept hidden. The
-        blocking file read is offloaded (FastMCP runs a sync tool on the event loop; a threadpool
-        keeps a slow disk from stalling it), matching the REST route's threadpool dispatch.
+        The info block — name, description, label, ``fields`` (required/optional/image_fields),
+        ``media``, ``uses_seq`` — is reused verbatim from ``list_templates`` (the canonical
+        ``TemplateInfo`` shape) so the two tools never drift, and is always returned from the in-memory
+        registry. The extra ``yaml`` source is included only when the operator has enabled
+        source-loading, i.e. BOTH ``EDITOR_ENABLED`` and ``TEMPLATES_LOADABLE`` are true (the same
+        gates the REST ``/templates/{name}/source`` route sits behind, and ``EDITOR_ENABLED`` defaults
+        to false) — otherwise ``yaml`` is ``None``. If the source file has since gone missing or is
+        oversized, ``yaml`` degrades to ``None`` rather than failing the whole call, mirroring how the
+        REST ``/templates`` list still serves the contract when only ``/source`` would 404/413. The
+        blocking read is offloaded to a threadpool (FastMCP runs a sync tool on the event loop).
         """
         with _as_tool_error():
-            tmpl = main.registry.get(name)
-            if tmpl is None:
+            info = next((t for t in main.list_templates() if t.name == name), None)
+            if info is None:
                 raise ToolError(f"No template named {name!r}")
-            expose_source = settings.editor_enabled and settings.templates_loadable
-            source = (
-                await run_in_threadpool(main.get_template_source, name) if expose_source else None
-            )
-            return {
-                "name": tmpl.name,
-                "description": tmpl.description,
-                "label": tmpl.label,
-                "rotate": tmpl.rotate,
-                "valign": tmpl.valign,
-                "required_fields": tmpl.required_fields,
-                "optional_fields": tmpl.optional_fields,
-                "is_example": tmpl.is_example,
-                "yaml": source.yaml if source is not None else None,
-            }
+            result = info.model_dump(mode="json")
+            result["yaml"] = None
+            if settings.editor_enabled and settings.templates_loadable:
+                try:
+                    source = await run_in_threadpool(main.get_template_source, name)
+                    result["yaml"] = source.yaml
+                except HTTPException:
+                    # Source unreadable now (deleted/replaced/oversized) — keep the in-memory contract
+                    # and leave yaml=None, as /templates does while only /source fails.
+                    pass
+            return result
 
     @mcp.tool()
     def get_capabilities() -> dict[str, Any]:
@@ -197,6 +195,8 @@ def build_mcp_server() -> FastMCP:
             res = await main.printer_status(None)
             if isinstance(res, JSONResponse):
                 # 503 (unreachable/busy): the body is always a PrinterStatusResponse dump (a dict).
+                # bytes() coerces the memoryview half of Response.body's bytes|memoryview type, which
+                # json.loads does not accept.
                 decoded: dict[str, Any] = json.loads(bytes(res.body))
                 return decoded
             return res.model_dump(mode="json")

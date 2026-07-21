@@ -32,7 +32,7 @@ environment:
 
 On boot the log confirms the mode:
 
-```
+```text
 MCP server enabled at /mcp (read+write)
 ```
 
@@ -83,8 +83,14 @@ Read-only tools are always registered when `MCP_ENABLED=true`; write tools requi
 | `reprint_history_label(job_id)` | Reprint a past job exactly (same template, fields, options, and computed dates). |
 
 Errors (unknown template, missing required fields, invalid YAML, media mismatch, printer
-unreachable, …) surface to the client as a tool error carrying the underlying reason. History tools
-follow `HISTORY_MODE`: with `disabled`, there is nothing to browse or reprint.
+unreachable, …) surface to the client as a tool error carrying the underlying reason.
+
+History tools follow the same two gates as the REST browse routes:
+
+- `HISTORY_MODE` (storage): with `disabled`, there is nothing to browse or reprint.
+- `HISTORY_UI` (browse visibility): with `false`, `list_history` and `get_history_label` are hidden
+  and error (mirroring the REST `/history` routes' 404), while `reprint_history_label` stays
+  available — exactly like reprint-by-id on the REST surface.
 
 ## Connecting a client
 

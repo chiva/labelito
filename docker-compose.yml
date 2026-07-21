@@ -60,6 +60,13 @@ services:
       # Over plain HTTP both credentials travel in the clear — the bearer API_TOKEN (Authorization
       # header) and the Basic WEB_AUTH_* pair alike — so front with TLS or a reverse proxy off a
       # trusted LAN. ALLOW_UNAUTHENTICATED sends no credential, so this caveat doesn't apply to it.
+      # Behind a TLS-terminating reverse proxy (Traefik, nginx, Caddy…), trust ITS source IP so
+      # redirects/URLs stay https. Set this to the address labelito sees the proxy connect from —
+      # its container subnet, or the bridge gateway. Do NOT trust a range that a direct client can
+      # reach: if you enable this, drop the `ports: 8765:8765` publish above and reach labelito only
+      # through the proxy on a shared network, else forwarded headers become spoofable.
+      # See docs/reverse-proxy.md.
+      # FORWARDED_ALLOW_IPS: "<proxy-subnet-or-ip>"   # e.g. 172.18.0.0/16
       # `${VAR:?msg}` makes `docker compose up` fail fast if API_TOKEN is unset or empty.
       API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set WEB_AUTH_USER/PASSWORD or ALLOW_UNAUTHENTICATED=true}
       # WEB_AUTH_USER: me            # optional HTTP Basic auth (set both)

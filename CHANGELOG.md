@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/chiva/labelito/compare/v0.17.0...v0.17.1) (2026-07-21)
+
+
+### Documentation
+
+* **mcp:** align endpoint on trailing-slash /mcp/ and add reverse-proxy guide ([#95](https://github.com/chiva/labelito/issues/95)) ([b1b2b33](https://github.com/chiva/labelito/commit/b1b2b339dc555ac6f888b82b4620c8c70dd244ce))
+
 ## [0.17.0](https://github.com/chiva/labelito/compare/v0.16.0...v0.17.0) (2026-07-21)
 
 

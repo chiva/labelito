@@ -68,13 +68,14 @@ Two things make a proxied deployment (Traefik, nginx, Caddy, …) work cleanly:
 
 1. **Use the trailing-slash URL** — point the client at `https://your-host/mcp/`, not `/mcp`. This
    avoids the `/mcp` → `/mcp/` 307 entirely, so there is no redirect hop for the proxy or client to
-   mishandle.
+   mishandle. If the proxy serves labelito under a **path prefix** (`PROXY_PATH_HEADER`), include it:
+   `https://your-host/labelito/mcp/`.
 2. **Let the app trust the proxy's forwarded headers** so it knows the request arrived over `https`.
    The server (uvicorn) ignores `X-Forwarded-Proto`/`-For`/`-Host` unless the request's source IP is
    trusted, so with a TLS-terminating proxy any redirect it *does* emit (e.g. the bare-`/mcp` 307) is
-   built as `http://…` and breaks. Set **`FORWARDED_ALLOW_IPS`** to the address labelito sees the
-   proxy connect from — its container subnet (e.g. `172.18.0.0/16`) or the Docker bridge gateway, not
-   necessarily `127.0.0.1`. The [reverse-proxy guide](reverse-proxy.md#trusting-the-proxy-forwarded_allow_ips)
+   built as `http://…` and breaks. Set **`FORWARDED_ALLOW_IPS`** to the source address the proxy
+   connects from (the peer IP labelito sees) — its container subnet (e.g. `172.18.0.0/16`) or the
+   Docker bridge gateway, not necessarily `127.0.0.1`. The [reverse-proxy guide](reverse-proxy.md#trusting-the-proxy-forwarded_allow_ips)
    explains how to find the right value (and why the container case surprises people).
 
 With both in place, a client pointed at `https://your-host/mcp/` with `Authorization: Bearer
@@ -122,10 +123,11 @@ History tools follow the same two gates as the REST browse routes:
 ## Connecting a client
 
 Any MCP client that speaks **streamable HTTP** can connect: point it at the trailing-slash URL
-(`http://localhost:8765/mcp/`, or `https://your-host/mcp/` behind a proxy) and add an
-`Authorization: Bearer <API_TOKEN>` header. Below are the three most common clients; each links to its
-own MCP docs, which are the source of truth if the syntax has moved on. Prefer keeping the token in an
-environment variable over hardcoding it.
+(`http://localhost:8765/mcp/`, or `https://your-host/mcp/` behind a proxy — add the external path
+prefix under a `PROXY_PATH_HEADER` sub-path deployment, e.g. `https://your-host/labelito/mcp/`) and
+add an `Authorization: Bearer <API_TOKEN>` header. Below are the three most common clients; each links
+to its own MCP docs, which are the source of truth if the syntax has moved on. Prefer keeping the
+token in an environment variable over hardcoding it.
 
 ### Claude Code
 

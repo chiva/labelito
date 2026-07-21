@@ -33,8 +33,8 @@ the same way.
 
 ## Trusting the proxy: `FORWARDED_ALLOW_IPS`
 
-Set **`FORWARDED_ALLOW_IPS`** to the address labelito actually sees the proxy connect **from**, so it
-honors that proxy's `X-Forwarded-*` headers:
+Set **`FORWARDED_ALLOW_IPS`** to the source address the proxy connects **from** (the peer IP labelito
+sees), so it honors that proxy's `X-Forwarded-*` headers:
 
 | Value | Effect |
 |---|---|
@@ -82,8 +82,14 @@ Have the proxy send the prefix in a request header on every request and set **`P
 to that header's name. labelito then uses the value as the base path for every generated URL (page
 links, static assets, `/docs`, the OpenAPI `servers` entry) while route matching stays unchanged
 (the proxy strips the prefix before forwarding). Home Assistant ingress sets `X-Ingress-Path` for
-exactly this. Values not starting with `/` are ignored. If labelito owns a whole hostname/subdomain,
-you don't need this.
+exactly this. If labelito owns a whole hostname/subdomain, you don't need this.
+
+Like `FORWARDED_ALLOW_IPS`, this header is **trusted on every request** and is **not** filtered by
+source IP — only its *shape* is validated (path-absolute values only; absolute URLs, protocol-relative
+`//host`, query/fragment, and control characters are rejected). So a direct client could otherwise
+inject a URL prefix into the generated links: only enable it behind a proxy that **overwrites** the
+header on every request, and — as with forwarded headers — **don't publish labelito's port** to any
+network that can reach it directly.
 
 ## Auth placement
 
@@ -102,7 +108,8 @@ public deployment should bound it upstream too).
 Two things, both covered above:
 
 1. Point MCP clients at the **trailing-slash** URL — `https://your-host/mcp/`, not `/mcp` — so there
-   is no 307 to mishandle. See [docs/mcp.md](mcp.md#behind-a-reverse-proxy).
+   is no 307 to mishandle. Under a **sub-path** deployment (`PROXY_PATH_HEADER`), include the external
+   prefix: `https://your-host/labelito/mcp/`. See [docs/mcp.md](mcp.md#behind-a-reverse-proxy).
 2. Set `FORWARDED_ALLOW_IPS` so the app knows it's on `https`.
 
 ## Examples
@@ -181,10 +188,11 @@ shared-network subnet. To have Caddy also handle auth, add a `basic_auth` block 
 
 - [ ] Proxy terminates TLS and forwards to labelito `:8765` over the internal network.
 - [ ] Proxy sets/overwrites `X-Forwarded-Proto` (and `-Host`/`-For`) on every request.
-- [ ] `FORWARDED_ALLOW_IPS` matches the **source IP labelito sees** the proxy connect from — the
-      proxy's container subnet, or the Docker bridge gateway for a published port (only leave the
-      `127.0.0.1` default when labelito is a bare host process over real loopback).
+- [ ] `FORWARDED_ALLOW_IPS` matches the **source IP the proxy connects from** (the peer IP labelito
+      sees) — the proxy's container subnet, or the Docker bridge gateway for a published port (only
+      leave the `127.0.0.1` default when labelito is a bare host process over real loopback).
 - [ ] Port `8765` is **not** published to any untrusted network.
 - [ ] Sub-path hosting only: `PROXY_PATH_HEADER` set and the proxy sends that header every request.
-- [ ] MCP clients use the **trailing-slash** URL `https://your-host/mcp/`.
+- [ ] MCP clients use the **trailing-slash** URL `https://your-host/mcp/` (with the external prefix,
+      e.g. `…/labelito/mcp/`, under a `PROXY_PATH_HEADER` sub-path deployment).
 - [ ] Request-body limit set at the proxy.

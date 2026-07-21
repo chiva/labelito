@@ -49,6 +49,9 @@ services:
       #   mount: drop the ':ro' from the ./templates volume above AND ensure the host dir is writable by
       #   this uid/gid — otherwise the app warns at boot and the save route returns a config-aware 500)
       # TEMPLATES_LOADABLE: "false" # default true: hide the "Load existing template" picker + 404 its source route
+      # MCP server for AI clients (off by default). Mounts /mcp behind the same auth as the API:
+      # MCP_ENABLED: "true"   # expose the Model Context Protocol server at /mcp (read-only tools)
+      # MCP_WRITABLE: "true"  # also expose the print/reprint tools (needs MCP_ENABLED). See docs/mcp.md
       # Auth — no default secret is shipped; the service refuses to start unless ONE is set:
       #   put API_TOKEN=<your-secret> in a .env file beside this compose file (auto-loaded), OR
       #   comment the line below and set WEB_AUTH_USER/WEB_AUTH_PASSWORD for a browser login wall

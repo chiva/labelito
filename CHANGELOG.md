@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/chiva/labelito/compare/v0.16.0...v0.17.0) (2026-07-21)
+
+
+### Features
+
+* **app:** MCP server for label generation, ephemeral prints, and reprints ([#90](https://github.com/chiva/labelito/issues/90)) ([1e93cc1](https://github.com/chiva/labelito/commit/1e93cc109a57fef0cf530cc1e587e37ee5a078e0))
+
 ## [0.16.0](https://github.com/chiva/labelito/compare/v0.15.0...v0.16.0) (2026-07-20)
 
 

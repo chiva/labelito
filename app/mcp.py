@@ -128,6 +128,16 @@ def build_mcp_server() -> FastMCP:
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 
+    def _require_history_browsing() -> None:
+        """Raise when HISTORY_UI is off, so history-browse tools honor the same gate as the REST UI.
+
+        HISTORY_UI=false hides the printed-job list from the browser (the REST /history routes 404);
+        reprint-by-id stays available. The MCP history-browse tools mirror that: they refuse here,
+        while reprint_history_label does not call this — it stays usable like /reprint.
+        """
+        if not settings.history_ui:
+            raise ToolError("History browsing is disabled (HISTORY_UI=false)")
+
     # ── Read-only tools (always registered) ──────────────────────────────────────────────────────
 
     @mcp.tool()
@@ -142,12 +152,19 @@ def build_mcp_server() -> FastMCP:
 
     @mcp.tool()
     def get_template(name: str) -> dict[str, Any]:
-        """Get one template's field contract plus its raw YAML source, by template name."""
+        """Get one template's field contract, plus its raw YAML source when source-loading is enabled.
+
+        The field contract (name, fields, media) is always returned — it is the same non-sensitive
+        data ``list_templates`` exposes. The raw ``yaml`` source is included only when
+        ``TEMPLATES_LOADABLE`` is true (else ``None``): that flag governs whether template source may
+        be read (the REST ``/templates/{name}/source`` route 404s when it is off), so honoring it here
+        keeps the MCP surface from disclosing source an operator has deliberately hidden.
+        """
         with _as_tool_error():
             tmpl = main.registry.get(name)
             if tmpl is None:
                 raise ToolError(f"No template named {name!r}")
-            source = main.get_template_source(name)
+            yaml = main.get_template_source(name).yaml if settings.templates_loadable else None
             return {
                 "name": tmpl.name,
                 "description": tmpl.description,
@@ -157,7 +174,7 @@ def build_mcp_server() -> FastMCP:
                 "required_fields": tmpl.required_fields,
                 "optional_fields": tmpl.optional_fields,
                 "is_example": tmpl.is_example,
-                "yaml": source.yaml,
+                "yaml": yaml,
             }
 
     @mcp.tool()
@@ -172,9 +189,9 @@ def build_mcp_server() -> FastMCP:
         with _as_tool_error():
             res = await main.printer_status(None)
             if isinstance(res, JSONResponse):
-                # 503 (unreachable/busy) — the body already carries a PrinterStatusResponse dump.
-                decoded = json.loads(bytes(res.body))
-                return decoded if isinstance(decoded, dict) else {"result": decoded}
+                # 503 (unreachable/busy): the body is always a PrinterStatusResponse dump (a dict).
+                decoded: dict[str, Any] = json.loads(bytes(res.body))
+                return decoded
             return res.model_dump(mode="json")
 
     @mcp.tool()
@@ -226,13 +243,26 @@ def build_mcp_server() -> FastMCP:
             return Image(data=bytes(response.body), format="png")
 
     @mcp.tool()
-    def list_history(limit: int = 20, offset: int = 0) -> dict[str, Any]:
+    def list_history(
+        limit: int = main.DEFAULT_HISTORY_PAGE_SIZE, offset: int = 0
+    ) -> dict[str, Any]:
         """Browse recorded print jobs, newest first. Returns entries plus the total for pagination.
 
         Each entry's frozen inline template body is omitted; use get_history_label(job_id) for a
-        single job's full detail, or reprint_history_label(job_id) to reprint it.
+        single job's full detail, or reprint_history_label(job_id) to reprint it. Hidden (errors)
+        when HISTORY_UI=false, mirroring the REST browse routes.
         """
         with _as_tool_error():
+            _require_history_browsing()
+            # Enforce the SAME bounds the REST /history/list route applies via its Query() constraints
+            # — a direct handler call bypasses them, so a negative/huge limit or offset would otherwise
+            # reach SQLite raw (limit=-1 dumps the whole table; an out-of-int64 offset raises deep in
+            # the bind). Validate up front so the caller gets a clean ToolError, not an unbounded dump
+            # or an opaque internal error.
+            if not 1 <= limit <= main.MAX_HISTORY_PAGE_SIZE:
+                raise ToolError(f"limit must be between 1 and {main.MAX_HISTORY_PAGE_SIZE}")
+            if not 0 <= offset <= main.MAX_HISTORY_OFFSET:
+                raise ToolError(f"offset must be between 0 and {main.MAX_HISTORY_OFFSET}")
             page = main.history_list(offset=offset, limit=limit)
             # Redact the frozen inline template body from the listing, exactly as GET /history/list
             # does — it is retained only so reprint can reconstruct an inline job, never browsed.
@@ -242,12 +272,18 @@ def build_mcp_server() -> FastMCP:
 
     @mcp.tool()
     def get_history_label(job_id: str) -> dict[str, Any]:
-        """Get one recorded print job's full detail by its job id (template, fields, options, status)."""
+        """Get one recorded print job's detail by its job id (template, fields, options, status).
+
+        Hidden (errors) when HISTORY_UI=false, mirroring the REST browse routes. The frozen inline
+        template body (``template_source``) is redacted — the REST API never surfaces it through any
+        GET route (it is retained only so reprint can reconstruct an inline job internally).
+        """
         with _as_tool_error():
+            _require_history_browsing()
             record = main._load_job(job_id)
             if record is None:
                 raise ToolError(f"Job {job_id!r} not found in history")
-            return record.model_dump(mode="json")
+            return record.model_dump(mode="json", exclude={"template_source"})
 
     # ── Write tools (registered only when MCP_WRITABLE=true) ──────────────────────────────────────
     if settings.mcp_writable:

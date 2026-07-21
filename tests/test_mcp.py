@@ -235,9 +235,10 @@ async def test_print_ephemeral_label_and_reprint(
     )
     printed = await tools["print_ephemeral_label"](yaml, {"title": "Ephemeral"})
     job_id = printed["job_id"]
-    # The frozen inline body is retained so a reprint reproduces it.
+    # The frozen inline body is redacted from the tool output (never surfaced by any REST GET) ...
     record = tools["get_history_label"](job_id)
-    assert record["template_source"] is not None
+    assert "template_source" not in record
+    # ... but is retained internally, so a reprint still reproduces the inline job.
     reprinted = await tools["reprint_history_label"](job_id)
     assert reprinted["job_id"] != job_id
 
@@ -267,6 +268,67 @@ async def test_print_dry_run_does_not_error(
     tools = _tools(_build_server(monkeypatch, writable=True))
     result = await tools["print_label"]("simple", {"title": "Dry"}, dry_run=True)
     assert result["dry_run"] is True
+
+
+# ── Feature-flag / bounds hardening (MCP tools honor the same operator-intent gates as REST) ──────
+
+
+def test_get_template_omits_source_when_not_loadable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main.settings, "templates_loadable", False)
+    tools = _tools(_build_server(monkeypatch, writable=False))
+    result = tools["get_template"]("simple")
+    assert result["yaml"] is None  # source hidden ...
+    assert result["required_fields"] == ["title"]  # ... but the field contract still returned
+    # Default (loadable) still returns the source.
+    monkeypatch.setattr(main.settings, "templates_loadable", True)
+    assert (
+        "layout"
+        in _tools(_build_server(monkeypatch, writable=False))["get_template"]("simple")["yaml"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_history_label_redacts_template_source(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = _tools(_build_server(monkeypatch, writable=True))
+    printed = await tools["print_label"]("simple", {"title": "Hi"})
+    record = tools["get_history_label"](printed["job_id"])
+    assert "template_source" not in record
+
+
+@pytest.mark.parametrize("bad", [{"limit": 0}, {"limit": -1}, {"limit": 101}, {"offset": -1}])
+def test_list_history_rejects_out_of_range(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, bad: dict[str, int]
+) -> None:
+    tools = _tools(_build_server(monkeypatch, writable=False))
+    with pytest.raises(ToolError):
+        tools["list_history"](**bad)
+
+
+def test_history_tools_hidden_when_history_ui_off(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main.settings, "history_ui", False)
+    tools = _tools(_build_server(monkeypatch, writable=True))
+    with pytest.raises(ToolError):
+        tools["list_history"]()
+    with pytest.raises(ToolError):
+        tools["get_history_label"]("whatever")
+
+
+@pytest.mark.asyncio
+async def test_reprint_still_works_when_history_ui_off(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Reprint-by-id stays available with browsing hidden, exactly like the REST /reprint route.
+    tools = _tools(_build_server(monkeypatch, writable=True))
+    printed = await tools["print_label"]("simple", {"title": "Keep"})
+    monkeypatch.setattr(main.settings, "history_ui", False)
+    reprinted = await tools["reprint_history_label"](printed["job_id"])
+    assert reprinted["job_id"] != printed["job_id"]
 
 
 # ── End-to-end HTTP handshake through the mounted, guarded endpoint ───────────────
@@ -340,3 +402,24 @@ def test_http_requires_auth(monkeypatch: pytest.MonkeyPatch) -> None:
             headers={**_MCP_HEADERS, "Authorization": "Bearer secret"},
         )
         assert allowed.status_code == 200
+
+
+def test_http_rejects_cross_site_under_basic_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under Basic auth, a cross-site POST (ambient credentials) to /mcp is refused with 403."""
+    monkeypatch.setattr(main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "mcp_writable", True)
+    monkeypatch.setattr(main.settings, "api_token", None)
+    monkeypatch.setattr(main.settings, "web_auth_user", "alice")
+    monkeypatch.setattr(main.settings, "web_auth_password", "pw")
+    auth = {"Authorization": _basic_header("alice", "pw")}
+    server, asgi = build_mcp_asgi_app()
+    with TestClient(_mounted_app(server, asgi)) as http:
+        cross = http.post(
+            "/mcp", json=_INIT, headers={**_MCP_HEADERS, **auth, "Sec-Fetch-Site": "cross-site"}
+        )
+        assert cross.status_code == 403
+        # A same-origin request with the same credentials is allowed.
+        same = http.post(
+            "/mcp", json=_INIT, headers={**_MCP_HEADERS, **auth, "Sec-Fetch-Site": "same-origin"}
+        )
+        assert same.status_code == 200

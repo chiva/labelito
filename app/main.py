@@ -1332,26 +1332,47 @@ def _mcp_authorized(authorization: str | None) -> bool:
     return False
 
 
+def _mcp_cross_site_rejected(scope: Scope, headers: Headers) -> bool:
+    """CSRF guard for the /mcp mount, mirroring :func:`_reject_cross_site` for the REST routes.
+
+    Under HTTP Basic auth the browser attaches ambient credentials to any same-registrable-domain
+    request, so a cross-site page could otherwise drive the (state-changing) MCP tool calls. Every
+    MCP JSON-RPC request is a POST, so — like the REST unsafe-method guard — permit only same-origin
+    or a top-level navigation (Sec-Fetch-Site same-origin/none) when Basic auth is on. Non-browser
+    clients omit the header and pass through (they present an explicit credential, not a CSRF vector);
+    bearer/open modes carry no ambient credential, so the guard is inert there.
+    """
+    if not settings.basic_auth_enabled or scope.get("method") not in _UNSAFE_METHODS:
+        return False
+    site = headers.get("sec-fetch-site")
+    return site is not None and site not in ("same-origin", "none")
+
+
 def _guard_mcp(inner: ASGIApp) -> ASGIApp:
-    """Wrap the mounted MCP ASGI app in the same bearer/Basic auth as the rest of the protected API.
+    """Wrap the mounted MCP ASGI app in the same auth + CSRF guards as the rest of the protected API.
 
     Runs before the MCP handler on every HTTP request: an unauthenticated request (in a mode that
     requires auth) gets a 401 — with the Basic ``WWW-Authenticate`` challenge when Basic auth is on —
-    identical to ``check_token``'s reply, and never reaches the MCP session manager. Non-HTTP scopes
-    (there are none for streamable HTTP, but be exhaustive) pass straight through.
+    identical to ``check_token``'s reply, and a cross-site state-changing request under Basic auth
+    gets a 403 (see :func:`_mcp_cross_site_rejected`). Neither reaches the MCP session manager.
+    Non-HTTP scopes (there are none for streamable HTTP, but be exhaustive) pass straight through.
     """
 
     async def guarded(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await inner(scope, receive, send)
             return
-        if not _mcp_authorized(Headers(scope=scope).get("authorization")):
+        headers = Headers(scope=scope)
+        if not _mcp_authorized(headers.get("authorization")):
             response = Response(
                 "Invalid or missing credentials",
                 status_code=401,
                 headers=_auth_challenge(),
             )
             await response(scope, receive, send)
+            return
+        if _mcp_cross_site_rejected(scope, headers):
+            await Response("Cross-site request rejected", status_code=403)(scope, receive, send)
             return
         await inner(scope, receive, send)
 

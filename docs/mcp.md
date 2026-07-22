@@ -119,10 +119,12 @@ environment:
 ```
 
 Invalid/expired/wrong-audience tokens get `401`; an authentic token missing a required scope gets
-`403 insufficient_scope`; a JWKS/discovery outage fails **closed** (`401`, never treated as valid).
-Behind a reverse proxy, set `FORWARDED_ALLOW_IPS` and (for sub-paths) `PROXY_PATH_HEADER` so the
-advertised `resource` URL matches what the client reached — see
-[Behind a reverse proxy](#behind-a-reverse-proxy).
+`403 insufficient_scope`; a JWKS/discovery outage fails **closed** (`503 temporarily_unavailable`,
+never treated as valid). The advertised `resource` and the `resource_metadata` challenge URL are
+derived from `OIDC_AUDIENCE`, so they always match the audience your IdP mints tokens for — no
+reverse-proxy header trust is needed to keep them consistent (set `OIDC_AUDIENCE` to the public
+`/mcp` URL). See [Behind a reverse proxy](#behind-a-reverse-proxy) for the unrelated redirect/`https`
+concerns.
 
 [dcr]: https://www.rfc-editor.org/rfc/rfc7591
 [rfc9728]: https://www.rfc-editor.org/rfc/rfc9728

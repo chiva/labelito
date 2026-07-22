@@ -112,13 +112,11 @@ Two things, both covered above:
    prefix: `https://your-host/labelito/mcp/`. See [docs/mcp.md](mcp.md#behind-a-reverse-proxy).
 2. Set `FORWARDED_ALLOW_IPS` so the app knows it's on `https`.
 
-If you use [OIDC auth on `/mcp`](mcp.md#oauth-20--oidc-authentication-external-idp), the same two
-settings matter for a third reason: the `resource` URL in the published Protected Resource Metadata
-and the `resource_metadata` pointer in the `401` challenge are built from the request's scheme/host
-(`X-Forwarded-*`, trusted via `FORWARDED_ALLOW_IPS`) and sub-path (`PROXY_PATH_HEADER`). If the proxy
-doesn't forward these correctly, the advertised URL won't match what the client reached — and won't
-match the `OIDC_AUDIENCE` your IdP mints tokens for. Ensure the proxy preserves the external `Host`
-and sets `X-Forwarded-Proto: https`.
+If you use [OIDC auth on `/mcp`](mcp.md#oauth-20--oidc-authentication-external-idp), the published
+`resource` and the `resource_metadata` pointer in the challenge are derived from **`OIDC_AUDIENCE`**
+(config), not from the request headers — so they can't be thrown off by a missing or spoofed
+`X-Forwarded-*`/`Host`. Just set `OIDC_AUDIENCE` to the public `/mcp` URL your IdP mints tokens for.
+The two settings above still matter for the redirect/`https` behavior, not for the metadata.
 
 ## Examples
 

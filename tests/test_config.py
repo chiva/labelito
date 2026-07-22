@@ -314,6 +314,16 @@ def test_oidc_issuer_must_be_https() -> None:
         )
 
 
+def test_oidc_audience_must_be_absolute_url() -> None:
+    """A non-URL audience is rejected — it would yield a malformed RFC 9728 metadata URL."""
+    with pytest.raises(ValidationError, match="OIDC_AUDIENCE"):
+        Settings(
+            oidc_enabled=True,
+            oidc_issuer="https://idp.example",
+            oidc_audience="labelito-api",
+        )
+
+
 def test_oidc_localhost_http_allowed_for_dev() -> None:
     """http://localhost is permitted for local development."""
     s = Settings(

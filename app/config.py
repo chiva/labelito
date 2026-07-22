@@ -2,6 +2,7 @@
 import re
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -346,6 +347,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"OIDC_ISSUER {issuer!r} must be an absolute https:// URL (http:// is allowed only "
                 "for localhost during development)."
+            )
+        aud_parts = urlsplit(audience)
+        if not (aud_parts.scheme and aud_parts.netloc):
+            raise ValueError(
+                f"OIDC_AUDIENCE {audience!r} must be an absolute URL (e.g. "
+                "https://labelito.example.com/mcp) — it is the resource identifier clients request "
+                "and the origin the published RFC 9728 metadata URL is derived from."
             )
         if not self.oidc_algorithms_list:
             raise ValueError(

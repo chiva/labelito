@@ -1396,30 +1396,21 @@ def _mcp_cross_site_rejected(scope: Scope, headers: Headers) -> bool:
 _MCP_MOUNT_PATH = "/mcp"
 
 
-def _oidc_bearer_challenge(scope: Scope, headers: Headers, error: str | None) -> str:
+def _oidc_bearer_challenge(error: str | None) -> str:
     """Build the ``Bearer`` ``WWW-Authenticate`` value that points MCP clients at the RFC 9728 metadata.
 
     Always carries ``resource_metadata`` (the whole point of the handshake — a token-less client
     discovers the Authorization Server from it). ``error`` is added only when a presented token was
     rejected (``invalid_token``) or under-scoped (``insufficient_scope``, which also advertises the
-    required ``scope``). The metadata URL is derived from the request's scheme/host/root_path so it
-    matches what the client reached, including behind a reverse proxy or sub-path.
+    required ``scope``). The metadata URL is derived from the configured ``OIDC_AUDIENCE`` so it
+    always matches the resource the token is validated against, even behind a reverse proxy.
     """
-    scheme = scope.get("scheme", "http")
-    host = headers.get("host", "")
-    # Inside the mounted /mcp sub-app, root_path is the external prefix PLUS the "/mcp" mount segment.
-    # The metadata lives at the app ROOT (/.well-known/…), so strip that trailing mount segment to
-    # recover the external base — else the emitted URL doubles up as ".../mcp/.well-known/…".
-    root_path = scope.get("root_path", "")
-    if root_path.endswith(_MCP_MOUNT_PATH):
-        root_path = root_path[: -len(_MCP_MOUNT_PATH)]
-    metadata_url = oidc.resource_metadata_url(scheme, host, root_path)
     parts: list[str] = []
     if error:
         parts.append(f'error="{error}"')
     if error == "insufficient_scope" and settings.oidc_scopes_list:
         parts.append(f'scope="{" ".join(settings.oidc_scopes_list)}"')
-    parts.append(f'resource_metadata="{metadata_url}"')
+    parts.append(f'resource_metadata="{oidc.resource_metadata_url()}"')
     return "Bearer " + ", ".join(parts)
 
 
@@ -1440,10 +1431,15 @@ def _guard_mcp(inner: ASGIApp) -> ASGIApp:
             await inner(scope, receive, send)
             return
         headers = Headers(scope=scope)
-        # Offloaded to a worker thread: for an OIDC bearer, _mcp_authorized may do a blocking JWKS /
-        # discovery HTTP fetch (on a cache miss / key rotation), which must never run on the event
-        # loop or it would stall every concurrent request server-wide.
-        verdict = await run_in_threadpool(_mcp_authorized, headers.get("authorization"))
+        auth = headers.get("authorization")
+        if settings.oidc_configured:
+            # Offloaded to a worker thread: for an OIDC bearer, _mcp_authorized may do a blocking JWKS
+            # / discovery HTTP fetch (on a cache miss / key rotation), which must never run on the
+            # event loop or it would stall every concurrent request server-wide. Only OIDC can block,
+            # so the static-token / open path stays inline.
+            verdict = await run_in_threadpool(_mcp_authorized, auth)
+        else:
+            verdict = _mcp_authorized(auth)
         if verdict is _McpAuth.UNAVAILABLE:
             # Fail-closed on a transient JWKS/discovery outage, but 503 (not 401) so a client with a
             # still-valid token retries instead of discarding it and re-running the OAuth handshake.
@@ -1451,7 +1447,7 @@ def _guard_mcp(inner: ASGIApp) -> ASGIApp:
             if settings.oidc_configured:
                 response.headers.append(
                     "WWW-Authenticate",
-                    _oidc_bearer_challenge(scope, headers, "temporarily_unavailable"),
+                    _oidc_bearer_challenge("temporarily_unavailable"),
                 )
             await response(scope, receive, send)
             return
@@ -1462,10 +1458,8 @@ def _guard_mcp(inner: ASGIApp) -> ASGIApp:
             )
             if settings.oidc_configured:
                 # error only when a token was actually presented (else it's the first discovery hit).
-                error = "invalid_token" if headers.get("authorization") else None
-                response.headers.append(
-                    "WWW-Authenticate", _oidc_bearer_challenge(scope, headers, error)
-                )
+                error = "invalid_token" if auth else None
+                response.headers.append("WWW-Authenticate", _oidc_bearer_challenge(error))
             await response(scope, receive, send)
             return
         if verdict is _McpAuth.FORBIDDEN:
@@ -1473,7 +1467,7 @@ def _guard_mcp(inner: ASGIApp) -> ASGIApp:
             if settings.oidc_configured:
                 response.headers.append(
                     "WWW-Authenticate",
-                    _oidc_bearer_challenge(scope, headers, "insufficient_scope"),
+                    _oidc_bearer_challenge("insufficient_scope"),
                 )
             await response(scope, receive, send)
             return
@@ -4240,24 +4234,17 @@ def _register_metrics_route() -> None:
 # ── OAuth 2.0 Protected Resource Metadata (RFC 9728) ─────────────────────────────
 # When OIDC is enabled, publish the metadata that lets an MCP client discover the Authorization
 # Server for the /mcp resource. Public (unauthenticated) — it carries only the issuer + scope names,
-# which the client needs before it can obtain a token. Registered on the PARENT app (not the mounted
-# /mcp sub-app) so _apply_proxy_root_path has populated root_path and the emitted `resource` URL
-# reflects the external, reverse-proxy/sub-path-aware address. Two paths are served with an identical
-# body: the bare well-known and the RFC 9728 resource-suffixed form clients derive from `/mcp`.
-def _protected_resource_metadata(request: Request) -> JSONResponse:
-    """Serve the RFC 9728 Protected Resource Metadata for the /mcp resource (public, unauthenticated).
-
-    scheme/host come from the request (uvicorn applies trusted X-Forwarded-* when FORWARDED_ALLOW_IPS
-    is set; a reverse proxy normally preserves the external Host header); the sub-path prefix comes
-    from root_path (populated by _apply_proxy_root_path from PROXY_PATH_HEADER).
-    """
-    scheme = request.url.scheme
-    host = request.headers.get("host", request.url.netloc)
-    root_path = request.scope.get("root_path", "")
-    return JSONResponse(oidc.protected_resource_metadata(scheme, host, root_path))
+# which the client needs before it can obtain a token. The advertised `resource` is the configured
+# OIDC_AUDIENCE (see app.oidc), so it always matches the audience tokens are validated against. Two
+# paths are served with an identical body: the bare well-known and the RFC 9728 resource-suffixed
+# form clients derive from `/mcp`. Only registered when /mcp is actually mounted (mcp_enabled), else
+# the metadata would advertise a resource that returns 404.
+def _protected_resource_metadata() -> JSONResponse:
+    """Serve the RFC 9728 Protected Resource Metadata for the /mcp resource (public, unauthenticated)."""
+    return JSONResponse(oidc.protected_resource_metadata())
 
 
-if settings.oidc_configured:
+if settings.oidc_configured and settings.mcp_enabled:
     for _prm_path in (
         "/.well-known/oauth-protected-resource",
         "/.well-known/oauth-protected-resource/mcp",

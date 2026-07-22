@@ -121,6 +121,15 @@ def test_sufficient_scope_from_scp_array(
     assert oidc.verify_bearer_token(token) is oidc.Verdict.VALID
 
 
+def test_sufficient_scope_from_array_scope_claim(
+    oidc_on: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Some IdPs emit `scope` as a JSON array rather than a space-delimited string.
+    monkeypatch.setattr(settings, "oidc_required_scopes", "labelito.print")
+    token = _mint(oidc_on, {"scope": ["openid", "labelito.print"]})
+    assert oidc.verify_bearer_token(token) is oidc.Verdict.VALID
+
+
 def test_jwks_unavailable_fails_closed(
     oidc_on: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -190,31 +199,32 @@ def test_unexpected_error_fails_closed(
 # ── RFC 9728 metadata helpers ─────────────────────────────────────────────────────
 
 
-def test_metadata_urls_plain() -> None:
-    assert oidc.resource_url("https", "labelito.example", "") == "https://labelito.example/mcp"
+def test_metadata_urls_plain(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The advertised URLs are derived from OIDC_AUDIENCE, not the live request.
+    monkeypatch.setattr(settings, "oidc_audience", _AUDIENCE)
+    assert oidc.resource_url() == "https://labelito.example/mcp"
     assert (
-        oidc.resource_metadata_url("https", "labelito.example", "")
+        oidc.resource_metadata_url()
         == "https://labelito.example/.well-known/oauth-protected-resource/mcp"
     )
 
 
-def test_metadata_urls_with_subpath() -> None:
-    # A reverse-proxy sub-path (root_path) is reflected in the emitted URLs.
+def test_metadata_urls_with_subpath(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RFC 9728 inserts the well-known prefix at the host root, before the resource's path component.
+    monkeypatch.setattr(settings, "oidc_audience", "https://host.example/labelito/mcp")
+    assert oidc.resource_url() == "https://host.example/labelito/mcp"
     assert (
-        oidc.resource_url("https", "host.example", "/labelito")
-        == "https://host.example/labelito/mcp"
-    )
-    assert (
-        oidc.resource_metadata_url("https", "host.example", "/labelito/")
-        == "https://host.example/labelito/.well-known/oauth-protected-resource/mcp"
+        oidc.resource_metadata_url()
+        == "https://host.example/.well-known/oauth-protected-resource/labelito/mcp"
     )
 
 
 def test_metadata_body(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "oidc_issuer", _ISSUER)
+    monkeypatch.setattr(settings, "oidc_audience", _AUDIENCE)
     monkeypatch.setattr(settings, "oidc_required_scopes", "labelito.print")
-    body = oidc.protected_resource_metadata("https", "labelito.example", "")
-    assert body["resource"] == "https://labelito.example/mcp"
+    body = oidc.protected_resource_metadata()
+    assert body["resource"] == _AUDIENCE
     assert body["authorization_servers"] == [_ISSUER]
     assert body["bearer_methods_supported"] == ["header"]
     assert body["scopes_supported"] == ["labelito.print"]
@@ -222,6 +232,7 @@ def test_metadata_body(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_metadata_body_omits_scopes_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "oidc_issuer", _ISSUER)
+    monkeypatch.setattr(settings, "oidc_audience", _AUDIENCE)
     monkeypatch.setattr(settings, "oidc_required_scopes", None)
-    body = oidc.protected_resource_metadata("https", "labelito.example", "")
+    body = oidc.protected_resource_metadata()
     assert "scopes_supported" not in body

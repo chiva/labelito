@@ -17,6 +17,7 @@ import logging
 import threading
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 
 import jwt
 from jwt import PyJWKClient
@@ -50,7 +51,7 @@ class Verdict(enum.Enum):
     """Outcome of validating a bearer JWT — maps to the guard's HTTP response.
 
     ``VALID`` → allow; ``INVALID`` → 401 ``invalid_token``; ``INSUFFICIENT_SCOPE`` → 403
-    ``insufficient_scope``; ``UNAVAILABLE`` → 401 ``temporarily_unavailable`` (fail-closed: a JWKS or
+    ``insufficient_scope``; ``UNAVAILABLE`` → 503 ``temporarily_unavailable`` (fail-closed: a JWKS or
     discovery fetch failure is never treated as a valid token).
     """
 
@@ -138,6 +139,8 @@ def _scopes_ok(claims: dict[str, object]) -> bool:
     scope = claims.get("scope")
     if isinstance(scope, str):
         granted.update(scope.split())
+    elif isinstance(scope, list):
+        granted.update(str(s) for s in scope)
     scp = claims.get("scp")
     if isinstance(scp, str):
         granted.update(scp.split())
@@ -201,31 +204,28 @@ def _verify(token: str) -> Verdict:
 
 
 # ── RFC 9728 Protected Resource Metadata helpers ──────────────────────────────────────────────────
-# The external URL is derived from the request's scheme/host (uvicorn rewrites these from the trusted
-# X-Forwarded-* headers when FORWARDED_ALLOW_IPS is set) and root_path (populated from
-# PROXY_PATH_HEADER by app.main._apply_proxy_root_path), so the advertised URLs match what the client
-# actually reached — including behind a reverse proxy or under a sub-path.
+# The advertised URLs are derived from the configured OIDC_AUDIENCE — which is exactly the `aud` the
+# token is validated against and the `resource` the client requests (RFC 8707). Deriving from config
+# (not the live request scheme/Host) means the advertised `resource` can never diverge from the
+# audience behind a TLS-terminating proxy, and a spoofed Host header can't redirect discovery.
 
 
-def _external_base_url(scheme: str, host: str, root_path: str) -> str:
-    """Public origin + optional sub-path prefix, e.g. ``https://host`` or ``https://host/labelito``."""
-    return f"{scheme}://{host}{root_path.rstrip('/')}"
+def resource_url() -> str:
+    """Canonical resource identifier for the MCP endpoint — the configured ``OIDC_AUDIENCE``."""
+    return settings.oidc_audience or ""
 
 
-def resource_url(scheme: str, host: str, root_path: str) -> str:
-    """Canonical resource identifier for the MCP endpoint (the ``resource`` value in the metadata)."""
-    return f"{_external_base_url(scheme, host, root_path)}/mcp"
+def resource_metadata_url() -> str:
+    """RFC 9728 metadata URL for the ``/mcp`` resource (well-known prefix + the resource's path)."""
+    parts = urlsplit(settings.oidc_audience or "")
+    path = f"/.well-known/oauth-protected-resource{parts.path}"
+    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
-def resource_metadata_url(scheme: str, host: str, root_path: str) -> str:
-    """RFC 9728 metadata URL for the ``/mcp`` resource (well-known prefix + the resource path)."""
-    return f"{_external_base_url(scheme, host, root_path)}/.well-known/oauth-protected-resource/mcp"
-
-
-def protected_resource_metadata(scheme: str, host: str, root_path: str) -> dict[str, object]:
+def protected_resource_metadata() -> dict[str, object]:
     """Build the RFC 9728 Protected Resource Metadata document body."""
     metadata: dict[str, object] = {
-        "resource": resource_url(scheme, host, root_path),
+        "resource": resource_url(),
         "authorization_servers": [settings.oidc_issuer],
         "bearer_methods_supported": ["header"],
     }

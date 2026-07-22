@@ -709,8 +709,9 @@ def test_http_no_bearer_challenge_when_oidc_disabled(monkeypatch: pytest.MonkeyP
 
 
 def test_protected_resource_metadata_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The RFC 9728 metadata routes serve the expected body and reflect the external Host."""
+    """The RFC 9728 metadata routes serve the expected body — `resource` is the configured audience."""
     monkeypatch.setattr(main.settings, "oidc_issuer", _ISSUER)
+    monkeypatch.setattr(main.settings, "oidc_audience", _AUDIENCE)
     monkeypatch.setattr(main.settings, "oidc_required_scopes", "labelito.print")
     host = FastAPI()
     for path in (
@@ -723,10 +724,11 @@ def test_protected_resource_metadata_endpoint(monkeypatch: pytest.MonkeyPatch) -
             "/.well-known/oauth-protected-resource",
             "/.well-known/oauth-protected-resource/mcp",
         ):
-            resp = http.get(path, headers={"Host": "labelito.example"})
+            # A spoofed Host must NOT influence the advertised resource (derived from config).
+            resp = http.get(path, headers={"Host": "evil.example"})
             assert resp.status_code == 200
             body = resp.json()
-            assert body["resource"] == "http://labelito.example/mcp"
+            assert body["resource"] == _AUDIENCE
             assert body["authorization_servers"] == [_ISSUER]
             assert body["bearer_methods_supported"] == ["header"]
             assert body["scopes_supported"] == ["labelito.print"]

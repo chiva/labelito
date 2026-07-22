@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/chiva/labelito/compare/v0.18.0...v0.18.1) (2026-07-22)
+
+
+### Documentation
+
+* **mcp:** fix claude mcp add argument order ([#101](https://github.com/chiva/labelito/issues/101)) ([dabc397](https://github.com/chiva/labelito/commit/dabc397e33176118b731b678e1d4b6befb3d2650))
+
 ## [0.18.0](https://github.com/chiva/labelito/compare/v0.17.1...v0.18.0) (2026-07-22)
 
 

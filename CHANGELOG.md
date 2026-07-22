@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/chiva/labelito/compare/v0.17.1...v0.18.0) (2026-07-22)
+
+
+### Features
+
+* **mcp:** OAuth 2.0 Resource Server (OIDC) auth for /mcp ([#98](https://github.com/chiva/labelito/issues/98)) ([5cf0346](https://github.com/chiva/labelito/commit/5cf0346b36b252144ba1165dbe9a203db99198f5))
+
+
+### Bug Fixes
+
+* **mcp:** harden OIDC metadata and guard per follow-up review ([#100](https://github.com/chiva/labelito/issues/100)) ([2a0bb81](https://github.com/chiva/labelito/commit/2a0bb81288b7bdca6e40303155e410a2570a9801))
+
 ## [0.17.1](https://github.com/chiva/labelito/compare/v0.17.0...v0.17.1) (2026-07-21)
 
 

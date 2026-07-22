@@ -755,7 +755,7 @@ wheels = [
 
 [[package]]
 name = "labelito"
-version = "0.17.1"
+version = "0.18.0"
 source = { editable = "." }
 dependencies = [
     { name = "brother-ql-next" },

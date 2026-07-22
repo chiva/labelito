@@ -284,3 +284,66 @@ def test_stale_env_file_keys_are_ignored(tmp_path: Path) -> None:
     s = Settings(_env_file=env_file)
     assert s.model == "QL-820NWB"
     assert not hasattr(s, "label_size")
+
+
+# ── OIDC Resource Server validation ────────────────────────────────────────────────
+def test_oidc_disabled_by_default() -> None:
+    """OIDC is opt-in: off by default with no issuer/audience and no scope requirement."""
+    s = Settings()
+    assert s.oidc_enabled is False
+    assert s.oidc_configured is False
+    assert s.oidc_scopes_list == []
+    assert s.oidc_algorithms_list == ["RS256"]
+
+
+def test_oidc_enabled_requires_issuer_and_audience() -> None:
+    """Enabling OIDC without an issuer or audience fails fast at load."""
+    with pytest.raises(ValidationError, match="OIDC_ISSUER"):
+        Settings(oidc_enabled=True)
+    with pytest.raises(ValidationError, match="OIDC_ISSUER"):
+        Settings(oidc_enabled=True, oidc_issuer="https://idp.example", oidc_audience="  ")
+
+
+def test_oidc_issuer_must_be_https() -> None:
+    """A non-localhost http:// issuer is rejected (tokens/JWKS must not traverse plaintext)."""
+    with pytest.raises(ValidationError, match="https://"):
+        Settings(
+            oidc_enabled=True,
+            oidc_issuer="http://idp.example",
+            oidc_audience="https://labelito.example/mcp",
+        )
+
+
+def test_oidc_localhost_http_allowed_for_dev() -> None:
+    """http://localhost is permitted for local development."""
+    s = Settings(
+        oidc_enabled=True,
+        oidc_issuer="http://localhost:8080/realms/labelito",
+        oidc_audience="http://localhost:8765/mcp",
+    )
+    assert s.oidc_configured is True
+
+
+def test_oidc_configured_and_scope_parsing() -> None:
+    """A fully-configured OIDC block reports configured and parses space-separated scopes/algs."""
+    s = Settings(
+        oidc_enabled=True,
+        oidc_issuer="https://idp.example/realms/labelito",
+        oidc_audience="https://labelito.example/mcp",
+        oidc_required_scopes="labelito.print  labelito.read",
+        oidc_algorithms="RS256 ES256",
+    )
+    assert s.oidc_configured is True
+    assert s.oidc_scopes_list == ["labelito.print", "labelito.read"]
+    assert s.oidc_algorithms_list == ["RS256", "ES256"]
+
+
+def test_oidc_empty_algorithms_rejected() -> None:
+    """An empty algorithm allowlist would accept nothing usable — reject at load."""
+    with pytest.raises(ValidationError, match="OIDC_ALGORITHMS"):
+        Settings(
+            oidc_enabled=True,
+            oidc_issuer="https://idp.example",
+            oidc_audience="https://labelito.example/mcp",
+            oidc_algorithms="   ",
+        )

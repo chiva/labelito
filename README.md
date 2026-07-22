@@ -245,7 +245,9 @@ client (Claude Desktop, etc.) can drive it directly — set `MCP_ENABLED=true` a
 on the same port, behind the **same `Authorization: Bearer $API_TOKEN`** (or HTTP Basic) as the REST
 API. It is **read-only by default**; set `MCP_WRITABLE=true` to also expose the printing tools. Point
 clients at the trailing-slash URL (`http://<host>:8765/mcp/`); behind a TLS reverse proxy also see
-[reverse-proxy deployment](docs/reverse-proxy.md).
+[reverse-proxy deployment](docs/reverse-proxy.md). For AI clients that authenticate via OAuth/OIDC +
+Dynamic Client Registration, `/mcp` can additionally validate JWT access tokens from your own OIDC
+provider (opt-in, additive) — see [OIDC authentication](docs/mcp.md#oauth-20--oidc-authentication-external-idp).
 
 | Tool | Access | What |
 |---|---|---|

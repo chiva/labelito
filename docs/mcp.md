@@ -9,6 +9,7 @@ identically to the corresponding endpoint.
 - [Enabling it](#enabling-it)
 - [Transport & endpoint](#transport--endpoint)
 - [Authentication](#authentication)
+- [OAuth 2.0 / OIDC authentication (external IdP)](#oauth-20--oidc-authentication-external-idp)
 - [Behind a reverse proxy](#behind-a-reverse-proxy)
 - [Tools](#tools)
 - [Connecting a client](#connecting-a-client)
@@ -61,6 +62,70 @@ token. In unauthenticated mode the endpoint is open, exactly like the rest of th
 > DNS-rebinding Host/Origin validation is disabled on the `/mcp` mount (a self-hosted service is
 > reached at an arbitrary, deployment-specific host/IP), so the bearer/Basic auth above plus network
 > placement are the access controls — keep `API_TOKEN` set on any network-reachable deployment.
+
+## OAuth 2.0 / OIDC authentication (external IdP)
+
+Many AI MCP clients (ChatGPT connectors, Claude connectors, …) authenticate via the MCP
+Authorization spec rather than a hand-configured static header: they discover an OAuth Authorization
+Server, register themselves with [Dynamic Client Registration (DCR, RFC 7591)][dcr], log the user in
+via OpenID Connect, and present the resulting bearer **JWT** access token. labelito supports this as
+an opt-in, **additive** layer on `/mcp`.
+
+labelito acts only as an OAuth 2.0 **Resource Server**. Your **existing OIDC provider** (Keycloak,
+Authentik, Zitadel, …) is the Authorization Server and handles DCR + login; it must support DCR for
+DCR-only clients to self-register. labelito never becomes an authorization server — it publishes
+[RFC 9728][rfc9728] Protected Resource Metadata pointing at your issuer and validates the token
+(signature via the issuer's JWKS, plus `iss` / `aud` / `exp` / scopes).
+
+**This is additive:** with OIDC on, `/mcp` *still* accepts the static `API_TOKEN` bearer and HTTP
+Basic. It also covers **only `/mcp`** — the REST API and web UI stay on bearer/Basic. If you want
+those protected too, keep `API_TOKEN` (or `WEB_AUTH_*`) set. Because OIDC does not protect the REST
+API, it does **not** satisfy the fail-closed startup guard on its own: an OIDC-only deployment must
+still set `API_TOKEN`/`WEB_AUTH_*`, or explicitly acknowledge the open REST surface with
+`ALLOW_UNAUTHENTICATED=true`.
+
+The handshake (all automatic in a compliant client): the client `POST`s to `/mcp/` → gets `401` with
+`WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"` → fetches
+that metadata → discovers your Authorization Server → does DCR + OIDC login → obtains a token →
+retries with `Authorization: Bearer <token>`.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `OIDC_ENABLED` | `false` | Master opt-in. When `true`, `/mcp` also accepts validated OIDC JWTs and the metadata endpoint is published. |
+| `OIDC_ISSUER` | – | Issuer URL exactly as it appears in the token `iss` (e.g. `https://idp.example.com/realms/labelito`). Advertised as the Authorization Server. **Required** when enabled. |
+| `OIDC_AUDIENCE` | – | Expected `aud` — the resource identifier you configure the IdP to mint `/mcp` tokens for (normally labelito's public `/mcp` URL). **Required** when enabled. |
+| `OIDC_REQUIRED_SCOPES` | – | Space-separated scopes a token must carry (e.g. `labelito.print`). Empty = no scope requirement. |
+| `OIDC_JWKS_URI` | – | Explicit JWKS endpoint; bypasses discovery. |
+| `OIDC_DISCOVERY` | `true` | When JWKS is unset, resolve it from `{issuer}/.well-known/openid-configuration`. |
+| `OIDC_ALGORITHMS` | `RS256` | Space-separated allowlist of accepted JWT signing algorithms (set `ES256` for EC keys). Blocks `alg:none`/HMAC confusion. |
+| `OIDC_LEEWAY_SECONDS` | `60` | Clock-skew tolerance for `exp`/`nbf`/`iat`. |
+
+At your IdP: register a resource / API whose identifier equals `OIDC_AUDIENCE` (typically the public
+`/mcp` URL), optionally define a scope (e.g. `labelito.print`), and enable Dynamic Client
+Registration so MCP clients can self-register. Then:
+
+```yaml
+# docker-compose.yml (excerpt)
+environment:
+  MCP_ENABLED: "true"
+  MCP_WRITABLE: "true"
+  # OIDC Resource Server — validate tokens from your external IdP (additive to API_TOKEN):
+  OIDC_ENABLED: "true"
+  OIDC_ISSUER: "https://idp.example.com/realms/labelito"
+  OIDC_AUDIENCE: "https://labelito.example.com/mcp"
+  OIDC_REQUIRED_SCOPES: "labelito.print"
+  # Keep API_TOKEN set to also protect the REST API / web UI (OIDC covers only /mcp):
+  API_TOKEN: "a-long-random-secret"
+```
+
+Invalid/expired/wrong-audience tokens get `401`; an authentic token missing a required scope gets
+`403 insufficient_scope`; a JWKS/discovery outage fails **closed** (`401`, never treated as valid).
+Behind a reverse proxy, set `FORWARDED_ALLOW_IPS` and (for sub-paths) `PROXY_PATH_HEADER` so the
+advertised `resource` URL matches what the client reached — see
+[Behind a reverse proxy](#behind-a-reverse-proxy).
+
+[dcr]: https://www.rfc-editor.org/rfc/rfc7591
+[rfc9728]: https://www.rfc-editor.org/rfc/rfc9728
 
 ## Behind a reverse proxy
 

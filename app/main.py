@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import enum
 import errno
 import hashlib
 import importlib.metadata
@@ -59,6 +60,7 @@ from starlette.datastructures import Headers
 from starlette.routing import Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app import oidc
 from app.config import settings
 from app.drivers.brother_ql import BrotherQLDriver
 from app.history import HistoryStore, build_history_store
@@ -1181,16 +1183,27 @@ def _require_auth_or_optout() -> None:
         and not settings.basic_auth_enabled
         and not settings.allow_unauthenticated
     ):
+        # OIDC deliberately does NOT satisfy this guard: it protects only /mcp, so on its own it would
+        # leave the REST API and web UI open. An OIDC-only deployment must still make that explicit by
+        # setting ALLOW_UNAUTHENTICATED=true (or configure API_TOKEN / Basic to actually protect them).
         raise RuntimeError(
             "No authentication configured. Set API_TOKEN (bearer) or WEB_AUTH_USER/WEB_AUTH_PASSWORD "
             "(HTTP Basic) to require authentication, or set ALLOW_UNAUTHENTICATED=true to explicitly "
-            "run without auth (intranet/trusted networks only)."
+            "run without auth (intranet/trusted networks only). Note: OIDC (OIDC_ENABLED) protects "
+            "only the /mcp endpoint, not the REST API or web UI, so it does not satisfy this guard."
         )
     if not settings.api_token and not settings.basic_auth_enabled:
-        log.warning(
-            "Running WITHOUT authentication (ALLOW_UNAUTHENTICATED=true): any host that can "
-            "reach this service can print and control the printer. Trusted intranet use only."
-        )
+        if settings.oidc_configured:
+            log.warning(
+                "OIDC is configured but API_TOKEN / WEB_AUTH_* are not: OIDC bearer tokens protect "
+                "ONLY the /mcp endpoint — the REST API and web UI are UNAUTHENTICATED. Set API_TOKEN "
+                "or WEB_AUTH_USER/WEB_AUTH_PASSWORD to protect them. Trusted intranet use only."
+            )
+        else:
+            log.warning(
+                "Running WITHOUT authentication (ALLOW_UNAUTHENTICATED=true): any host that can "
+                "reach this service can print and control the printer. Trusted intranet use only."
+            )
 
 
 def _bearer_ok(creds: HTTPAuthorizationCredentials | None) -> bool:
@@ -1304,32 +1317,62 @@ def _require_web_auth(
     )
 
 
-def _mcp_authorized(authorization: str | None) -> bool:
+class _McpAuth(enum.Enum):
+    """Verdict for a ``/mcp`` request, mapped by :func:`_guard_mcp` to an HTTP response.
+
+    ``AUTHORIZED`` → proceed; ``UNAUTHORIZED`` → 401 ``invalid_token``; ``FORBIDDEN`` → 403
+    ``insufficient_scope`` (an authentic OIDC token that lacks a required scope — distinct from 401
+    so clients don't re-auth-loop); ``UNAVAILABLE`` → 503 ``temporarily_unavailable`` (a JWKS/OIDC
+    discovery outage — fail-closed, but tells a client to *retry* rather than discard a valid token).
+    """
+
+    AUTHORIZED = "authorized"
+    UNAUTHORIZED = "unauthorized"
+    FORBIDDEN = "forbidden"
+    UNAVAILABLE = "unavailable"
+
+
+def _mcp_authorized(authorization: str | None) -> _McpAuth:
     """Authorize a request to the mounted ``/mcp`` app from its raw ``Authorization`` header.
 
     The MCP endpoint is a mounted ASGI sub-app, so it cannot use ``check_token`` (a FastAPI route
-    dependency) directly. This reuses the SAME credential primitives (:func:`_bearer_ok` /
-    :func:`_basic_ok`) so the /mcp gate can never drift from the REST API's: a valid API_TOKEN bearer
-    OR valid HTTP Basic credentials. No-ops (returns True) in unauthenticated mode, exactly like
-    ``check_token``. A malformed/other-scheme header is a clean deny.
+    dependency) directly. This reuses the SAME static credential primitives (:func:`_bearer_ok` /
+    :func:`_basic_ok`) so the /mcp gate can never drift from the REST API's — a valid API_TOKEN bearer
+    OR valid HTTP Basic credentials — and, when ``OIDC_ENABLED``, ADDITIONALLY accepts a bearer JWT
+    validated by :func:`app.oidc.verify_bearer_token`. Any one scheme satisfying is enough (boolean
+    OR). No-ops (``AUTHORIZED``) in unauthenticated mode, exactly like ``check_token``. A
+    malformed/other-scheme header is a clean deny.
     """
-    if not settings.api_token and not settings.basic_auth_enabled:
-        return True
+    if not settings.api_token and not settings.basic_auth_enabled and not settings.oidc_configured:
+        return _McpAuth.AUTHORIZED
     if not authorization:
-        return False
+        return _McpAuth.UNAUTHORIZED
     scheme, _, param = authorization.partition(" ")
     scheme_lower = scheme.lower()
     if scheme_lower == "bearer":
-        return _bearer_ok(HTTPAuthorizationCredentials(scheme=scheme, credentials=param))
+        # Try the static API_TOKEN first (unchanged, constant-time); fall back to OIDC JWT validation.
+        if _bearer_ok(HTTPAuthorizationCredentials(scheme=scheme, credentials=param)):
+            return _McpAuth.AUTHORIZED
+        if settings.oidc_configured:
+            verdict = oidc.verify_bearer_token(param)
+            if verdict is oidc.Verdict.VALID:
+                return _McpAuth.AUTHORIZED
+            if verdict is oidc.Verdict.INSUFFICIENT_SCOPE:
+                return _McpAuth.FORBIDDEN
+            if verdict is oidc.Verdict.UNAVAILABLE:
+                return _McpAuth.UNAVAILABLE
+        return _McpAuth.UNAUTHORIZED
     if scheme_lower == "basic":
         try:
             user, sep, password = base64.b64decode(param).decode("utf-8").partition(":")
         except (binascii.Error, ValueError):
-            return False
+            return _McpAuth.UNAUTHORIZED
         if not sep:
-            return False
-        return _basic_ok(HTTPBasicCredentials(username=user, password=password))
-    return False
+            return _McpAuth.UNAUTHORIZED
+        if _basic_ok(HTTPBasicCredentials(username=user, password=password)):
+            return _McpAuth.AUTHORIZED
+        return _McpAuth.UNAUTHORIZED
+    return _McpAuth.UNAUTHORIZED
 
 
 def _mcp_cross_site_rejected(scope: Scope, headers: Headers) -> bool:
@@ -1348,13 +1391,47 @@ def _mcp_cross_site_rejected(scope: Scope, headers: Headers) -> bool:
     return site is not None and site not in ("same-origin", "none")
 
 
+# Path the MCP ASGI app is mounted at (see the mount block below). Kept as a constant because the
+# /mcp guard must strip it back off root_path to build root-level RFC 9728 metadata URLs.
+_MCP_MOUNT_PATH = "/mcp"
+
+
+def _oidc_bearer_challenge(scope: Scope, headers: Headers, error: str | None) -> str:
+    """Build the ``Bearer`` ``WWW-Authenticate`` value that points MCP clients at the RFC 9728 metadata.
+
+    Always carries ``resource_metadata`` (the whole point of the handshake — a token-less client
+    discovers the Authorization Server from it). ``error`` is added only when a presented token was
+    rejected (``invalid_token``) or under-scoped (``insufficient_scope``, which also advertises the
+    required ``scope``). The metadata URL is derived from the request's scheme/host/root_path so it
+    matches what the client reached, including behind a reverse proxy or sub-path.
+    """
+    scheme = scope.get("scheme", "http")
+    host = headers.get("host", "")
+    # Inside the mounted /mcp sub-app, root_path is the external prefix PLUS the "/mcp" mount segment.
+    # The metadata lives at the app ROOT (/.well-known/…), so strip that trailing mount segment to
+    # recover the external base — else the emitted URL doubles up as ".../mcp/.well-known/…".
+    root_path = scope.get("root_path", "")
+    if root_path.endswith(_MCP_MOUNT_PATH):
+        root_path = root_path[: -len(_MCP_MOUNT_PATH)]
+    metadata_url = oidc.resource_metadata_url(scheme, host, root_path)
+    parts: list[str] = []
+    if error:
+        parts.append(f'error="{error}"')
+    if error == "insufficient_scope" and settings.oidc_scopes_list:
+        parts.append(f'scope="{" ".join(settings.oidc_scopes_list)}"')
+    parts.append(f'resource_metadata="{metadata_url}"')
+    return "Bearer " + ", ".join(parts)
+
+
 def _guard_mcp(inner: ASGIApp) -> ASGIApp:
     """Wrap the mounted MCP ASGI app in the same auth + CSRF guards as the rest of the protected API.
 
-    Runs before the MCP handler on every HTTP request: an unauthenticated request (in a mode that
-    requires auth) gets a 401 — with the Basic ``WWW-Authenticate`` challenge when Basic auth is on —
-    identical to ``check_token``'s reply, and a cross-site state-changing request under Basic auth
-    gets a 403 (see :func:`_mcp_cross_site_rejected`). Neither reaches the MCP session manager.
+    Runs before the MCP handler on every HTTP request: an unauthorized request (in a mode that
+    requires auth) gets a 401 — with the Basic ``WWW-Authenticate`` challenge when Basic auth is on,
+    plus a ``Bearer resource_metadata=…`` challenge when OIDC is on so MCP clients can discover the
+    Authorization Server (RFC 9728). An authentic-but-under-scoped OIDC token gets a 403
+    (``insufficient_scope``). A cross-site state-changing request under Basic auth also gets a 403
+    (see :func:`_mcp_cross_site_rejected`). Nothing rejected reaches the MCP session manager.
     Non-HTTP scopes (there are none for streamable HTTP, but be exhaustive) pass straight through.
     """
 
@@ -1363,12 +1440,41 @@ def _guard_mcp(inner: ASGIApp) -> ASGIApp:
             await inner(scope, receive, send)
             return
         headers = Headers(scope=scope)
-        if not _mcp_authorized(headers.get("authorization")):
+        # Offloaded to a worker thread: for an OIDC bearer, _mcp_authorized may do a blocking JWKS /
+        # discovery HTTP fetch (on a cache miss / key rotation), which must never run on the event
+        # loop or it would stall every concurrent request server-wide.
+        verdict = await run_in_threadpool(_mcp_authorized, headers.get("authorization"))
+        if verdict is _McpAuth.UNAVAILABLE:
+            # Fail-closed on a transient JWKS/discovery outage, but 503 (not 401) so a client with a
+            # still-valid token retries instead of discarding it and re-running the OAuth handshake.
+            response = Response("Authorization service temporarily unavailable", status_code=503)
+            if settings.oidc_configured:
+                response.headers.append(
+                    "WWW-Authenticate",
+                    _oidc_bearer_challenge(scope, headers, "temporarily_unavailable"),
+                )
+            await response(scope, receive, send)
+            return
+        if verdict is _McpAuth.UNAUTHORIZED:
+            challenge = _auth_challenge() or {}
             response = Response(
-                "Invalid or missing credentials",
-                status_code=401,
-                headers=_auth_challenge(),
+                "Invalid or missing credentials", status_code=401, headers=challenge
             )
+            if settings.oidc_configured:
+                # error only when a token was actually presented (else it's the first discovery hit).
+                error = "invalid_token" if headers.get("authorization") else None
+                response.headers.append(
+                    "WWW-Authenticate", _oidc_bearer_challenge(scope, headers, error)
+                )
+            await response(scope, receive, send)
+            return
+        if verdict is _McpAuth.FORBIDDEN:
+            response = Response("Insufficient scope", status_code=403)
+            if settings.oidc_configured:
+                response.headers.append(
+                    "WWW-Authenticate",
+                    _oidc_bearer_challenge(scope, headers, "insufficient_scope"),
+                )
             await response(scope, receive, send)
             return
         if _mcp_cross_site_rejected(scope, headers):
@@ -4131,6 +4237,40 @@ def _register_metrics_route() -> None:
     )
 
 
+# ── OAuth 2.0 Protected Resource Metadata (RFC 9728) ─────────────────────────────
+# When OIDC is enabled, publish the metadata that lets an MCP client discover the Authorization
+# Server for the /mcp resource. Public (unauthenticated) — it carries only the issuer + scope names,
+# which the client needs before it can obtain a token. Registered on the PARENT app (not the mounted
+# /mcp sub-app) so _apply_proxy_root_path has populated root_path and the emitted `resource` URL
+# reflects the external, reverse-proxy/sub-path-aware address. Two paths are served with an identical
+# body: the bare well-known and the RFC 9728 resource-suffixed form clients derive from `/mcp`.
+def _protected_resource_metadata(request: Request) -> JSONResponse:
+    """Serve the RFC 9728 Protected Resource Metadata for the /mcp resource (public, unauthenticated).
+
+    scheme/host come from the request (uvicorn applies trusted X-Forwarded-* when FORWARDED_ALLOW_IPS
+    is set; a reverse proxy normally preserves the external Host header); the sub-path prefix comes
+    from root_path (populated by _apply_proxy_root_path from PROXY_PATH_HEADER).
+    """
+    scheme = request.url.scheme
+    host = request.headers.get("host", request.url.netloc)
+    root_path = request.scope.get("root_path", "")
+    return JSONResponse(oidc.protected_resource_metadata(scheme, host, root_path))
+
+
+if settings.oidc_configured:
+    for _prm_path in (
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/mcp",
+    ):
+        app.add_api_route(
+            _prm_path,
+            _protected_resource_metadata,
+            methods=["GET"],
+            tags=["System"],
+            include_in_schema=False,
+        )
+
+
 # ── MCP server mount ─────────────────────────────────────────────────────────────
 # Mount the Model Context Protocol server at /mcp when MCP_ENABLED, behind the same bearer/Basic auth
 # as the REST API (_guard_mcp). Imported lazily (only when enabled) to avoid the app.main <-> app.mcp
@@ -4141,7 +4281,7 @@ if settings.mcp_enabled:
     from app.mcp import build_mcp_asgi_app
 
     _mcp_server, _mcp_asgi_app = build_mcp_asgi_app()
-    app.mount("/mcp", _guard_mcp(_mcp_asgi_app))
+    app.mount(_MCP_MOUNT_PATH, _guard_mcp(_mcp_asgi_app))
 
 
 _register_metrics_route()

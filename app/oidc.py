@@ -21,9 +21,12 @@ import urllib.request
 import jwt
 from jwt import PyJWKClient
 from jwt.exceptions import (
+    InvalidKeyError,
     InvalidTokenError,
     PyJWKClientConnectionError,
     PyJWKClientError,
+    PyJWKError,
+    PyJWKSetError,
 )
 
 from app.config import settings
@@ -114,7 +117,14 @@ def _get_jwks_client() -> PyJWKClient:
     with _lock:
         uri = _resolve_jwks_uri()
         if _jwks_client is None or _jwks_client_uri != uri:
-            _jwks_client = PyJWKClient(uri, cache_keys=True, lifespan=_JWKS_CACHE_LIFESPAN)
+            # timeout is explicit: PyJWKClient defaults to 30s, which would let a JWKS cache miss
+            # stall the /mcp guard far past _DISCOVERY_TIMEOUT. Keep key fetches aligned with it.
+            _jwks_client = PyJWKClient(
+                uri,
+                cache_keys=True,
+                lifespan=_JWKS_CACHE_LIFESPAN,
+                timeout=_DISCOVERY_TIMEOUT,
+            )
             _jwks_client_uri = uri
         return _jwks_client
 
@@ -141,14 +151,27 @@ def verify_bearer_token(token: str) -> Verdict:
 
     Verifies the signature against the IdP's JWKS and enforces ``iss``, ``aud``, ``exp`` (with
     ``OIDC_LEEWAY_SECONDS`` clock-skew tolerance) and the required scopes. The algorithm allowlist
-    (``OIDC_ALGORITHMS``) structurally blocks ``alg:none`` and HMAC key-confusion. Never raises — a
-    fetch failure fails closed to ``UNAVAILABLE`` and any bad/malformed token to ``INVALID``.
+    (``OIDC_ALGORITHMS``) structurally blocks ``alg:none`` and HMAC key-confusion. **Never raises** —
+    a fetch/JWKS failure fails closed to ``UNAVAILABLE`` and any bad/malformed token to ``INVALID``;
+    an outer backstop maps any unforeseen error to ``UNAVAILABLE`` so the /mcp guard can't 500.
     """
     if not settings.oidc_configured:
         return Verdict.INVALID
     try:
+        return _verify(token)
+    except Exception as exc:
+        # The contract is "never raises" so the /mcp guard can't 500 — fail closed on any surprise.
+        log.warning("OIDC: unexpected validation error, denying (fail-closed): %s", exc)
+        return Verdict.UNAVAILABLE
+
+
+def _verify(token: str) -> Verdict:
+    """Core validation for :func:`verify_bearer_token` (which wraps this in a fail-closed backstop)."""
+    try:
         signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
-    except (_OidcUnavailableError, PyJWKClientConnectionError) as exc:
+    except (_OidcUnavailableError, PyJWKClientConnectionError, PyJWKSetError, PyJWKError) as exc:
+        # Network/discovery failure, or a malformed/empty JWKS document — an IdP-side transient
+        # condition. Fail closed to UNAVAILABLE (retry), never treat as a valid token.
         log.warning("OIDC: signing keys unavailable, denying (fail-closed): %s", exc)
         return Verdict.UNAVAILABLE
     except (PyJWKClientError, InvalidTokenError) as exc:
@@ -165,7 +188,10 @@ def verify_bearer_token(token: str) -> Verdict:
             leeway=settings.oidc_leeway_seconds,
             options={"require": ["exp", "iss", "aud"]},
         )
-    except InvalidTokenError as exc:
+    except (InvalidTokenError, InvalidKeyError, TypeError, ValueError) as exc:
+        # Signature/claim rejection, or a key whose type doesn't match the token's `alg` (e.g. an
+        # allowed RS256 token whose kid resolves to a non-RSA JWKS key → InvalidKeyError/TypeError).
+        # All are attacker-influenceable, so treat as a clean INVALID rather than letting them escape.
         log.info("OIDC: token rejected (%s)", exc)
         return Verdict.INVALID
     if not _scopes_ok(claims):

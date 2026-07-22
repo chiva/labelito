@@ -365,7 +365,13 @@ class Settings(BaseSettings):
 
     @property
     def oidc_configured(self) -> bool:
-        """True when OIDC is enabled AND its required issuer/audience are both present."""
+        """True when OIDC is enabled AND its required issuer/audience are both present.
+
+        ``_validate_oidc`` already guarantees this equals ``oidc_enabled`` for a normally-loaded
+        Settings, but this stays a defensive guard: token validation must never run with a missing
+        audience (``jwt.decode(audience=None)`` silently disables ``aud`` verification), so the
+        runtime auth paths gate on this rather than on ``oidc_enabled`` alone.
+        """
         return self.oidc_enabled and bool(self.oidc_issuer and self.oidc_audience)
 
     # Root log level for the process, applied by app.main's logging.basicConfig at import. Standard

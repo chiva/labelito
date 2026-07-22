@@ -13,7 +13,7 @@ from typing import Any
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jwt.exceptions import PyJWKClientConnectionError
+from jwt.exceptions import PyJWKClientConnectionError, PyJWKSetError
 
 from app import oidc
 from app.config import settings
@@ -153,6 +153,38 @@ def test_alg_none_rejected(oidc_on: rsa.RSAPrivateKey) -> None:
 def test_disabled_returns_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "oidc_enabled", False)
     assert oidc.verify_bearer_token("anything") is oidc.Verdict.INVALID
+
+
+def test_key_type_mismatch_returns_invalid(
+    oidc_on: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Multi-key JWKS: an RS256 token whose kid resolves to a non-RSA (EC) key. jwt.decode raises
+    # TypeError/InvalidKeyError, which must be caught as a clean INVALID (not escape as HTTP 500).
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    ec_key = ec.generate_private_key(ec.SECP256R1())
+    monkeypatch.setattr(oidc, "_get_jwks_client", lambda: _FakeJWKSClient(ec_key.public_key()))
+    assert oidc.verify_bearer_token(_mint(oidc_on, {})) is oidc.Verdict.INVALID
+
+
+def test_malformed_jwks_fails_closed(
+    oidc_on: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An empty/malformed JWKS document raises PyJWKSetError — an IdP-side transient issue → UNAVAILABLE.
+    boom = _FakeJWKSClient(exc=PyJWKSetError("The JWK Set did not contain any usable keys"))
+    monkeypatch.setattr(oidc, "_get_jwks_client", lambda: boom)
+    assert oidc.verify_bearer_token(_mint(oidc_on, {})) is oidc.Verdict.UNAVAILABLE
+
+
+def test_unexpected_error_fails_closed(
+    oidc_on: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The "never raises" backstop: any unforeseen exception fails closed to UNAVAILABLE, never escapes.
+    def _boom() -> Any:
+        raise RuntimeError("surprise")
+
+    monkeypatch.setattr(oidc, "_get_jwks_client", _boom)
+    assert oidc.verify_bearer_token(_mint(oidc_on, {})) is oidc.Verdict.UNAVAILABLE
 
 
 # ── RFC 9728 metadata helpers ─────────────────────────────────────────────────────

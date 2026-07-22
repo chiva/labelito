@@ -109,6 +109,31 @@ def test_authorized_basic(monkeypatch: pytest.MonkeyPatch) -> None:
     assert main._mcp_authorized("Basic " + base64.b64encode(b"nocolon").decode()) is A.UNAUTHORIZED
 
 
+def test_startup_guard_rejects_oidc_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OIDC protects only /mcp, so it must NOT satisfy the fail-closed guard on its own."""
+    monkeypatch.setattr(main.settings, "api_token", None)
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    monkeypatch.setattr(main.settings, "allow_unauthenticated", False)
+    monkeypatch.setattr(main.settings, "oidc_enabled", True)
+    monkeypatch.setattr(main.settings, "oidc_issuer", _ISSUER)
+    monkeypatch.setattr(main.settings, "oidc_audience", _AUDIENCE)
+    with pytest.raises(RuntimeError, match="No authentication configured"):
+        main._require_auth_or_optout()
+
+
+def test_startup_guard_oidc_with_explicit_optout_boots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OIDC + an explicit ALLOW_UNAUTHENTICATED opt-out is allowed (REST surface knowingly open)."""
+    monkeypatch.setattr(main.settings, "api_token", None)
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    monkeypatch.setattr(main.settings, "allow_unauthenticated", True)
+    monkeypatch.setattr(main.settings, "oidc_enabled", True)
+    monkeypatch.setattr(main.settings, "oidc_issuer", _ISSUER)
+    monkeypatch.setattr(main.settings, "oidc_audience", _AUDIENCE)
+    main._require_auth_or_optout()  # no raise
+
+
 # ── Read tools (via the client fixture's env) ────────────────────────────────────
 
 
@@ -645,6 +670,28 @@ def test_http_oidc_bearer_is_csrf_inert(monkeypatch: pytest.MonkeyPatch) -> None
             },
         )
         assert resp.status_code == 200
+
+
+def test_http_oidc_unavailable_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A JWKS/discovery outage fails closed as 503 temporarily_unavailable, not 401 invalid_token."""
+    from jwt.exceptions import PyJWKClientConnectionError
+
+    monkeypatch.setattr(main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "api_token", None)
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    key = _rsa_key()
+    _enable_oidc(monkeypatch, key)
+    boom = _FakeJWKSClient(exc=PyJWKClientConnectionError("IdP unreachable", "url"))
+    monkeypatch.setattr(oidc, "_get_jwks_client", lambda: boom)
+    server, asgi = build_mcp_asgi_app()
+    with TestClient(_mounted_app(server, asgi)) as http:
+        token = _mint(key, {})
+        resp = http.post(
+            "/mcp", json=_INIT, headers={**_MCP_HEADERS, "Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 503
+        assert 'error="temporarily_unavailable"' in resp.headers["www-authenticate"]
 
 
 def test_http_no_bearer_challenge_when_oidc_disabled(monkeypatch: pytest.MonkeyPatch) -> None:

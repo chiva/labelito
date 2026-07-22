@@ -79,7 +79,10 @@ DCR-only clients to self-register. labelito never becomes an authorization serve
 
 **This is additive:** with OIDC on, `/mcp` *still* accepts the static `API_TOKEN` bearer and HTTP
 Basic. It also covers **only `/mcp`** — the REST API and web UI stay on bearer/Basic. If you want
-those protected too, keep `API_TOKEN` (or `WEB_AUTH_*`) set.
+those protected too, keep `API_TOKEN` (or `WEB_AUTH_*`) set. Because OIDC does not protect the REST
+API, it does **not** satisfy the fail-closed startup guard on its own: an OIDC-only deployment must
+still set `API_TOKEN`/`WEB_AUTH_*`, or explicitly acknowledge the open REST surface with
+`ALLOW_UNAUTHENTICATED=true`.
 
 The handshake (all automatic in a compliant client): the client `POST`s to `/mcp/` → gets `401` with
 `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"` → fetches

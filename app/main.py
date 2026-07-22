@@ -1182,13 +1182,15 @@ def _require_auth_or_optout() -> None:
         not settings.api_token
         and not settings.basic_auth_enabled
         and not settings.allow_unauthenticated
-        and not settings.oidc_configured
     ):
+        # OIDC deliberately does NOT satisfy this guard: it protects only /mcp, so on its own it would
+        # leave the REST API and web UI open. An OIDC-only deployment must still make that explicit by
+        # setting ALLOW_UNAUTHENTICATED=true (or configure API_TOKEN / Basic to actually protect them).
         raise RuntimeError(
             "No authentication configured. Set API_TOKEN (bearer) or WEB_AUTH_USER/WEB_AUTH_PASSWORD "
             "(HTTP Basic) to require authentication, or set ALLOW_UNAUTHENTICATED=true to explicitly "
             "run without auth (intranet/trusted networks only). Note: OIDC (OIDC_ENABLED) protects "
-            "only the /mcp endpoint, not the REST API or web UI."
+            "only the /mcp endpoint, not the REST API or web UI, so it does not satisfy this guard."
         )
     if not settings.api_token and not settings.basic_auth_enabled:
         if settings.oidc_configured:
@@ -1318,13 +1320,16 @@ def _require_web_auth(
 class _McpAuth(enum.Enum):
     """Verdict for a ``/mcp`` request, mapped by :func:`_guard_mcp` to an HTTP response.
 
-    ``AUTHORIZED`` → proceed; ``UNAUTHORIZED`` → 401; ``FORBIDDEN`` → 403 (an authentic OIDC token
-    that lacks a required scope — deliberately distinct from 401 so clients don't re-auth-loop).
+    ``AUTHORIZED`` → proceed; ``UNAUTHORIZED`` → 401 ``invalid_token``; ``FORBIDDEN`` → 403
+    ``insufficient_scope`` (an authentic OIDC token that lacks a required scope — distinct from 401
+    so clients don't re-auth-loop); ``UNAVAILABLE`` → 503 ``temporarily_unavailable`` (a JWKS/OIDC
+    discovery outage — fail-closed, but tells a client to *retry* rather than discard a valid token).
     """
 
     AUTHORIZED = "authorized"
     UNAUTHORIZED = "unauthorized"
     FORBIDDEN = "forbidden"
+    UNAVAILABLE = "unavailable"
 
 
 def _mcp_authorized(authorization: str | None) -> _McpAuth:
@@ -1354,6 +1359,8 @@ def _mcp_authorized(authorization: str | None) -> _McpAuth:
                 return _McpAuth.AUTHORIZED
             if verdict is oidc.Verdict.INSUFFICIENT_SCOPE:
                 return _McpAuth.FORBIDDEN
+            if verdict is oidc.Verdict.UNAVAILABLE:
+                return _McpAuth.UNAVAILABLE
         return _McpAuth.UNAUTHORIZED
     if scheme_lower == "basic":
         try:
@@ -1433,13 +1440,27 @@ def _guard_mcp(inner: ASGIApp) -> ASGIApp:
             await inner(scope, receive, send)
             return
         headers = Headers(scope=scope)
-        verdict = _mcp_authorized(headers.get("authorization"))
+        # Offloaded to a worker thread: for an OIDC bearer, _mcp_authorized may do a blocking JWKS /
+        # discovery HTTP fetch (on a cache miss / key rotation), which must never run on the event
+        # loop or it would stall every concurrent request server-wide.
+        verdict = await run_in_threadpool(_mcp_authorized, headers.get("authorization"))
+        if verdict is _McpAuth.UNAVAILABLE:
+            # Fail-closed on a transient JWKS/discovery outage, but 503 (not 401) so a client with a
+            # still-valid token retries instead of discarding it and re-running the OAuth handshake.
+            response = Response("Authorization service temporarily unavailable", status_code=503)
+            if settings.oidc_configured:
+                response.headers.append(
+                    "WWW-Authenticate",
+                    _oidc_bearer_challenge(scope, headers, "temporarily_unavailable"),
+                )
+            await response(scope, receive, send)
+            return
         if verdict is _McpAuth.UNAUTHORIZED:
             challenge = _auth_challenge() or {}
             response = Response(
                 "Invalid or missing credentials", status_code=401, headers=challenge
             )
-            if settings.oidc_enabled:
+            if settings.oidc_configured:
                 # error only when a token was actually presented (else it's the first discovery hit).
                 error = "invalid_token" if headers.get("authorization") else None
                 response.headers.append(
@@ -1449,7 +1470,7 @@ def _guard_mcp(inner: ASGIApp) -> ASGIApp:
             return
         if verdict is _McpAuth.FORBIDDEN:
             response = Response("Insufficient scope", status_code=403)
-            if settings.oidc_enabled:
+            if settings.oidc_configured:
                 response.headers.append(
                     "WWW-Authenticate",
                     _oidc_bearer_challenge(scope, headers, "insufficient_scope"),
@@ -4236,7 +4257,7 @@ def _protected_resource_metadata(request: Request) -> JSONResponse:
     return JSONResponse(oidc.protected_resource_metadata(scheme, host, root_path))
 
 
-if settings.oidc_enabled:
+if settings.oidc_configured:
     for _prm_path in (
         "/.well-known/oauth-protected-resource",
         "/.well-known/oauth-protected-resource/mcp",

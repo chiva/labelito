@@ -22,7 +22,9 @@ from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.fastmcp.exceptions import ToolError
 
 import app.main as main
+from app import oidc
 from app.mcp import build_mcp_asgi_app, build_mcp_server
+from tests.test_oidc import _AUDIENCE, _ISSUER, _FakeJWKSClient, _mint
 
 READ_TOOLS = {
     "list_templates",
@@ -79,28 +81,32 @@ def test_authorized_noop_when_unauthenticated(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(main.settings, "api_token", None)
     monkeypatch.setattr(main.settings, "web_auth_user", None)
     monkeypatch.setattr(main.settings, "web_auth_password", None)
-    assert main._mcp_authorized(None) is True
-    assert main._mcp_authorized("Bearer anything") is True
+    monkeypatch.setattr(main.settings, "oidc_enabled", False)
+    assert main._mcp_authorized(None) is main._McpAuth.AUTHORIZED
+    assert main._mcp_authorized("Bearer anything") is main._McpAuth.AUTHORIZED
 
 
 def test_authorized_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main.settings, "api_token", "secret")
     monkeypatch.setattr(main.settings, "web_auth_user", None)
     monkeypatch.setattr(main.settings, "web_auth_password", None)
-    assert main._mcp_authorized("Bearer secret") is True
-    assert main._mcp_authorized("Bearer wrong") is False
-    assert main._mcp_authorized(None) is False
-    assert main._mcp_authorized("Basic whatever") is False
+    monkeypatch.setattr(main.settings, "oidc_enabled", False)
+    assert main._mcp_authorized("Bearer secret") is main._McpAuth.AUTHORIZED
+    assert main._mcp_authorized("Bearer wrong") is main._McpAuth.UNAUTHORIZED
+    assert main._mcp_authorized(None) is main._McpAuth.UNAUTHORIZED
+    assert main._mcp_authorized("Basic whatever") is main._McpAuth.UNAUTHORIZED
 
 
 def test_authorized_basic(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main.settings, "api_token", None)
     monkeypatch.setattr(main.settings, "web_auth_user", "alice")
     monkeypatch.setattr(main.settings, "web_auth_password", "pw")
-    assert main._mcp_authorized(_basic_header("alice", "pw")) is True
-    assert main._mcp_authorized(_basic_header("alice", "bad")) is False
-    assert main._mcp_authorized("Basic not-base64!!") is False
-    assert main._mcp_authorized("Basic " + base64.b64encode(b"nocolon").decode()) is False
+    monkeypatch.setattr(main.settings, "oidc_enabled", False)
+    A = main._McpAuth
+    assert main._mcp_authorized(_basic_header("alice", "pw")) is A.AUTHORIZED
+    assert main._mcp_authorized(_basic_header("alice", "bad")) is A.UNAUTHORIZED
+    assert main._mcp_authorized("Basic not-base64!!") is A.UNAUTHORIZED
+    assert main._mcp_authorized("Basic " + base64.b64encode(b"nocolon").decode()) is A.UNAUTHORIZED
 
 
 # ── Read tools (via the client fixture's env) ────────────────────────────────────
@@ -496,3 +502,184 @@ def test_http_rejects_cross_site_under_basic_auth(monkeypatch: pytest.MonkeyPatc
             "/mcp", json=_INIT, headers={**_MCP_HEADERS, **auth, "Sec-Fetch-Site": "same-origin"}
         )
         assert same.status_code == 200
+
+
+# ── OIDC Resource Server on /mcp (opt-in, additive) ──────────────────────────────
+
+
+def _enable_oidc(monkeypatch: pytest.MonkeyPatch, key: Any, *, scopes: str | None = None) -> None:
+    """Turn on OIDC and wire the JWKS client to `key`'s public key (hermetic, no live IdP)."""
+    monkeypatch.setattr(main.settings, "oidc_enabled", True)
+    monkeypatch.setattr(main.settings, "oidc_issuer", _ISSUER)
+    monkeypatch.setattr(main.settings, "oidc_audience", _AUDIENCE)
+    monkeypatch.setattr(main.settings, "oidc_required_scopes", scopes)
+    monkeypatch.setattr(main.settings, "oidc_algorithms", "RS256")
+    monkeypatch.setattr(main.settings, "oidc_leeway_seconds", 60)
+    monkeypatch.setattr(oidc, "_get_jwks_client", lambda: _FakeJWKSClient(key.public_key()))
+
+
+def _rsa_key() -> Any:
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def test_http_oidc_token_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A valid OIDC bearer JWT (no static token/Basic configured) is accepted on /mcp."""
+    monkeypatch.setattr(main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "api_token", None)
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    key = _rsa_key()
+    _enable_oidc(monkeypatch, key)
+    server, asgi = build_mcp_asgi_app()
+    with TestClient(_mounted_app(server, asgi)) as http:
+        token = _mint(key, {})
+        ok = http.post(
+            "/mcp", json=_INIT, headers={**_MCP_HEADERS, "Authorization": f"Bearer {token}"}
+        )
+        assert ok.status_code == 200
+
+
+def test_http_oidc_token_less_returns_metadata_challenge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A token-less /mcp request under OIDC 401s with a Bearer resource_metadata pointer (RFC 9728)."""
+    monkeypatch.setattr(main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "api_token", None)
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    _enable_oidc(monkeypatch, _rsa_key())
+    server, asgi = build_mcp_asgi_app()
+    with TestClient(_mounted_app(server, asgi)) as http:
+        denied = http.post("/mcp", json=_INIT, headers=_MCP_HEADERS)
+        assert denied.status_code == 401
+        challenge = denied.headers["www-authenticate"]
+        assert challenge.startswith("Bearer ")
+        assert 'resource_metadata="' in challenge
+        assert "/.well-known/oauth-protected-resource/mcp" in challenge
+        # The metadata lives at the app ROOT — the /mcp mount prefix must NOT leak into the URL.
+        assert "/mcp/.well-known/" not in challenge
+        assert "error=" not in challenge  # first, token-less hit carries no error
+
+
+def test_http_oidc_invalid_token_challenge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A presented-but-invalid token 401s with error="invalid_token"."""
+    monkeypatch.setattr(main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "api_token", None)
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    _enable_oidc(monkeypatch, _rsa_key())  # server key differs from the one that signs below
+    server, asgi = build_mcp_asgi_app()
+    with TestClient(_mounted_app(server, asgi)) as http:
+        bad = _mint(_rsa_key(), {})
+        resp = http.post(
+            "/mcp", json=_INIT, headers={**_MCP_HEADERS, "Authorization": f"Bearer {bad}"}
+        )
+        assert resp.status_code == 401
+        assert 'error="invalid_token"' in resp.headers["www-authenticate"]
+
+
+def test_http_oidc_insufficient_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An authentic token missing a required scope gets 403 insufficient_scope, not 401."""
+    monkeypatch.setattr(main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "api_token", None)
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    key = _rsa_key()
+    _enable_oidc(monkeypatch, key, scopes="labelito.print")
+    server, asgi = build_mcp_asgi_app()
+    with TestClient(_mounted_app(server, asgi)) as http:
+        token = _mint(key, {"scope": "labelito.read"})  # missing labelito.print
+        resp = http.post(
+            "/mcp", json=_INIT, headers={**_MCP_HEADERS, "Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 403
+        challenge = resp.headers["www-authenticate"]
+        assert 'error="insufficient_scope"' in challenge
+        assert 'scope="labelito.print"' in challenge
+
+
+def test_http_oidc_coexists_with_static_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With BOTH API_TOKEN and OIDC on, the static token AND a valid JWT both work; garbage 401s."""
+    monkeypatch.setattr(main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "api_token", "secret")
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    key = _rsa_key()
+    _enable_oidc(monkeypatch, key)
+    server, asgi = build_mcp_asgi_app()
+    with TestClient(_mounted_app(server, asgi)) as http:
+        static_ok = http.post(
+            "/mcp", json=_INIT, headers={**_MCP_HEADERS, "Authorization": "Bearer secret"}
+        )
+        assert static_ok.status_code == 200
+        jwt_ok = http.post(
+            "/mcp",
+            json=_INIT,
+            headers={**_MCP_HEADERS, "Authorization": f"Bearer {_mint(key, {})}"},
+        )
+        assert jwt_ok.status_code == 200
+        bad = http.post(
+            "/mcp", json=_INIT, headers={**_MCP_HEADERS, "Authorization": "Bearer garbage"}
+        )
+        assert bad.status_code == 401
+
+
+def test_http_oidc_bearer_is_csrf_inert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A valid JWT with a cross-site fetch metadata is allowed — bearer tokens are non-ambient."""
+    monkeypatch.setattr(main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "mcp_writable", True)
+    monkeypatch.setattr(main.settings, "api_token", None)
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    key = _rsa_key()
+    _enable_oidc(monkeypatch, key)
+    server, asgi = build_mcp_asgi_app()
+    with TestClient(_mounted_app(server, asgi)) as http:
+        resp = http.post(
+            "/mcp",
+            json=_INIT,
+            headers={
+                **_MCP_HEADERS,
+                "Authorization": f"Bearer {_mint(key, {})}",
+                "Sec-Fetch-Site": "cross-site",
+            },
+        )
+        assert resp.status_code == 200
+
+
+def test_http_no_bearer_challenge_when_oidc_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With OIDC off, a 401 carries no Bearer/resource_metadata challenge (behavior unchanged)."""
+    monkeypatch.setattr(main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "api_token", "secret")
+    monkeypatch.setattr(main.settings, "web_auth_user", None)
+    monkeypatch.setattr(main.settings, "web_auth_password", None)
+    monkeypatch.setattr(main.settings, "oidc_enabled", False)
+    server, asgi = build_mcp_asgi_app()
+    with TestClient(_mounted_app(server, asgi)) as http:
+        denied = http.post("/mcp", json=_INIT, headers=_MCP_HEADERS)
+        assert denied.status_code == 401
+        assert "resource_metadata" not in denied.headers.get("www-authenticate", "")
+
+
+def test_protected_resource_metadata_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The RFC 9728 metadata routes serve the expected body and reflect the external Host."""
+    monkeypatch.setattr(main.settings, "oidc_issuer", _ISSUER)
+    monkeypatch.setattr(main.settings, "oidc_required_scopes", "labelito.print")
+    host = FastAPI()
+    for path in (
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/mcp",
+    ):
+        host.add_api_route(path, main._protected_resource_metadata, methods=["GET"])
+    with TestClient(host) as http:
+        for path in (
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-protected-resource/mcp",
+        ):
+            resp = http.get(path, headers={"Host": "labelito.example"})
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["resource"] == "http://labelito.example/mcp"
+            assert body["authorization_servers"] == [_ISSUER]
+            assert body["bearer_methods_supported"] == ["header"]
+            assert body["scopes_supported"] == ["labelito.print"]

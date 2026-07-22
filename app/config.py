@@ -289,6 +289,85 @@ class Settings(BaseSettings):
     # is false simply never sees the write tools in tools/list, so an AI cannot print by mistake.
     mcp_writable: bool = False
 
+    # OAuth 2.0 Resource Server (OIDC) auth for the /mcp endpoint. OFF by default (opt-in). When on,
+    # /mcp additionally accepts a bearer JWT access token minted by an EXTERNAL OpenID Connect
+    # provider (Keycloak/Authentik/Zitadel/…): labelito publishes RFC 9728 Protected Resource
+    # Metadata pointing at that issuer and validates the token's signature (via the issuer's JWKS),
+    # `iss`, `aud`, `exp`, and required scopes. Dynamic Client Registration (RFC 7591) and the OIDC
+    # login are handled entirely by that provider — labelito is only a Resource Server, never an
+    # Authorization Server. This is ADDITIVE: the existing static API_TOKEN bearer and HTTP Basic
+    # keep working on /mcp. It covers ONLY /mcp, not the REST API or web UI (which stay bearer/Basic).
+    oidc_enabled: bool = False
+    # Issuer URL exactly as it appears in the token's `iss` claim (e.g.
+    # https://idp.example.com/realms/labelito). Also becomes the single entry advertised in the
+    # Protected Resource Metadata `authorization_servers` list.
+    oidc_issuer: str | None = None
+    # Expected `aud` claim — the resource identifier the operator configured the IdP to mint tokens
+    # for. Normally labelito's public /mcp URL, but kept explicit (not derived) so it survives
+    # reverse-proxy/host quirks; it should normally equal the `resource` value in the metadata doc.
+    oidc_audience: str | None = None
+    # Space-separated scopes a token MUST carry to be accepted (e.g. "labelito.print"). Empty/None
+    # imposes no scope requirement. Parsed via the `oidc_scopes_list` property.
+    oidc_required_scopes: str | None = None
+    # Explicit JWKS endpoint. When set it bypasses OIDC discovery entirely; otherwise the JWKS URI is
+    # resolved from the issuer's /.well-known/openid-configuration (see OIDC_DISCOVERY).
+    oidc_jwks_uri: str | None = None
+    # When true (default) and OIDC_JWKS_URI is unset, resolve the JWKS URI by fetching
+    # {issuer}/.well-known/openid-configuration. Set false only if you always pin OIDC_JWKS_URI.
+    oidc_discovery: bool = True
+    # Space-separated allowlist of accepted JWT `alg` values. A hard allowlist so `alg:none` and
+    # symmetric (HMAC) key-confusion attacks are structurally impossible. Default RS256; operators
+    # whose IdP signs with EC keys set e.g. "ES256". Parsed via the `oidc_algorithms_list` property.
+    oidc_algorithms: str = "RS256"
+    # Clock-skew tolerance (seconds) applied to exp/nbf/iat during validation.
+    oidc_leeway_seconds: int = Field(default=60, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_oidc(self) -> "Settings":
+        """When OIDC is enabled, its issuer/audience/algorithms must be coherent — fail fast.
+
+        Mirrors ``_validate_web_auth``: a half-configured OAuth Resource Server (enabled but with no
+        issuer or audience) would silently accept nothing useful or, worse, mis-validate; catch it at
+        settings load. ``https://`` is required for the issuer (``http://`` only for localhost dev,
+        since tokens and JWKS must not traverse plaintext in production).
+        """
+        if not self.oidc_enabled:
+            return self
+        issuer = (self.oidc_issuer or "").strip()
+        audience = (self.oidc_audience or "").strip()
+        if not issuer or not audience:
+            raise ValueError(
+                "OIDC_ENABLED is true but OIDC_ISSUER and/or OIDC_AUDIENCE is unset. Set the issuer "
+                "URL (the token `iss`) and the audience (the resource id your IdP mints /mcp tokens "
+                "for), or set OIDC_ENABLED=false."
+            )
+        is_localhost = re.match(r"^http://(localhost|127\.0\.0\.1)(:\d+)?(/|$)", issuer) is not None
+        if not (issuer.startswith("https://") or is_localhost):
+            raise ValueError(
+                f"OIDC_ISSUER {issuer!r} must be an absolute https:// URL (http:// is allowed only "
+                "for localhost during development)."
+            )
+        if not self.oidc_algorithms_list:
+            raise ValueError(
+                "OIDC_ALGORITHMS is empty; provide at least one JWT signing algorithm (e.g. RS256)."
+            )
+        return self
+
+    @property
+    def oidc_scopes_list(self) -> list[str]:
+        """Required scopes parsed from the space-separated OIDC_REQUIRED_SCOPES (empties dropped)."""
+        return (self.oidc_required_scopes or "").split()
+
+    @property
+    def oidc_algorithms_list(self) -> list[str]:
+        """Accepted JWT signing algorithms parsed from the space-separated OIDC_ALGORITHMS."""
+        return self.oidc_algorithms.split()
+
+    @property
+    def oidc_configured(self) -> bool:
+        """True when OIDC is enabled AND its required issuer/audience are both present."""
+        return self.oidc_enabled and bool(self.oidc_issuer and self.oidc_audience)
+
     # Root log level for the process, applied by app.main's logging.basicConfig at import. Standard
     # python level names (LOG_LEVEL_NAMES), case-insensitive; an unknown name fails at settings load
     # so a typo'd LOG_LEVEL aborts boot instead of silently logging at the hardcoded default.

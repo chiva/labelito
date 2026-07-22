@@ -52,6 +52,12 @@ services:
       # MCP server for AI clients (off by default). Mounts /mcp behind the same auth as the API:
       # MCP_ENABLED: "true"   # expose the Model Context Protocol server at /mcp (read-only tools)
       # MCP_WRITABLE: "true"  # also expose the print/reprint tools (needs MCP_ENABLED). See docs/mcp.md
+      # OIDC on /mcp for AI clients that use OAuth + Dynamic Client Registration (opt-in, additive to
+      # API_TOKEN; validates JWTs from YOUR external OIDC provider — covers only /mcp). See docs/mcp.md
+      # OIDC_ENABLED: "true"
+      # OIDC_ISSUER: "https://idp.example.com/realms/labelito"   # exact token `iss`
+      # OIDC_AUDIENCE: "https://labelito.example.com/mcp"        # your IdP mints /mcp tokens for this
+      # OIDC_REQUIRED_SCOPES: "labelito.print"                   # optional; space-separated
       # Auth — no default secret is shipped; the service refuses to start unless ONE is set:
       #   put API_TOKEN=<your-secret> in a .env file beside this compose file (auto-loaded), OR
       #   comment the line below and set WEB_AUTH_USER/WEB_AUTH_PASSWORD for a browser login wall

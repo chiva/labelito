@@ -201,8 +201,8 @@ token in an environment variable over hardcoding it.
 Add it with one command ([MCP docs](https://code.claude.com/docs/en/mcp)):
 
 ```bash
-claude mcp add --transport http --header "Authorization: Bearer $API_TOKEN" \
-  labelito https://your-host/mcp/
+claude mcp add --transport http labelito https://your-host/mcp/ \
+  --header "Authorization: Bearer $API_TOKEN"
 ```
 
 `--scope user` makes it available in every project; `--scope project` writes a shared `.mcp.json`

@@ -489,6 +489,11 @@ def build_mcp_server() -> FastMCP:
 
                 Requires MCP_WRITABLE=true and TEMPLATES_WRITABLE=true with a writable templates
                 directory. Returns the saved name; preview it first with preview_ephemeral_label.
+
+                Read ``warnings`` in the response. It is not a failure — the template saved and
+                prints — but it is the only place a problem with no other symptom is reported: a
+                spoken alias that more than one template claims, which a voice assistant will
+                therefore match for none of them.
                 """
                 with _as_tool_error():
                     request = SaveTemplateRequest(name=SAVE_NAME_PLACEHOLDER, yaml=yaml)

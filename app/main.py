@@ -2545,6 +2545,7 @@ def _template_info(t: Template) -> TemplateInfo:
         media=_template_media(t.label),
         is_example=t.is_example,
         uses_seq=uses_seq(t.layout),
+        aliases=t.aliases,
     )
 
 
@@ -3148,11 +3149,20 @@ def reload_templates() -> dict[str, Any]:
             {
                 "detail": "Reload completed with errors; some files were skipped",
                 "errors": errors,
+                "warnings": registry.warnings,
                 "loaded": loaded,
                 "languages": langs,
             },
         )
-    return {"loaded": len(loaded), "templates": loaded, "languages": langs}
+    # Non-gating (registry.warnings): a contested spoken form leaves every template printable, so
+    # it must not turn a successful reload into a 422 — but somebody editing template files by hand
+    # has no other way to learn that an alias they just wrote can never match.
+    return {
+        "loaded": len(loaded),
+        "templates": loaded,
+        "languages": langs,
+        "warnings": registry.warnings,
+    }
 
 
 def metrics() -> Response:
@@ -3411,6 +3421,7 @@ async def parse_template(request: TemplateParseRequest) -> TemplateParseResponse
         # Lets the studio reveal its sequence controls for a {{seq}} draft (seq is a computed token,
         # so it never appears in required/optional — this is the only signal the form has).
         uses_seq=uses_seq(tmpl.layout),
+        aliases=tmpl.aliases,
     )
 
 
@@ -3444,6 +3455,7 @@ async def parse_template_layout(request: TemplateParseRequest) -> TemplateLayout
             image_fields=sorted(_image_field_names(tmpl.layout)),
         ),
         uses_seq=uses_seq(tmpl.layout),
+        aliases=tmpl.aliases,
         layout=tmpl.layout,
     )
 
@@ -3700,7 +3712,16 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
     _warn_missing_custom_icons()
     # Report the name actually registered after reload (the file's stem == tmpl.name), so the
     # response can never claim a save under a name that was not the one persisted.
-    return {"saved": tmpl.name, "path": path.name, "loaded": loaded, "errors": errors}
+    return {
+        "saved": tmpl.name,
+        "path": path.name,
+        "loaded": loaded,
+        "errors": errors,
+        # Reported, never a rollback reason. This is the authoring moment, so it is where an alias
+        # that can never win a match has to be mentioned — it has no other symptom: the template
+        # lists, previews and prints exactly as before.
+        "warnings": registry.warnings,
+    }
 
 
 def _validate_upload_image(raw: bytes) -> None:

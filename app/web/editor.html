@@ -881,7 +881,19 @@
         // A successful save is the new clean baseline: the just-saved YAML is no longer "unsaved", so
         // the leave-page guard (and the load-discard prompt) stop flagging it as dirty.
         lastLoadedYaml = yaml;
-        showStatus(`Saved template "${json.saved}" and reloaded.`, 'ok');
+        // A warning is not a failure — the save succeeded and the template prints — but it is the
+        // only signal for a problem with no other symptom: a spoken alias that can never win a
+        // match. Shown instead of the plain confirmation, because a success message that hides it
+        // is how the alias stays broken.
+        const warnings = Array.isArray(json.warnings) ? json.warnings : [];
+        if (warnings.length) {
+          // sticky, not a new toast kind: only ok/err/info are styled, and ok/info auto-dismiss
+          // quickly. A warning nobody reads is the same as no warning, and the alias stays broken.
+          showStatus(`Saved template "${json.saved}", but: ${warnings.join(' ')}`, 'info',
+            { sticky: true });
+        } else {
+          showStatus(`Saved template "${json.saved}" and reloaded.`, 'ok');
+        }
       } catch (e) {
         showStatus('Network error: ' + e.message, 'err');
       }

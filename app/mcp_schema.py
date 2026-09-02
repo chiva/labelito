@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from app.loader import MAX_TEXT_LINES
+from app.loader import ALIAS_CHARSET, MAX_TEMPLATE_ALIASES, MAX_TEXT_LINES
 from app.render.elements import (
     ELEMENT_REGISTRY,
     FA_STYLES,
@@ -133,6 +133,7 @@ description: What it is   # required
 label: "62"               # required; a label id from get_capabilities (quote it — "62" is a string)
 rotate: 0                 # 0, 90, 180 or 270
 valign: top               # {valigns} — vertical placement on die-cut media with leftover height
+aliases: [my label]       # optional; other ways a PERSON SAYS this name, for voice matching
 fields:
   required: [title]       # values a print MUST supply
   optional: [subtitle]    # values a print MAY supply
@@ -146,6 +147,18 @@ layout:                   # ordered list of elements, rendered top to bottom
 * **Every `{{{{field}}}}` a layout references must be declared**, or the template is rejected with
   "layout references undeclared field token(s)". The computed tokens are the exception: they are
   always available and must NOT be declared.
+
+`aliases` is for voice: other ways a person SAYS this name, so an assistant matching speech against
+the catalog accepts them and reports back the canonical `name`. Printing is always by `name` — an
+alias is never a lookup key. Up to {MAX_TEMPLATE_ALIASES} per template, and {ALIAS_CHARSET}.
+Unlike `name`, an alias may carry spaces and accents.
+
+Declaring the template's own name is rejected, and so is the same alias twice — compared after
+case AND spacing are normalized, so `"my label"` and `"my  label"` count as one. Aliases are
+stored NFC-normalized, so it does not matter whether an accent was typed precomposed or as a
+combining mark. And so is an entry YAML already turned into something else: `aliases: [no]` is the
+boolean `False` in YAML 1.1, so quote any alias that is a bare
+`yes`/`no`/`on`/`off`/`true`/`false`/`null`/`~` or looks numeric.
 
 ## Tokens
 

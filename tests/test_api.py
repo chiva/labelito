@@ -441,6 +441,181 @@ def test_list_templates_reports_uses_seq(client: TestClient) -> None:
     assert by_name["simple"]["uses_seq"] is False
 
 
+def test_list_templates_reports_aliases(client: TestClient) -> None:
+    """Aliases reach the catalog response, which is the only way a voice client can learn them.
+
+    An alias is declared on the template but consumed elsewhere: Home Assistant's integration reads
+    GET /templates and turns name + aliases into the vocabulary its assistant listens for. If the
+    field stopped being serialized, every alias would silently stop working with no error anywhere.
+    """
+    import textwrap
+
+    import app.main as main_mod
+
+    yaml = textwrap.dedent("""\
+        name: aliased
+        description: a template with spoken aliases
+        label: "62"
+        aliases: [comida preparada, batch cooking]
+        layout:
+          - {type: text, text: hello}
+    """)
+    (main_mod.registry.templates_dir / "aliased.yaml").write_text(yaml)  # type: ignore[attr-defined]
+    main_mod.registry.load_all()  # type: ignore[attr-defined]
+
+    by_name = {t["name"]: t for t in client.get("/templates").json()}
+    assert by_name["aliased"]["aliases"] == ["comida preparada", "batch cooking"]
+    # A template without aliases carries an empty list, not a missing key: consumers iterate it
+    # unconditionally.
+    assert by_name["simple"]["aliases"] == []
+
+
+ALIASED_DRAFT = """\
+name: aliased-draft
+description: a draft with spoken aliases
+label: "62"
+aliases: [comida preparada, batch cooking]
+fields:
+  required: [title]
+layout:
+  - {type: title, text: "{{title}}"}
+"""
+
+
+@pytest.mark.parametrize("route", ["/templates/parse", "/templates/parse-layout"])
+def test_draft_parse_routes_return_aliases(client: TestClient, route: str) -> None:
+    """The visual builder round-trips a template THROUGH this response.
+
+    It rebuilds its entire model from what parse-layout returns and re-emits YAML from that model,
+    so a top-level key missing here is a key the builder silently DELETES from a template somebody
+    opened in Visual mode, edited and saved. /templates/parse is checked too because both share
+    the response model, and a field added to one must not be forgotten in the other.
+    """
+    resp = client.post(route, json={"yaml": ALIASED_DRAFT})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["aliases"] == ["comida preparada", "batch cooking"]
+
+
+def test_draft_parse_reports_no_aliases_as_an_empty_list(client: TestClient) -> None:
+    """Absent, not null: the builder does `Array.isArray(data.aliases)` and would drop a null."""
+    plain = ALIASED_DRAFT.replace("aliases: [comida preparada, batch cooking]\n", "")
+    resp = client.post("/templates/parse", json={"yaml": plain})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["aliases"] == []
+
+
+def test_the_visual_builder_reads_every_key_it_must_round_trip() -> None:
+    """A mechanical guard for a browser file with no test runner.
+
+    The bug this exists for: `aliases` was added to the template schema and to the catalog
+    response, but not to the draft-parse response nor to the builder — so opening an aliased
+    template in Visual mode and saving deleted the aliases, with nothing failing anywhere. There
+    is no JS test setup here (package.json builds icon assets only), so the next top-level key
+    added to TemplateParseResponse gets caught by this instead of by a user losing data.
+
+    Probes for ``data.<key>`` rather than the bare key name, which is what makes it bite: the
+    builder's load path reads every key it round-trips as ``data.name``, ``data.valign`` and so on,
+    and ``data.`` appears nowhere else in the file. An earlier version of this test looked for the
+    bare name and passed with the load line deleted, because the emitter still mentioned it — the
+    exact half of the round trip that was broken.
+    """
+    from app.models import TemplateParseResponse
+
+    builder = (
+        Path(__file__).resolve().parent.parent / "app" / "web" / "static" / "js" / "builder.js"
+    ).read_text(encoding="utf-8")
+    # uses_seq is the one key the visual builder legitimately ignores: it drives the editor's
+    # sequence controls, not the block model, and it is derived from the layout on every parse
+    # rather than carried in the YAML — so re-emitting without it loses nothing.
+    for name in set(TemplateParseResponse.model_fields) - {"uses_seq"}:
+        assert f"data.{name}" in builder, (
+            f"builder.js never reads data.{name}: a key the draft-parse response returns but the "
+            f"visual builder does not read is a key it DELETES when it re-emits the YAML"
+        )
+
+
+def _write_colliding_pair(main_mod: object) -> None:
+    """Two templates whose spoken forms contest each other, straight into the live registry."""
+    import textwrap
+
+    for name, alias in (("nevera", "frio"), ("congelador", "frio")):
+        yaml = textwrap.dedent(f"""\
+            name: {name}
+            description: x
+            label: "62"
+            aliases: ["{alias}"]
+            layout:
+              - {{type: text, text: hello}}
+        """)
+        (main_mod.registry.templates_dir / f"{name}.yaml").write_text(yaml)  # type: ignore[attr-defined]
+
+
+def test_reload_reports_contested_spoken_forms_without_failing(client: TestClient) -> None:
+    """A contested alias is reported on a SUCCESSFUL reload, not as a 422.
+
+    Somebody editing template files by hand has no other way to learn that an alias they just wrote
+    can never match — and both templates load, list and print, so failing the reload would be the
+    wrong severity as well as a catalog-wide save blocker.
+    """
+    import app.main as main_mod
+
+    _write_colliding_pair(main_mod)
+    resp = client.post("/reload")
+
+    assert resp.status_code == 200, resp.text
+    warnings = resp.json()["warnings"]
+    assert len(warnings) == 1
+    assert "'frio'" in warnings[0]
+
+
+def test_reload_of_a_clean_catalog_reports_no_warnings(client: TestClient) -> None:
+    assert client.post("/reload").json()["warnings"] == []
+
+
+def test_saving_a_template_reports_a_contested_alias_and_still_saves(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The authoring moment. Reported, and explicitly NOT a rollback reason.
+
+    `errors` gates catalog-wide (the save route rolls back on any of them), so a colliding alias
+    becoming an error would let one bad pair of voice hints make every later save fail.
+    """
+    import textwrap
+
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "templates_writable", True)
+
+    existing = textwrap.dedent("""\
+        name: nevera
+        description: x
+        label: "62"
+        layout:
+          - {type: text, text: hello}
+    """)
+    (main_mod.registry.templates_dir / "nevera.yaml").write_text(existing)  # type: ignore[attr-defined]
+    main_mod.registry.load_all()  # type: ignore[attr-defined]
+
+    draft = textwrap.dedent("""\
+        name: congelador
+        description: x
+        label: "62"
+        aliases: ["nevera"]
+        layout:
+          - {type: text, text: hello}
+    """)
+    resp = client.post("/templates", json={"name": "congelador", "yaml": draft})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["saved"] == "congelador"
+    assert body["errors"] == []
+    assert len(body["warnings"]) == 1
+    assert "'nevera'" in body["warnings"][0]
+    # The save really happened — a warning is not a rollback.
+    assert (main_mod.settings.templates_dir / "congelador.yaml").exists()
+
+
 def test_list_templates_includes_continuous_media(client: TestClient) -> None:
     """Each template carries its required media (Step 6) so the UI can badge compatibility.
 

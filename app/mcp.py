@@ -12,9 +12,13 @@ Two env gates govern the surface (see :class:`app.config.Settings`):
 
 * ``MCP_ENABLED`` — whether the server is built and mounted at all (this module is only imported
   when it is true).
-* ``MCP_WRITABLE`` — whether the *write* tools (print stored / print ephemeral / reprint) are
-  registered alongside the always-on read-only tools. With it false an MCP client's ``tools/list``
-  never even shows the write tools, so an AI cannot drive the printer by mistake.
+* ``MCP_WRITABLE`` — whether the *mutating* tools are registered alongside the always-on read-only
+  ones: the print tools (print stored / print ephemeral / reprint) and, where the editor gates also
+  allow it, ``save_template``. With it false an MCP client's ``tools/list`` never even shows them,
+  so an AI can neither drive the printer nor change what a later print will produce. It is the one
+  switch that makes this server read-only, so every tool with a side effect must sit behind it —
+  the other gates (``EDITOR_ENABLED``, ``TEMPLATES_WRITABLE``) narrow the surface further, never
+  grant past it.
 
 ``app.main`` is imported lazily inside :func:`build_mcp_server` (which runs at mount time, after the
 whole ``app.main`` module body — singletons, handlers, helpers — has been defined) so there is no
@@ -26,6 +30,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
@@ -36,12 +41,21 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
+from app.mcp_schema import template_schema_markdown
 from app.models import (
     DraftPreviewRequest,
     DraftPrintRequest,
     PrintRequest,
     RenderOptions,
+    SaveTemplateRequest,
     SequenceSpec,
+    TemplateParseRequest,
+)
+from app.render.elements import (
+    FA_STYLES,
+    ICON_ASSET_EXTS,
+    ICON_DEFAULT_STYLE,
+    KNOWN_COLLECTIONS,
 )
 
 if TYPE_CHECKING:
@@ -82,6 +96,42 @@ def _as_tool_error() -> Iterator[None]:
         raise ToolError(f"Invalid tool arguments: {exc}") from exc
 
 
+# Upper bound on list_icons' page size. FontAwesome free alone runs past a thousand names per
+# style, so an unbounded list would blow an MCP client's context on a single call; the tool reports
+# `total` and `truncated` instead, steering the caller to narrow its query.
+MAX_ICON_RESULTS = 500
+
+# SaveTemplateRequest.name is vestigial: app.main.save_template derives the save path from the
+# VALIDATED template's internal `name` (so filename == registry key == internal name) and never
+# reads this field. The model still requires a non-empty string, so pass a fixed placeholder rather
+# than inventing a second, ignored source of truth for an MCP caller to get wrong.
+SAVE_NAME_PLACEHOLDER = "mcp-draft"
+
+
+def _icon_dir(collection: str, style: str | None, collections_root: Path) -> Path:
+    """Directory holding *collection*'s SVGs, mirroring ``IconElement._resolve_path``.
+
+    FontAwesome splits its icons into per-style subdirectories; the other collections are flat and
+    ignore ``style`` entirely, exactly as the renderer does.
+    """
+    base = collections_root / collection
+    if collection == "fontawesome":
+        base = base / (style if style in FA_STYLES else ICON_DEFAULT_STYLE)
+    return base
+
+
+def _scan_icons(directory: Path, suffixes: tuple[str, ...]) -> list[str]:
+    """Sorted icon names (stems) of the files in *directory* matching *suffixes*.
+
+    Blocking filesystem work — callers offload it to a threadpool. A missing directory yields an
+    empty list rather than raising: the bundled collections are populated at image build time, so an
+    unusual deployment can legitimately lack one, and "none installed" is the honest answer.
+    """
+    if not directory.is_dir():
+        return []
+    return sorted({entry.stem for entry in directory.iterdir() if entry.suffix.lower() in suffixes})
+
+
 def _sequence_spec(sequence: dict[str, Any] | None) -> SequenceSpec | None:
     """Build a :class:`SequenceSpec` from a loosely-typed tool argument, or ``None``.
 
@@ -112,7 +162,12 @@ def build_mcp_server() -> FastMCP:
             "Use list_templates/get_template to discover a template and its fields, "
             "preview_label / preview_ephemeral_label to see a PNG before committing, and "
             "(when writable) print_label to print a stored template, print_ephemeral_label to "
-            "print a label designed on the fly, or reprint_history_label to reprint a past job."
+            "print a label designed on the fly, or reprint_history_label to reprint a past job. "
+            "To WRITE a template rather than use an existing one, read the docs://template-schema "
+            "resource first — it is the generated reference for the element vocabulary, the "
+            "{{token}} grammar and the icon-resolution rules, and it names the failure modes that "
+            "render silently (clipped text, an unresolved icon). Then validate_template a draft, "
+            "preview_ephemeral_label it, and save_template it when persistence is enabled."
         ),
         # Stateless + plain-JSON responses: each tool call is self-contained (no server-side session
         # to keep alive) and returns a single JSON body rather than an SSE stream — simplest for both
@@ -138,6 +193,24 @@ def build_mcp_server() -> FastMCP:
         """
         if not settings.history_ui:
             raise ToolError("History browsing is disabled (HISTORY_UI=false)")
+
+    # ── Resources ────────────────────────────────────────────────────────────────────────────────
+
+    @mcp.resource(
+        "docs://template-schema",
+        name="template-schema",
+        title="labelito template schema",
+        description=(
+            "How to write a labelito template: the envelope, every element type with its fields "
+            "and defaults, the {{token}} and [[translation]] grammars, the two icon-resolution "
+            "modes, and the silent failure modes to design around. Generated from the renderer, so "
+            "it always matches this server's version."
+        ),
+        mime_type="text/markdown",
+    )
+    def template_schema() -> str:
+        """Serve the generated template-authoring reference (see :mod:`app.mcp_schema`)."""
+        return template_schema_markdown()
 
     # ── Read-only tools (always registered) ──────────────────────────────────────────────────────
 
@@ -191,6 +264,73 @@ def build_mcp_server() -> FastMCP:
         """Report the configured printer's capabilities: model, dpi, supported labels, geometries."""
         with _as_tool_error():
             return main.capabilities().model_dump(mode="json")
+
+    @mcp.tool()
+    async def list_icons(
+        collection: str | None = None,
+        style: str | None = None,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Find a name for an `icon` element, from the bundled collections or your own asset files.
+
+        Call with no arguments for a summary: every collection and how many icons it holds. Pass a
+        `collection` to list names — always with a `query` substring, because a full collection runs
+        to thousands and only `limit` of them come back (the response says `total` and `truncated`
+        so a filter can be narrowed rather than guessed at).
+
+        `collection` is one of the bundled sets, or `"custom"` for the files you placed in the icons
+        directory (which an `icon` element references with NO `collection` key — see
+        docs://template-schema). `style` applies to fontawesome only.
+
+        An icon that does not exist renders as blank space rather than an error, so confirming a
+        name here is the difference between a missing glyph and a silently empty label.
+        """
+        with _as_tool_error():
+            collections_root = settings.icon_collections_dir
+            if collection is None:
+                summary = {
+                    name: len(
+                        await run_in_threadpool(
+                            _scan_icons, _icon_dir(name, style, collections_root), (".svg",)
+                        )
+                    )
+                    for name in sorted(KNOWN_COLLECTIONS)
+                }
+                summary["custom"] = len(
+                    await run_in_threadpool(_scan_icons, settings.icons_dir, ICON_ASSET_EXTS)
+                )
+                return {
+                    "collections": summary,
+                    "fontawesome_styles": sorted(FA_STYLES),
+                    "note": (
+                        "Pass collection (and a query) to list names. fontawesome counts are for "
+                        f"style={style or ICON_DEFAULT_STYLE!r}."
+                    ),
+                }
+
+            if collection == "custom":
+                names = await run_in_threadpool(_scan_icons, settings.icons_dir, ICON_ASSET_EXTS)
+            elif collection in KNOWN_COLLECTIONS:
+                names = await run_in_threadpool(
+                    _scan_icons, _icon_dir(collection, style, collections_root), (".svg",)
+                )
+            else:
+                known = ", ".join([*sorted(KNOWN_COLLECTIONS), "custom"])
+                raise ToolError(f"Unknown collection {collection!r}; known collections: {known}")
+
+            if query:
+                needle = query.lower()
+                names = [n for n in names if needle in n.lower()]
+            if not 1 <= limit <= MAX_ICON_RESULTS:
+                raise ToolError(f"limit must be between 1 and {MAX_ICON_RESULTS}")
+            return {
+                "collection": collection,
+                "style": style if collection == "fontawesome" else None,
+                "total": len(names),
+                "truncated": len(names) > limit,
+                "icons": names[:limit],
+            }
 
     @mcp.tool()
     async def get_printer_status() -> dict[str, Any]:
@@ -301,6 +441,58 @@ def build_mcp_server() -> FastMCP:
             if record is None:
                 raise ToolError(f"Job {job_id!r} not found in history")
             return record.model_dump(mode="json", exclude={"template_source"})
+
+    # ── Template authoring ───────────────────────────────────────────────────────────────────────
+    # EDITOR_ENABLED is the shared floor, mirroring the gate on the POST /templates/parse and
+    # POST /templates routes these reuse: an operator who turns the editor off has said "no
+    # template authoring on this deployment", and the MCP surface honours that verbatim.
+    #
+    # Above that floor the two tools diverge by what they DO, not by which route they wrap.
+    # validate_template only parses, so it sits with the read-only tools — and gains nothing an MCP
+    # client lacks anyway, since preview_ephemeral_label already validates arbitrary YAML ungated.
+    # save_template mutates, so it additionally requires MCP_WRITABLE (see below).
+    if settings.editor_enabled:
+
+        @mcp.tool()
+        async def validate_template(yaml: str) -> dict[str, Any]:
+            """Validate a draft template body and return its auto-detected field contract.
+
+            The cheap half of preview_ephemeral_label: same validation, no rendering. Returns the
+            name, description, label, rotate, valign, the required/optional fields the loader
+            inferred from the layout's `{{tokens}}`, and whether the draft uses `{{seq}}`.
+
+            Use it to check a draft's shape while writing it — computed tokens ({{date}}, {{now}},
+            {{seq}}) and [[translations]] are correctly excluded from the contract, so the fields it
+            reports are exactly the ones a print must supply.
+            """
+            with _as_tool_error():
+                response = await main.parse_template(TemplateParseRequest(yaml=yaml))
+                return response.model_dump(mode="json")
+
+        # Persisting a template is a WRITE through MCP, so it needs MCP_WRITABLE on top of the
+        # editor's own TEMPLATES_WRITABLE opt-in. Both matter, and neither alone is enough:
+        # MCP_WRITABLE=false has to mean this server mutates nothing. A saved template outlives the
+        # call and is picked up by every later print — including ones made from the web UI or the
+        # REST API — so an MCP client able to replace one can cause the WRONG LABEL to come out of
+        # a print it never made itself. That is a longer-lived hazard than the single print
+        # MCP_WRITABLE already guards, not a lesser one.
+        if settings.mcp_writable and settings.templates_writable:
+
+            @mcp.tool()
+            async def save_template(yaml: str) -> dict[str, Any]:
+                """Persist a template to the templates directory and hot-reload it.
+
+                The body is validated BEFORE anything is written, the write is atomic, and a draft
+                that fails to register is rolled back — so a broken template can never replace a
+                working one. The file name and the registry key both come from the template's own
+                `name:` key, so saving with an existing name REPLACES that template.
+
+                Requires MCP_WRITABLE=true and TEMPLATES_WRITABLE=true with a writable templates
+                directory. Returns the saved name; preview it first with preview_ephemeral_label.
+                """
+                with _as_tool_error():
+                    request = SaveTemplateRequest(name=SAVE_NAME_PLACEHOLDER, yaml=yaml)
+                    return await main.save_template(request)
 
     # ── Write tools (registered only when MCP_WRITABLE=true) ──────────────────────────────────────
     if settings.mcp_writable:

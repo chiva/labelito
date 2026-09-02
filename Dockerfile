@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:f4adb3fe11f03f693466c36afd17b43ffd11eb9df3cd4f7a9337cf2e6ec4c8e8 AS builder
+FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:935c631d7b95582b1f2f3466a6583ec420e1fcf0a3c66204deab2b393bb81b14 AS builder
 
 LABEL org.opencontainers.image.title="labelito"
 LABEL org.opencontainers.image.description="Self-hosted label printing for Brother QL printers"
@@ -41,7 +41,7 @@ RUN bash scripts/fetch-icons.sh /icons
 # the venv is built against the builder's glibc, so builder and runtime must not drift apart.
 # A bare `python:3.13-slim` floats to whatever Debian is current, silently diverging from the
 # builder on the next Debian release. Renovate's dockerfile manager bumps both tag and digest.
-FROM python:3.13-slim-trixie@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+FROM python:3.13-slim-trixie@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
 
 # libcairo2 is the runtime backing cairosvg (icon-collection SVG rasterization).
 RUN apt-get update && apt-get install -y --no-install-recommends \

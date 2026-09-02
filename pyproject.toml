@@ -33,7 +33,11 @@ dependencies = [
     "Jinja2>=3.1.4",
     "python-multipart>=0.0.9",
     "prometheus-client>=0.21.0",
-    "mcp>=1.12.0",
+    # 2.1.1 is the release whose server API this code targets: 2.x renamed FastMCP to MCPServer and
+    # moved every transport setting off the constructor, so 1.x cannot run it. No ceiling — every
+    # dependency here is declared the same way, and a ceiling is the wrong tool for keeping a major
+    # out of a lock refresh (see renovate.json: that is rangeStrategy's job).
+    "mcp>=2.1.1",
     # OAuth 2.0 Resource Server (OIDC) validation for the /mcp endpoint. PyJWT ships PyJWKClient,
     # which fetches an IdP's JWKS, caches signing keys by kid, and refetches on an unknown kid
     # (key rotation). The [crypto] extra pulls in `cryptography` for RS256/ES256 verification.

@@ -9,6 +9,11 @@
   "minimumReleaseAge": "3 days",
   "packageRules": [
     {
+      "description": "Raise the declared >= floor in pyproject.toml when a release lands, instead of leaving the constraint permanently satisfied. Without this, a Python dependency has NO constraint for Renovate to update, so it never classifies the update at all: no minor, no major, no PR. The new version arrives only through the Monday lock-file-maintenance PR, whatever its major version is — which is how mcp 2.x (FastMCP renamed to MCPServer, every transport setting moved off the constructor) landed inside a lock refresh and took five CI checks down. Contrast the github-actions and dockerfile managers, where the version IS written in the file: there a major gets its own attributable PR (setup-uv v10 did) because there is a constraint to change. This gives the pep621 manager the same property, so the rule below can do its job — minor and patch collapse into one PR, a major arrives alone and reviewable. Safe to churn pyproject.toml weekly: labelito ships as a Docker image and is not published to PyPI, so these constraints are a build input rather than a contract with downstream consumers, and the declared floor stops being fiction (it becomes the version actually tested).",
+      "matchManagers": ["pep621"],
+      "rangeStrategy": "bump"
+    },
+    {
       "description": "Group all non-major bumps into one PR.",
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "non-major dependencies"

@@ -18,8 +18,8 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp import FastMCP, Image
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Image, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 import app.main as main
 from app import oidc
@@ -44,7 +44,7 @@ EDITOR_TOOLS = {"validate_template"}
 SAVE_TOOLS = {"save_template"}
 
 
-def _tools(server: FastMCP) -> dict[str, Callable[..., Any]]:
+def _tools(server: MCPServer) -> dict[str, Callable[..., Any]]:
     """Map tool name -> its underlying callable for direct invocation in tests."""
     return {t.name: t.fn for t in server._tool_manager.list_tools()}
 
@@ -55,7 +55,7 @@ def _build_server(
     writable: bool,
     editor: bool | None = None,
     templates_writable: bool | None = None,
-) -> FastMCP:
+) -> MCPServer:
     """Build a server with the MCP gates set, leaving the editor gates alone unless asked.
 
     ``editor``/``templates_writable`` default to None — meaning "don't touch" — so a test combining
@@ -589,7 +589,7 @@ _INIT = {
 _MCP_HEADERS = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
 
 
-def _mounted_app(server: FastMCP, asgi: Any) -> FastAPI:
+def _mounted_app(server: MCPServer, asgi: Any) -> FastAPI:
     """A minimal host app that mounts the guarded MCP endpoint and runs its session manager.
 
     Bypasses app.main's own startup() (heavy, and irrelevant to the MCP transport) while still

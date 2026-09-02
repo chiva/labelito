@@ -72,12 +72,12 @@ Create `app/drivers/<yourdriver>.py` implementing the `PrinterDriver` Protocol:
 ```python
 from app.drivers.base import Capability, register_driver
 
+
 @register_driver("mydriver")
 class MyDriver:
     CAPABILITY = Capability(...)
 
-    def render_payload(self, png: bytes, opts: dict) -> bytes:
-        ...
+    def render_payload(self, png: bytes, opts: dict) -> bytes: ...
 ```
 
 ### 3. Write a fixture-based driver test (required)

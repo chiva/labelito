@@ -22,7 +22,7 @@ Two environment variables gate the server (both default off — see
 | Variable | Default | Effect |
 |---|---|---|
 | `MCP_ENABLED` | `false` | Mount the MCP server at `/mcp`. While `false` the endpoint is absent (404). |
-| `MCP_WRITABLE` | `false` | Also register the **write** tools (print / reprint). While `false`, only read-only tools exist and a connected client never even sees the write tools. |
+| `MCP_WRITABLE` | `false` | Also register the **mutating** tools: print / reprint, and `save_template` where the editor gates allow it too. While `false`, only read-only tools exist and a connected client never even sees the others — it can neither print nor change what a later print produces. |
 
 ```yaml
 # docker-compose.yml (excerpt)
@@ -126,6 +126,24 @@ reverse-proxy header trust is needed to keep them consistent (set `OIDC_AUDIENCE
 `/mcp` URL). See [Behind a reverse proxy](#behind-a-reverse-proxy) for the unrelated redirect/`https`
 concerns.
 
+### Scopes are endpoint-wide, not per tool
+
+Authorization is enforced once, on the whole `/mcp` mount. There is no per-tool scope check, so a
+token that clears `OIDC_REQUIRED_SCOPES` can call **every registered tool** — the env gates above
+decide which tools exist, and the token decides whether the endpoint answers at all. Two
+consequences worth planning around:
+
+- A scope named after one capability does not limit a token to it. `OIDC_REQUIRED_SCOPES=labelito.print`
+  is an example string, not an enforcement of printing-only: with `MCP_WRITABLE`, `EDITOR_ENABLED`
+  and `TEMPLATES_WRITABLE` all on, that same token can also `save_template`.
+- **The env gates are the only way to separate capabilities.** To hand out tokens that can print but
+  can never change a stored template, leave `TEMPLATES_WRITABLE` off — a template outlives the call
+  and feeds every later print, including ones made from the web UI or the REST API, so it is the
+  one MCP capability whose effects escape the session that used it.
+
+If you need per-tool authorization, run a second labelito instance with a narrower gate set and its
+own audience rather than relying on scope names.
+
 [dcr]: https://www.rfc-editor.org/rfc/rfc7591
 [rfc9728]: https://www.rfc-editor.org/rfc/rfc9728
 
@@ -153,8 +171,11 @@ settings — see [reverse-proxy deployment](reverse-proxy.md).
 
 ## Tools
 
-Read-only tools are always registered when `MCP_ENABLED=true`; write tools require
-`MCP_WRITABLE=true`.
+Read-only tools are always registered when `MCP_ENABLED=true`; mutating tools require
+`MCP_WRITABLE=true`. Two tools carry an extra gate of their own, noted in the tables below:
+`validate_template` needs `EDITOR_ENABLED`, and `save_template` needs `EDITOR_ENABLED` **and**
+`TEMPLATES_WRITABLE` on top of `MCP_WRITABLE`. Every gate defaults to off and only ever narrows the
+surface — none of them grants past `MCP_WRITABLE`.
 
 ### Read-only
 
@@ -166,8 +187,10 @@ Read-only tools are always registered when `MCP_ENABLED=true`; write tools requi
 | `get_printer_status` | Live printer state: loaded media, model, fault/error bits. |
 | `preview_label(template, fields, …)` | Render a PNG preview of a **stored** template — nothing printed or saved. |
 | `preview_ephemeral_label(yaml, fields, …)` | Render a PNG preview of an **inline** template designed on the fly. |
+| `list_icons(collection, style, query, limit)` | Find a name for an `icon` element, from the bundled collections or your own asset files. Scans what this deployment actually has; pair it with a `query`, since a full collection runs to thousands of names. |
 | `list_history(limit, offset)` | Browse recorded print jobs, newest first. |
 | `get_history_label(job_id)` | One recorded job's full detail. |
+| `validate_template(yaml)` | Validate a draft body and return its field contract, without rendering. Registered only when `EDITOR_ENABLED=true`, mirroring `POST /templates/parse`. |
 
 ### Write (require `MCP_WRITABLE=true`)
 
@@ -176,6 +199,16 @@ Read-only tools are always registered when `MCP_ENABLED=true`; write tools requi
 | `print_label(template, fields, …)` | Print a stored template. Supports `copies`, `dry_run`, render options, `idempotency_key`, and `{{seq}}` sequences. |
 | `print_ephemeral_label(yaml, fields, …)` | Print an **ephemeral** label from an inline YAML body — never written to disk, but recorded in history (with the frozen body) so it can be reprinted. |
 | `reprint_history_label(job_id)` | Reprint a past job exactly (same template, fields, options, and computed dates). |
+| `save_template(yaml)` | Persist a template to `TEMPLATES_DIR` and hot-reload it. Also requires `EDITOR_ENABLED=true` **and** `TEMPLATES_WRITABLE=true`, so it takes three deliberate opt-ins. Validated before the write, written atomically, and rolled back if the draft fails to register. The file name and registry key both come from the body's own `name:`, so saving over an existing name **replaces** that template. |
+
+## Resources
+
+| Resource | What |
+|---|---|
+| `docs://template-schema` | The template-authoring reference: the envelope, every element type with its fields and defaults, the `{{token}}` and `[[translation]]` grammars, the two icon-resolution modes, and the failure modes that render silently. Generated from the renderer, so it always matches the running version. Always registered — it documents the language and grants nothing. |
+
+A client writing a template should read that resource first, then `validate_template` the draft,
+`preview_ephemeral_label` it, and `save_template` it.
 
 Errors (unknown template, missing required fields, invalid YAML, media mismatch, printer
 unreachable, …) surface to the client as a tool error carrying the underlying reason.

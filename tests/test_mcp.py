@@ -30,6 +30,7 @@ READ_TOOLS = {
     "list_templates",
     "get_template",
     "get_capabilities",
+    "list_icons",
     "get_printer_status",
     "preview_label",
     "preview_ephemeral_label",
@@ -37,6 +38,10 @@ READ_TOOLS = {
     "get_history_label",
 }
 WRITE_TOOLS = {"print_label", "print_ephemeral_label", "reprint_history_label"}
+# Gated by EDITOR_ENABLED (as the REST routes they reuse are), not by MCP_WRITABLE.
+EDITOR_TOOLS = {"validate_template"}
+# Additionally gated by TEMPLATES_WRITABLE, the same opt-in POST /templates sits behind.
+SAVE_TOOLS = {"save_template"}
 
 
 def _tools(server: FastMCP) -> dict[str, Callable[..., Any]]:
@@ -44,9 +49,25 @@ def _tools(server: FastMCP) -> dict[str, Callable[..., Any]]:
     return {t.name: t.fn for t in server._tool_manager.list_tools()}
 
 
-def _build_server(monkeypatch: pytest.MonkeyPatch, *, writable: bool) -> FastMCP:
+def _build_server(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    writable: bool,
+    editor: bool | None = None,
+    templates_writable: bool | None = None,
+) -> FastMCP:
+    """Build a server with the MCP gates set, leaving the editor gates alone unless asked.
+
+    ``editor``/``templates_writable`` default to None — meaning "don't touch" — so a test combining
+    this helper with the ``client`` fixture keeps that fixture's ``editor_enabled=True`` instead of
+    having it silently overridden here.
+    """
     monkeypatch.setattr(main.settings, "mcp_enabled", True)
     monkeypatch.setattr(main.settings, "mcp_writable", writable)
+    if editor is not None:
+        monkeypatch.setattr(main.settings, "editor_enabled", editor)
+    if templates_writable is not None:
+        monkeypatch.setattr(main.settings, "templates_writable", templates_writable)
     return build_mcp_server()
 
 
@@ -68,6 +89,67 @@ def test_readonly_registers_only_read_tools(monkeypatch: pytest.MonkeyPatch) -> 
 def test_writable_registers_read_and_write_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     tools = set(_tools(_build_server(monkeypatch, writable=True)))
     assert tools == READ_TOOLS | WRITE_TOOLS
+
+
+def test_editor_disabled_hides_authoring_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """EDITOR_ENABLED=false means no template authoring at all, MCP_WRITABLE notwithstanding."""
+    tools = set(_tools(_build_server(monkeypatch, writable=True, editor=False)))
+    assert not (tools & (EDITOR_TOOLS | SAVE_TOOLS))
+
+
+def test_editor_enabled_registers_validate_but_not_save(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validation rides on EDITOR_ENABLED; persistence needs the separate TEMPLATES_WRITABLE."""
+    tools = set(_tools(_build_server(monkeypatch, writable=False, editor=True)))
+    assert tools == READ_TOOLS | EDITOR_TOOLS
+
+
+def test_save_needs_mcp_writable_as_well(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TEMPLATES_WRITABLE alone must NOT expose save_template: writing is a write.
+
+    A saved template outlives the call and feeds every later print, including ones made from the
+    web UI or REST, so an MCP client able to replace one can cause a wrong label from a print it
+    never made. MCP_WRITABLE=false has to mean this server mutates nothing.
+    """
+    tools = set(
+        _tools(_build_server(monkeypatch, writable=False, editor=True, templates_writable=True))
+    )
+    assert tools == READ_TOOLS | EDITOR_TOOLS
+    assert not (tools & SAVE_TOOLS)
+
+
+def test_templates_writable_registers_save(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both gates together — the editor opt-in and the MCP write switch — register it."""
+    tools = set(
+        _tools(_build_server(monkeypatch, writable=True, editor=True, templates_writable=True))
+    )
+    assert tools == READ_TOOLS | WRITE_TOOLS | EDITOR_TOOLS | SAVE_TOOLS
+
+
+def test_mcp_writable_alone_does_not_register_save(monkeypatch: pytest.MonkeyPatch) -> None:
+    """...and the MCP switch alone does not either: TEMPLATES_WRITABLE still has to be set."""
+    tools = set(
+        _tools(_build_server(monkeypatch, writable=True, editor=True, templates_writable=False))
+    )
+    assert tools == READ_TOOLS | WRITE_TOOLS | EDITOR_TOOLS
+
+
+def test_templates_writable_alone_is_not_enough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TEMPLATES_WRITABLE without the editor registers nothing: it narrows, never grants."""
+    tools = set(
+        _tools(_build_server(monkeypatch, writable=False, editor=False, templates_writable=True))
+    )
+    assert tools == READ_TOOLS
+
+
+def test_schema_resource_is_always_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The authoring reference is readable even on a read-only, editor-less deployment.
+
+    It documents the template language, so it is useful for reading an existing template's YAML —
+    and it grants nothing, unlike the tools that act on one.
+    """
+    server = _build_server(monkeypatch, writable=False, editor=False)
+    uris = {str(r.uri) for r in server._resource_manager.list_resources()}
+    assert "docs://template-schema" in uris
 
 
 # ── Auth guard (_mcp_authorized) ─────────────────────────────────────────────────
@@ -201,6 +283,63 @@ def test_get_capabilities(client: TestClient, monkeypatch: pytest.MonkeyPatch) -
     caps = tools["get_capabilities"]()
     assert "supported_labels" in caps
     assert caps["dpi"] > 0
+
+
+# ── list_icons ───────────────────────────────────────────────────────────────────
+# The client fixture builds a synthetic icon tree: icons/snowflake.png (a custom asset) and
+# icon-collections/fontawesome/solid/coffee.svg (one bundled collection entry).
+
+
+@pytest.mark.asyncio
+async def test_list_icons_summary_counts_every_collection(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = _tools(_build_server(monkeypatch, writable=False))
+    result = await tools["list_icons"]()
+    assert result["collections"]["fontawesome"] == 1
+    assert result["collections"]["custom"] == 1
+    # A collection absent from the tree counts 0 rather than erroring: the bundles are a build
+    # artifact, so a deployment can legitimately lack one.
+    assert result["collections"]["octicons"] == 0
+    assert "solid" in result["fontawesome_styles"]
+
+
+@pytest.mark.asyncio
+async def test_list_icons_lists_collection_and_custom_names(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = _tools(_build_server(monkeypatch, writable=False))
+    bundled = await tools["list_icons"](collection="fontawesome")
+    assert bundled["icons"] == ["coffee"]
+    assert bundled["total"] == 1
+    assert bundled["truncated"] is False
+    # "custom" reads the icons dir — the mode an `icon` element selects by OMITTING `collection`.
+    custom = await tools["list_icons"](collection="custom")
+    assert custom["icons"] == ["snowflake"]
+
+
+@pytest.mark.asyncio
+async def test_list_icons_filters_and_truncates(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = _tools(_build_server(monkeypatch, writable=False))
+    assert (await tools["list_icons"](collection="fontawesome", query="cof"))["icons"] == ["coffee"]
+    assert (await tools["list_icons"](collection="fontawesome", query="zzz"))["icons"] == []
+    # truncated must be reported, not silently applied: it is how a caller learns to narrow.
+    capped = await tools["list_icons"](collection="fontawesome", limit=0 + 1)
+    assert capped["total"] == 1
+    assert capped["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_icons_rejects_unknown_collection_and_bad_limit(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = _tools(_build_server(monkeypatch, writable=False))
+    with pytest.raises(ToolError, match="Unknown collection"):
+        await tools["list_icons"](collection="nope")
+    with pytest.raises(ToolError, match="limit must be"):
+        await tools["list_icons"](collection="fontawesome", limit=0)
 
 
 @pytest.mark.asyncio
@@ -732,3 +871,102 @@ def test_protected_resource_metadata_endpoint(monkeypatch: pytest.MonkeyPatch) -
             assert body["authorization_servers"] == [_ISSUER]
             assert body["bearer_methods_supported"] == ["header"]
             assert body["scopes_supported"] == ["labelito.print"]
+
+
+# ── Template authoring (validate_template / save_template) ───────────────────────
+
+_DRAFT = """\
+name: mcp-authored
+description: Written through the MCP surface
+label: "62"
+fields:
+  required: [title]
+layout:
+  - {type: title, text: "{{title}}"}
+  - {type: text, text: "[[stored]] {{date}}", size: 24}
+"""
+
+
+@pytest.mark.asyncio
+async def test_validate_template_returns_inferred_contract(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The contract is inferred from the layout's tokens; computed ones are excluded from it."""
+    tools = _tools(_build_server(monkeypatch, writable=False, editor=True))
+    result = await tools["validate_template"](yaml=_DRAFT)
+    assert result["name"] == "mcp-authored"
+    assert result["fields"]["required"] == ["title"]
+    # {{date}} is engine-resolved and [[stored]] is a translation, so neither becomes a field a
+    # caller would have to supply.
+    assert "date" not in result["fields"]["required"] + result["fields"]["optional"]
+    assert "stored" not in result["fields"]["required"] + result["fields"]["optional"]
+
+
+@pytest.mark.asyncio
+async def test_validate_template_reports_a_broken_draft(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = _tools(_build_server(monkeypatch, writable=False, editor=True))
+    with pytest.raises(ToolError):
+        await tools["validate_template"](yaml="name: broken\nlayout: not-a-list\n")
+
+
+@pytest.mark.asyncio
+async def test_save_template_persists_and_registers(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved draft lands on disk under its own internal name and is immediately printable."""
+    tools = _tools(_build_server(monkeypatch, writable=True, editor=True, templates_writable=True))
+    await tools["save_template"](yaml=_DRAFT)
+
+    # The file name comes from the template's internal `name:`, never from the request.
+    assert (main.settings.templates_dir / "mcp-authored.yaml").is_file()
+    # Registered under that same key, so the registry, the file and the internal name agree.
+    assert main.registry.get("mcp-authored") is not None
+    assert "mcp-authored" in [
+        t["name"] for t in _tools(_build_server(monkeypatch, writable=False))["list_templates"]()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_save_template_refuses_a_broken_draft_without_writing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Validation precedes the write, so a broken body never reaches the templates directory."""
+    tools = _tools(_build_server(monkeypatch, writable=True, editor=True, templates_writable=True))
+    before = sorted(p.name for p in main.settings.templates_dir.iterdir())
+
+    with pytest.raises(ToolError):
+        await tools["save_template"](yaml="name: broken\nlayout: not-a-list\n")
+
+    assert sorted(p.name for p in main.settings.templates_dir.iterdir()) == before
+
+
+# ── docs://template-schema resource ──────────────────────────────────────────────
+
+
+def test_schema_resource_documents_the_live_element_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every registered element type must appear, so a new one cannot ship undocumented."""
+    from app.mcp_schema import template_schema_markdown
+    from app.render.elements import ELEMENT_REGISTRY
+
+    markdown = template_schema_markdown()
+    for name in ELEMENT_REGISTRY:
+        assert f"### `{name}`" in markdown
+
+
+def test_schema_resource_names_the_silent_failure_modes() -> None:
+    """The prose earns its place by naming what renders wrong without erroring.
+
+    Both cost real debugging time against a live printer: an icon written without `collection`
+    resolves to a custom asset that usually is not there and renders blank, and text past
+    `max_lines` is cut with no ellipsis or warning.
+    """
+    from app.mcp_schema import template_schema_markdown
+
+    markdown = template_schema_markdown()
+    assert "two resolution modes" in markdown
+    assert "max_lines: 2" in markdown
+    assert "clipped, not shrunk" in markdown.lower()

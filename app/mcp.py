@@ -35,8 +35,8 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-from mcp.server.fastmcp import FastMCP, Image
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Image, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -144,8 +144,8 @@ def _sequence_spec(sequence: dict[str, Any] | None) -> SequenceSpec | None:
     return SequenceSpec.model_validate(sequence)
 
 
-def build_mcp_server() -> FastMCP:
-    """Construct the labelito :class:`FastMCP` server with its tools registered.
+def build_mcp_server() -> MCPServer:
+    """Construct the labelito :class:`MCPServer` with its tools registered.
 
     Read-only tools are always registered; the write tools are registered only when
     ``MCP_WRITABLE=true``. Called once from ``app.main``'s mount block when ``MCP_ENABLED`` is set.
@@ -155,7 +155,7 @@ def build_mcp_server() -> FastMCP:
     import app.main as main
     from app.config import settings
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         "labelito",
         instructions=(
             "labelito prints labels on a Brother QL label printer from reusable YAML templates. "
@@ -169,19 +169,6 @@ def build_mcp_server() -> FastMCP:
             "render silently (clipped text, an unresolved icon). Then validate_template a draft, "
             "preview_ephemeral_label it, and save_template it when persistence is enabled."
         ),
-        # Stateless + plain-JSON responses: each tool call is self-contained (no server-side session
-        # to keep alive) and returns a single JSON body rather than an SSE stream — simplest for both
-        # AI clients and curl. The endpoint is idempotent per call, matching the REST surface.
-        stateless_http=True,
-        json_response=True,
-        # The streamable-HTTP route sits at the mount root; app.main mounts this app at "/mcp", so the
-        # effective endpoint is /mcp (a bare /mcp 307-redirects to /mcp/, which clients follow).
-        streamable_http_path="/",
-        # DNS-rebinding Host/Origin validation is disabled: labelito is a self-hosted service reached
-        # at an arbitrary, deployment-specific host/IP (and often behind a reverse proxy), so the
-        # allowlist can't be known here. The /mcp mount is instead guarded by the app's own bearer/
-        # Basic auth (see app.main._guard_mcp) plus network placement, the same control as the REST API.
-        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 
     def _require_history_browsing() -> None:
@@ -237,7 +224,7 @@ def build_mcp_server() -> FastMCP:
         to false) — otherwise ``yaml`` is ``None``. If the source file has since gone missing or is
         oversized, ``yaml`` degrades to ``None`` rather than failing the whole call, mirroring how the
         REST ``/templates`` list still serves the contract when only ``/source`` would 404/413. The
-        blocking read is offloaded to a threadpool (FastMCP runs a sync tool on the event loop).
+        blocking read is offloaded to a threadpool: this tool is async, so nothing else would.
         """
         with _as_tool_error():
             tmpl = main.registry.get(name)
@@ -406,7 +393,7 @@ def build_mcp_server() -> FastMCP:
         Each entry's frozen inline template body is omitted; use get_history_label(job_id) for a
         single job's full detail, or reprint_history_label(job_id) to reprint it. Hidden (errors)
         when HISTORY_UI=false, mirroring the REST browse routes. The blocking SQLite read is offloaded
-        to a threadpool (FastMCP runs a sync tool on the event loop), as the REST route does.
+        to a threadpool — this tool is async, so nothing else would — as the REST route does.
         """
         with _as_tool_error():
             _require_history_browsing()
@@ -489,6 +476,11 @@ def build_mcp_server() -> FastMCP:
 
                 Requires MCP_WRITABLE=true and TEMPLATES_WRITABLE=true with a writable templates
                 directory. Returns the saved name; preview it first with preview_ephemeral_label.
+
+                Read ``warnings`` in the response. It is not a failure — the template saved and
+                prints — but it is the only place a problem with no other symptom is reported: a
+                spoken alias that more than one template claims, which a voice assistant will
+                therefore match for none of them.
                 """
                 with _as_tool_error():
                     request = SaveTemplateRequest(name=SAVE_NAME_PLACEHOLDER, yaml=yaml)
@@ -580,12 +572,31 @@ def build_mcp_server() -> FastMCP:
     return mcp
 
 
-def build_mcp_asgi_app() -> tuple[FastMCP, Starlette]:
+def build_mcp_asgi_app() -> tuple[MCPServer, Starlette]:
     """Build the MCP server and its mountable streamable-HTTP ASGI app.
 
     Returns ``(server, asgi_app)``: ``app.main`` mounts ``asgi_app`` at ``/mcp`` (behind its auth
     guard) and runs ``server.session_manager.run()`` inside the app lifespan — the streamable-HTTP
     session manager's task group must be active for the mounted route to serve requests.
+
+    Every transport setting is configured HERE rather than on the server object. In mcp 1.x these
+    were :class:`MCPServer` constructor arguments; 2.x moved them onto the per-transport entry
+    points, so passing them to the constructor is now a ``TypeError`` — which is the whole reason
+    the 2.x bump broke the build rather than merely warning.
     """
     server = build_mcp_server()
-    return server, server.streamable_http_app()
+    return server, server.streamable_http_app(
+        # Stateless + plain-JSON responses: each tool call is self-contained (no server-side session
+        # to keep alive) and returns a single JSON body rather than an SSE stream — simplest for both
+        # AI clients and curl. The endpoint is idempotent per call, matching the REST surface.
+        stateless_http=True,
+        json_response=True,
+        # The streamable-HTTP route sits at the mount root; app.main mounts this app at "/mcp", so the
+        # effective endpoint is /mcp (a bare /mcp 307-redirects to /mcp/, which clients follow).
+        streamable_http_path="/",
+        # DNS-rebinding Host/Origin validation is disabled: labelito is a self-hosted service reached
+        # at an arbitrary, deployment-specific host/IP (and often behind a reverse proxy), so the
+        # allowlist can't be known here. The /mcp mount is instead guarded by the app's own bearer/
+        # Basic auth (see app.main._guard_mcp) plus network placement, the same control as the REST API.
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )

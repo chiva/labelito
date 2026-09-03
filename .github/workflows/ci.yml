@@ -63,6 +63,11 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.13", "3.14"]
+    # Bind every uv command in this job to the leg's interpreter. Without it `uv sync` is free to
+    # pick a different one that also satisfies requires-python, which is exactly how the 3.13 leg
+    # ended up running 3.14.7.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -76,6 +81,21 @@ jobs:
       # fails, but continue-on-error keeps the experimental job from blocking the build.
       - run: uv python install ${{ matrix.python-version }}
       - run: uv sync --group test
+      # Assert the venv really is the interpreter this leg is named after. `uv sync` picks any
+      # interpreter satisfying requires-python, so when a Renovate PR raised requires-python to
+      # ">=3.14.7" this job kept its "Tests (Python 3.13)" name, silently built a 3.14.7 venv and
+      # reported green — a matrix leg that tested nothing it claimed to. UV_PYTHON above makes uv
+      # refuse rather than substitute; this step is what proves it, because a green check that
+      # measures the wrong thing is worse than a red one.
+      - name: Verify the interpreter matches the matrix leg
+        run: |
+          want='${{ matrix.python-version }}'
+          got="$(uv run python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          if [ "$got" != "$want" ]; then
+            echo "::error::matrix leg claims Python $want but the venv is $got"
+            exit 1
+          fi
+          echo "interpreter is Python $got, as claimed"
       - name: Run tests
         # `icons` is excluded here: it needs the fetched icon collections (a build artifact absent
         # from a plain checkout) and runs in the dedicated `icons` job below, not the matrix.

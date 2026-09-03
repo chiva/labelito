@@ -79,11 +79,23 @@ jobs:
       - name: Run tests
         # `icons` is excluded here: it needs the fetched icon collections (a build artifact absent
         # from a plain checkout) and runs in the dedicated `icons` job below, not the matrix.
-        run: uv run pytest -m "not hardware and not icons" --cov --cov-report=xml --cov-fail-under=85
+        # The 85% floor comes from [tool.coverage.report] in pyproject.toml rather than a CLI flag,
+        # so a local `uv run pytest --cov` gates exactly like CI does (and matches ha-labelito).
+        run: uv run pytest -m "not hardware and not icons" --cov --cov-report=xml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-${{ matrix.python-version }}
           path: coverage.xml
+      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+        with:
+          files: coverage.xml
+          # One flag per interpreter: the matrix reports on the same source tree twice, and
+          # unflagged uploads replace each other on Codecov instead of being kept apart.
+          flags: python-${{ matrix.python-version }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Publication only — the floor above is what actually gates the PR, so a Codecov outage
+          # must not redden a build whose coverage CI has already checked itself.
+          fail_ci_if_error: false
 
   icons:
     name: Icon collections

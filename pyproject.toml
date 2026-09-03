@@ -33,12 +33,11 @@ dependencies = [
     "Jinja2>=3.1.4",
     "python-multipart>=0.0.9",
     "prometheus-client>=0.21.0",
-    # Capped deliberately. The floor is the release this code targets; the ceiling exists because
-    # an unbounded ">=1.12.0" is exactly what let mcp 2.x in through routine lock maintenance, and
-    # 2.x renamed FastMCP to MCPServer and moved every transport setting off the constructor — a
-    # dependency bump that could not possibly be mechanical. A major upgrade should be its own
-    # change with its own review, not a side effect of refreshing a lock file.
-    "mcp>=2.1.1,<3",
+    # 2.1.1 is the release whose server API this code targets: 2.x renamed FastMCP to MCPServer and
+    # moved every transport setting off the constructor, so 1.x cannot run it. No ceiling — every
+    # other dependency here is declared the same way, and a ceiling is the wrong tool for keeping a
+    # major out of a lock refresh (see renovate.json: rangeStrategy "pin" is what does that).
+    "mcp>=2.1.1",
     # OAuth 2.0 Resource Server (OIDC) validation for the /mcp endpoint. PyJWT ships PyJWKClient,
     # which fetches an IdP's JWKS, caches signing keys by kid, and refetches on an unknown kid
     # (key rotation). The [crypto] extra pulls in `cryptography` for RS256/ES256 verification.

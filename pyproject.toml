@@ -36,7 +36,7 @@ dependencies = [
     # 2.1.1 is the release whose server API this code targets: 2.x renamed FastMCP to MCPServer and
     # moved every transport setting off the constructor, so 1.x cannot run it. No ceiling — every
     # other dependency here is declared the same way, and a ceiling is the wrong tool for keeping a
-    # major out of a lock refresh (see renovate.json: rangeStrategy "bump" is what does that).
+    # major out of a lock refresh (see renovate.json: rangeStrategy "pin" is what does that).
     "mcp>=2.1.1",
     # OAuth 2.0 Resource Server (OIDC) validation for the /mcp endpoint. PyJWT ships PyJWKClient,
     # which fetches an IdP's JWKS, caches signing keys by kid, and refetches on an unknown kid

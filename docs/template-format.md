@@ -23,9 +23,80 @@ This document is the authoritative reference for every parameter. It is sourced 
 | `rotate` | no | int | Quarter-turn orientation. One of `0`, `90`, `180`, `270` (default `0`); any other value is rejected. For **continuous** media the whole label is rotated. For **die-cut** media (both dimensions fixed) a `90`/`270` rotation composes the layout on a **swapped** canvas — author it for the long edge as width, so an address reads landscape along the length — and the driver rotates it back onto the roll's printable size. (A naive `rotate: 90` without this handling would make brother_ql reject the raster with `Bad image dimensions`; the app does the swap for you.) |
 | `valign` | no | string | Vertical placement of the whole composed layout within the label. One of `top` (default), `center`, `bottom`. Only takes effect on **die-cut** media that has spare height (the block is shorter than the label): `center`/`bottom` shift the stack down so it does not cling to the top edge. On **continuous** media (height grows to fit) and when content overflows a die-cut label it is a no-op. Handy for address labels where a bold name + a couple of lines should sit centred on the long face. |
 | `fields` | no | mapping | Declares the [fields](#fields) a caller supplies. Omit it for a fully static label. |
+| `aliases` | no | list | Alternative **spoken** names, for clients that match speech against the catalog. Never a lookup key — printing is always by `name`. See [Aliases (spoken names)](#aliases-spoken-names). |
 
 A template missing any of `name`, `description`, `label`, `layout` is rejected. The top-level node
 must be a mapping; a uniformly-indented root mapping is accepted as long as it is consistent.
+
+### Aliases (spoken names)
+
+`aliases` lists other ways a person *says* this template's name. It exists for clients that resolve
+human speech against the catalog — Home Assistant's labelito integration builds the vocabulary its
+voice assistant listens for from every template's `name` plus its aliases:
+
+```yaml
+name: meal-prep
+description: Batch-cook label
+label: "62"
+aliases: [comida preparada, batch cooking]
+fields:
+  required: [title]
+layout:
+  - {type: title, text: "{{title}}"}
+```
+
+Two things aliases are for, and one thing they are not:
+
+* **A name nobody says out loud.** `meal-prep` is never spoken with the hyphen. A consumer can
+  derive "meal prep" on its own, so that particular alias is unnecessary — but `comida preparada`
+  is not derivable from anything.
+* **The other word for the same thing.** A Spanish household says *congelado* about as often as
+  *congelador*; an alias covers the one the template is not named after.
+* **Not a lookup key.** `POST /print` and every API path still take `name`. An alias only widens
+  what a *speech* matcher accepts, and the matcher reports back the canonical `name`.
+
+**Quote an alias that YAML would read as something else.** PyYAML implements YAML 1.1, where
+`yes`, `no`, `on`, `off`, `true`, `false`, `null` and `~` are keywords and bare digits are
+numbers — so `aliases: [no]` is the boolean `False` before any validation sees it. Those are
+exactly the short, common words an alias tends to be, so such an entry is **rejected** with a
+message telling you to quote it, rather than quietly stored as the text "False":
+
+```yaml
+aliases: ["no", "off", "12"]
+```
+
+An alias may hold what a name may not — spaces and accents — because it is a phrase, not a
+filename. It must start with a letter or digit and may then contain letters (any script), digits,
+**combining marks**, spaces, `_`, `-`, `.` and apostrophes, up to 64 characters; at most 16 per
+template. Marks are allowed because whole writing systems need them: `नमस्ते` is letters plus two
+combining marks with no precomposed form, so no normalization removes them.
+
+Aliases are stored **NFC-normalized**. That matters beyond tidiness: `café` typed as `e` plus a
+combining acute is a different string from the precomposed form — not equal even after
+lower-casing — so a decomposed alias would validate and then never match anything a voice
+assistant folds the usual way.
+
+An entry that repeats the template's own name, or another alias, is rejected rather than ignored —
+one of the two could never win a match, so it is a typo worth seeing. Duplicates are compared
+after case *and* spacing are normalized, so `"my label"` and `"my  label"` count as the same
+alias.
+
+**Collisions between templates are reported, not rejected.** Saving or reloading returns a
+`warnings` list naming any spoken form that more than one template claims — an alias two templates
+share, or one that equals another template's name. The studio shows it after a save and the MCP
+`save_template` response carries it, because an alias that can never win a match has *no other
+symptom*: the template still lists, previews and prints exactly as before.
+
+It stays a warning rather than a load error for three reasons. An alias is never a lookup key, so a
+colliding one costs only itself. `errors` gates the whole catalog — the save route rolls back on
+any of them — so a colliding alias becoming an error would let one bad pair of voice hints make
+every later save fail. And enforcement could not be complete anyway: a YAML file dropped straight
+into the templates directory collides without ever passing through a save.
+
+So the consumer stays the authority on ambiguity, and does the safe thing — Home Assistant's
+integration refuses to resolve a contested form at all, because there is no way to tell which was
+meant. The warning exists because *that* is discovered at voice-match time, while the fix (a
+rename) belongs at authoring time.
 
 ### Choosing a label
 

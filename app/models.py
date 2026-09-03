@@ -354,6 +354,12 @@ class TemplateParseResponse(BaseModel):
     # sequence controls (and sends a `sequence` on /preview/draft) so a {{seq}} draft previews its
     # first item instead of erroring. Defaults False so the response shape stays backward-compatible.
     uses_seq: bool = False
+    # The draft's alternative spoken names (loader.is_spoken_alias). Returned so the visual builder can
+    # carry them across a round trip: it rebuilds its whole model from this response and re-emits
+    # YAML from that model, so a top-level key missing here is a key the builder DELETES from a
+    # template somebody opens, edits and saves. Defaults to [] so the shape stays
+    # backward-compatible.
+    aliases: list[str] = Field(default_factory=list)
 
 
 class TemplateLayoutResponse(TemplateParseResponse):
@@ -442,6 +448,12 @@ class TemplateInfo(BaseModel):
     # uses this to reveal the sequence controls and hide the copies stepper instead of letting the
     # print 422. Defaults to False so the serialized shape stays backward-compatible.
     uses_seq: bool = False
+    # Alternative SPOKEN names declared by the template (loader.is_spoken_alias), for clients that match
+    # human speech against the catalog — a voice assistant turns name + aliases into the vocabulary
+    # it listens for. Unlike `name`, an alias may contain spaces and accents, and it is never a
+    # lookup key: printing is always by `name`. Defaults to [] so the serialized shape stays
+    # backward-compatible.
+    aliases: list[str] = Field(default_factory=list)
 
 
 class TemplateSourceResponse(BaseModel):

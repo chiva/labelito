@@ -1913,3 +1913,351 @@ def test_list_quoted_false_bold_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(TemplateLoadError, match="'bold' must be a boolean"):
         load_template(path)
+
+
+# --- aliases (alternative spoken names) ------------------------------------------------------
+#
+# An alias widens what a SPEECH matcher accepts for a template; it is never a lookup key. These
+# lock down the two halves that matter: what a valid alias is allowed to look like (spaces and
+# accents, which a template `name` may not carry), and which mistakes are rejected loudly instead
+# of being dropped where the author would never notice.
+
+ALIASED_TEMPLATE = """\
+    name: meal-prep
+    description: batch cooking
+    label: "62"
+    aliases: {aliases}
+    layout:
+      - {{type: text, text: hello}}
+"""
+
+
+def _load_with_aliases(tmp_path: Path, aliases: str) -> "object":
+    path = write_yaml(tmp_path / "aliased.yaml", ALIASED_TEMPLATE.format(aliases=aliases))
+    return load_template(path)
+
+
+def test_aliases_default_to_empty(tmp_path: Path) -> None:
+    """A template without `aliases` exposes [], not None — consumers iterate it unconditionally."""
+    path = write_yaml(
+        tmp_path / "plain.yaml",
+        """\
+        name: plain
+        description: no aliases
+        label: "62"
+        layout:
+          - {type: text, text: hello}
+    """,
+    )
+    assert load_template(path).aliases == []
+
+
+def test_aliases_keep_declared_order_and_casing(tmp_path: Path) -> None:
+    """Order and casing survive: the value is shown to humans, and the matcher folds case itself."""
+    t = _load_with_aliases(tmp_path, '["Comida Preparada", "batch cooking"]')
+    assert t.aliases == ["Comida Preparada", "batch cooking"]
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "comida preparada",  # the point of aliases: a spoken phrase, with a space
+        "lasaña",  # accents — a name charset would reject this
+        "café con leche",
+        "prep 2",  # digits
+        "l'étiquette",  # apostrophe
+        "meal.prep",
+        "meal_prep",
+        "meal-prep-2",
+        "a",  # single character is a legal (if unwise) spoken name
+    ],
+)
+def test_valid_alias_shapes(tmp_path: Path, alias: str) -> None:
+    assert _load_with_aliases(tmp_path, f'["{alias}"]').aliases == [alias]
+
+
+@pytest.mark.parametrize(
+    ("alias", "description"),
+    [
+        ("\u0928\u092e\u0938\u094d\u0924\u0947", "devanagari: letters plus two Mn marks"),
+        ("\u0e2a\u0e27\u0e31\u0e2a\u0e14\u0e35", "thai with vowel marks"),
+        ("\u05e9\u05b8\u05dc\u05d5\u05b9\u05dd", "hebrew with niqqud"),
+    ],
+)
+def test_a_script_that_needs_combining_marks_is_accepted(
+    tmp_path: Path, alias: str, description: str
+) -> None:
+    """The charset promised "any script" and delivered only scripts with no combining marks.
+
+    ``नमस्ते`` is letters plus two ``Mn`` marks that have NO precomposed form, so normalization
+    cannot remove them — the whole writing system was unusable, and so were Thai tone marks and
+    Hebrew niqqud, while the documentation said otherwise.
+    """
+    assert _load_with_aliases(tmp_path, f'["{alias}"]').aliases == [alias], description
+
+
+def test_a_decomposed_accent_is_accepted_and_stored_precomposed(tmp_path: Path) -> None:
+    """The likeliest case, and the one with a silent consequence.
+
+    ``cafe\u0301`` (e + combining acute) was rejected outright, even though "café" is the doc's own
+    example — and macOS has historically handed out decomposed text, so an author pastes it without
+    knowing. Accepting it is only half: the two forms are DIFFERENT strings, unequal even after
+    lower-casing, so an alias stored decomposed would validate and then never match anything a
+    voice assistant folded the usual way. Storing NFC is what makes it actually work.
+    """
+    decomposed = "cafe\u0301"
+    precomposed = "caf\u00e9"
+    assert decomposed != precomposed
+    assert decomposed.lower() != precomposed.lower()
+
+    assert _load_with_aliases(tmp_path, f'["{decomposed}"]').aliases == [precomposed]
+
+
+def test_two_spellings_of_one_accent_are_the_same_alias(tmp_path: Path) -> None:
+    """Because both are stored NFC, they collide — which is the point, not a surprise."""
+    with pytest.raises(TemplateLoadError, match="duplicate alias"):
+        _load_with_aliases(tmp_path, '["cafe\u0301", "caf\u00e9"]')
+
+
+def test_a_leading_combining_mark_is_still_rejected(tmp_path: Path) -> None:
+    """Marks are allowed everywhere but first: a word cannot begin with one."""
+    with pytest.raises(TemplateLoadError, match="invalid alias"):
+        _load_with_aliases(tmp_path, '["\u0301cafe"]')
+
+
+def test_alias_whitespace_is_collapsed(tmp_path: Path) -> None:
+    """Runs of whitespace collapse, so two aliases cannot differ invisibly by spacing."""
+    t = _load_with_aliases(tmp_path, '["  comida   preparada  "]')
+    assert t.aliases == ["comida preparada"]
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "",  # empty
+        "  ",  # whitespace only
+        "-prep",  # leading punctuation: a stray list dash or a typo
+        ".prep",
+        "_prep",  # underscore start is an identifier habit, not speech
+        "'prep",
+        "meal (prep)",  # every one of these is a sentence-grammar metacharacter downstream
+        "meal [prep]",
+        "meal {prep}",
+        "meal <prep>",
+        "meal|prep",
+        "meal;prep",
+        "meal\\\\prep",
+        "meal/prep",  # a path separator has no business in a spoken name
+        "meal@prep",
+        "x" * 65,  # one past the 64-char cap
+    ],
+)
+def test_invalid_alias_is_rejected(tmp_path: Path, alias: str) -> None:
+    with pytest.raises(TemplateLoadError, match="invalid alias"):
+        _load_with_aliases(tmp_path, f'["{alias}"]')
+
+
+@pytest.mark.parametrize(
+    ("literal", "loaded_as"),
+    [
+        ("yes", "True"),
+        ("no", "False"),
+        ("on", "True"),
+        ("off", "False"),
+        ("true", "True"),
+        ("null", "None"),
+        ("~", "None"),
+        ("12", "12"),
+        ("1.5", "1.5"),
+    ],
+)
+def test_a_yaml_keyword_alias_is_rejected_not_coerced(
+    tmp_path: Path, literal: str, loaded_as: str
+) -> None:
+    """PyYAML implements YAML 1.1, where ordinary spoken words are keywords.
+
+    ``aliases: [no]`` parses to ``False`` before any validation runs, so coercing with ``str()``
+    stored the alias {loaded_as!r} — silent corruption of exactly the short, common words an alias
+    is most likely to be. The author has to be told to quote it, because a wrong alias is
+    invisible: it simply never matches anything anyone says.
+    """
+    with pytest.raises(TemplateLoadError, match="not a string"):
+        _load_with_aliases(tmp_path, f"[{literal}]")
+
+
+@pytest.mark.parametrize("quoted", ['["no"]', "['off']", '["12"]'])
+def test_a_quoted_keyword_alias_is_accepted_verbatim(tmp_path: Path, quoted: str) -> None:
+    """The fix the error message tells the author about has to actually work."""
+    alias = quoted.strip("[]\"'")
+    assert _load_with_aliases(tmp_path, quoted).aliases == [alias]
+
+
+def test_alias_list_must_be_a_list(tmp_path: Path) -> None:
+    """A bare string is the likely mistake: iterating it would declare one alias per character."""
+    with pytest.raises(TemplateLoadError, match="'aliases' must be a list"):
+        _load_with_aliases(tmp_path, "comida preparada")
+
+
+def test_too_many_aliases_is_rejected(tmp_path: Path) -> None:
+    from app.loader import MAX_TEMPLATE_ALIASES
+
+    too_many = "[" + ", ".join(f'"alias {i}"' for i in range(MAX_TEMPLATE_ALIASES + 1)) + "]"
+    with pytest.raises(TemplateLoadError, match="too many aliases"):
+        _load_with_aliases(tmp_path, too_many)
+
+    at_cap = "[" + ", ".join(f'"alias {i}"' for i in range(MAX_TEMPLATE_ALIASES)) + "]"
+    assert len(_load_with_aliases(tmp_path, at_cap).aliases) == MAX_TEMPLATE_ALIASES
+
+
+@pytest.mark.parametrize("second", ["comida preparada", "Comida Preparada", "comida   preparada"])
+def test_duplicate_alias_is_rejected(tmp_path: Path, second: str) -> None:
+    """Case and spacing are folded before comparing, so a 'different' duplicate is still one."""
+    with pytest.raises(TemplateLoadError, match="duplicate alias"):
+        _load_with_aliases(tmp_path, f'["comida preparada", "{second}"]')
+
+
+@pytest.mark.parametrize("alias", ["meal-prep", "MEAL-PREP"])
+def test_alias_equal_to_the_template_name_is_rejected(tmp_path: Path, alias: str) -> None:
+    """The name always matches on its own, so aliasing it is a no-op the author should see."""
+    with pytest.raises(TemplateLoadError, match="own name"):
+        _load_with_aliases(tmp_path, f'["{alias}"]')
+
+
+def test_alias_may_be_the_despaced_name(tmp_path: Path) -> None:
+    """`meal prep` for `meal-prep` is redundant but NOT rejected.
+
+    A consumer can derive the de-hyphenated form itself, so this alias adds nothing — but the
+    author is being explicit, not making a mistake, and the consumer de-duplicates spoken forms
+    anyway. Only an exact (case-folded) match with the name is refused.
+    """
+    assert _load_with_aliases(tmp_path, '["meal prep"]').aliases == ["meal prep"]
+
+
+def test_aliases_are_validated_for_drafts_too(tmp_path: Path) -> None:
+    """The draft path shares build_template_from_mapping, so an MCP/studio draft is gated equally."""
+    with pytest.raises(TemplateLoadError, match="invalid alias"):
+        validate_template_from_string(
+            textwrap.dedent(ALIASED_TEMPLATE.format(aliases='["meal (prep)"]'))
+        )
+
+
+def test_aliases_are_not_lookup_keys(tmp_path: Path) -> None:
+    """The registry indexes by `name` only: an alias must not resolve a template.
+
+    This is the invariant that keeps aliases a voice concern. If the registry ever indexed them,
+    every API path (print, preview, source) would silently gain a second namespace whose collisions
+    nothing validates — precisely what _validate_aliases declines to check for.
+    """
+    write_yaml(tmp_path / "aliased.yaml", ALIASED_TEMPLATE.format(aliases='["comida preparada"]'))
+    registry = TemplateRegistry(tmp_path)
+    registry.load_all()
+    assert registry.get("meal-prep") is not None
+    assert registry.get("comida preparada") is None
+
+
+# --- contested spoken forms across the catalog ------------------------------------------------
+#
+# Reported, never rejected. The distinction is the whole design: see spoken_form_collisions.
+
+COLLIDING_TEMPLATE = """\
+    name: {name}
+    description: x
+    label: "62"
+    aliases: {aliases}
+    layout:
+      - {{type: text, text: hello}}
+"""
+
+
+def _registry_with(tmp_path: Path, *specs: tuple[str, str]) -> TemplateRegistry:
+    for name, aliases in specs:
+        write_yaml(tmp_path / f"{name}.yaml", COLLIDING_TEMPLATE.format(name=name, aliases=aliases))
+    registry = TemplateRegistry(tmp_path)
+    registry.load_all()
+    return registry
+
+
+def test_two_templates_claiming_one_alias_is_warned(tmp_path: Path) -> None:
+    registry = _registry_with(tmp_path, ("nevera", '["frio"]'), ("congelador", '["frio"]'))
+
+    assert registry.errors == []
+    assert len(registry.warnings) == 1
+    assert "'frio'" in registry.warnings[0]
+    assert "nevera" in registry.warnings[0] and "congelador" in registry.warnings[0]
+
+
+def test_an_alias_claiming_another_templates_name_is_warned(tmp_path: Path) -> None:
+    """The worse half of the collision: the other template's NAME wins, so the alias is dead."""
+    registry = _registry_with(tmp_path, ("nevera", "[]"), ("congelador", '["nevera"]'))
+
+    assert registry.errors == []
+    assert len(registry.warnings) == 1
+    assert "'nevera'" in registry.warnings[0]
+
+
+def test_separator_and_case_differences_still_collide(tmp_path: Path) -> None:
+    """The warning has to fold the way a speech matcher does, or it misses the common case."""
+    registry = _registry_with(tmp_path, ("meal-prep", "[]"), ("batch", '["Meal Prep"]'))
+
+    assert len(registry.warnings) == 1
+    assert "meal prep" in registry.warnings[0]
+
+
+def test_a_collision_never_becomes_an_error(tmp_path: Path) -> None:
+    """The property that makes this a warning and not a rejection.
+
+    ``errors`` gates catalog-wide — the save route rolls back on ANY error, not just one about the
+    file being saved — so a colliding alias becoming an error would let one bad pair of voice hints
+    make every later save fail. Both templates here still load, list and print.
+    """
+    registry = _registry_with(tmp_path, ("nevera", '["frio"]'), ("congelador", '["frio"]'))
+
+    assert registry.errors == []
+    assert sorted(t.name for t in registry.all()) == ["congelador", "nevera"]
+    assert registry.get("nevera") is not None
+    assert registry.get("congelador") is not None
+
+
+def test_a_clean_catalog_warns_about_nothing(tmp_path: Path) -> None:
+    registry = _registry_with(tmp_path, ("nevera", '["frio"]'), ("congelador", '["congelado"]'))
+    assert registry.warnings == []
+
+
+def test_one_template_claiming_a_form_twice_is_not_a_collision(tmp_path: Path) -> None:
+    """`meal prep` as an alias of `meal-prep` folds onto its own name — redundant, not contested."""
+    registry = _registry_with(tmp_path, ("meal-prep", '["meal prep"]'))
+    assert registry.warnings == []
+
+
+def test_a_user_alias_colliding_with_a_bundled_example_is_warned(tmp_path: Path) -> None:
+    """The user has to hear it even though the other side is not theirs: their alias is the dead one.
+
+    The message says which side is shipped, because renaming their own alias is the only fix
+    available to them.
+    """
+    example_dir = tmp_path / "examples"
+    example_dir.mkdir()
+    write_yaml(
+        example_dir / "shipped.yaml", COLLIDING_TEMPLATE.format(name="shipped", aliases="[]")
+    )
+    write_yaml(
+        tmp_path / "mine.yaml", COLLIDING_TEMPLATE.format(name="mine", aliases='["shipped"]')
+    )
+    registry = TemplateRegistry(tmp_path, example_dir)
+    registry.load_all()
+
+    assert registry.errors == []
+    assert len(registry.warnings) == 1
+    assert "bundled example" in registry.warnings[0]
+
+
+def test_two_bundled_examples_colliding_is_not_the_users_problem(tmp_path: Path) -> None:
+    """Shipped-content noise the user cannot act on, kept out of anything user-facing."""
+    example_dir = tmp_path / "examples"
+    example_dir.mkdir()
+    write_yaml(example_dir / "a.yaml", COLLIDING_TEMPLATE.format(name="a", aliases='["frio"]'))
+    write_yaml(example_dir / "b.yaml", COLLIDING_TEMPLATE.format(name="b", aliases='["frio"]'))
+    registry = TemplateRegistry(tmp_path, example_dir)
+    registry.load_all()
+
+    assert registry.warnings == []

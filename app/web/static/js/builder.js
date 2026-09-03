@@ -197,7 +197,7 @@
   }
 
   // ── State ───────────────────────────────────────────────────────────────────
-  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', layout: [] };
+  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', aliases: [], layout: [] };
   const fieldOptional = new Set();   // field names the user marked optional (else required)
   let selectedEl = null;             // the selected element OBJECT (survives re-render / DnD)
   let designMode = true;             // true → show {{token}} chips; false → substitute sample values
@@ -342,6 +342,14 @@
     out.push('label: ' + qstr(model.label));
     out.push('rotate: ' + String(model.rotate || 0));
     if (model.valign && model.valign !== 'top') out.push('valign: ' + model.valign);
+    // Quoted for the same reason field names are: YAML 1.1 reads the bare words no/yes/on/off/
+    // true/false and null/~ as booleans and nulls, and bare digits as numbers — and an alias is
+    // exactly the kind of short common word that collides ("no", "off"). The server rejects a
+    // non-string alias, so emitting one unquoted would make the builder produce YAML it will not
+    // load back.
+    if (Array.isArray(model.aliases) && model.aliases.length) {
+      out.push('aliases: [' + model.aliases.map(qstr).join(', ') + ']');
+    }
 
     const refs = referencedFields(model.layout);
     const required = refs.filter((f) => !fieldOptional.has(f));
@@ -1045,6 +1053,13 @@
       (v) => { model.rotate = parseInt(v, 10) || 0; commit(); }));
     insp.appendChild(selectSetting('Vertical align', VALIGN, model.valign || 'top',
       (v) => { model.valign = v; commit(); }));
+    // Comma-separated: an alias may contain spaces ("comida preparada"), so a space cannot be the
+    // separator. Empty entries are dropped rather than sent to the server, which would reject them.
+    insp.appendChild(textSetting('Spoken aliases', (model.aliases || []).join(', '),
+      (v) => {
+        model.aliases = v.split(',').map((a) => a.trim()).filter((a) => a.length);
+        commit();
+      }));
 
     // Fields: every {{token}} referenced by the layout, with a required/optional toggle each.
     const refs = referencedFields(model.layout);
@@ -1159,6 +1174,10 @@
       model.label = data.label || '62';
       model.rotate = data.rotate || 0;
       model.valign = data.valign || 'top';
+      // Carried across the round trip, not just displayed: the builder rebuilds its whole model
+      // from this response and re-emits YAML from the model, so a key it does not read is a key it
+      // silently DELETES from a template somebody opened, edited and saved.
+      model.aliases = Array.isArray(data.aliases) ? data.aliases.slice() : [];
       model.layout = Array.isArray(data.layout) ? data.layout : [];
       fieldOptional.clear();
       ((data.fields && data.fields.optional) || []).forEach((f) => fieldOptional.add(f));

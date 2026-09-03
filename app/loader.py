@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,62 @@ REQUIRED_TOP_KEYS = {"name", "description", "label", "layout"}
 # declarable field name is always a substitutable one. Every shipped template already uses only
 # ``[A-Za-z0-9_]`` names; widen BOTH this charset and the token grammar together if that ever changes.
 FIELD_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+
+# An alias is an ALTERNATIVE SPOKEN NAME for a template, used by voice assistants that match an
+# utterance against the catalog (Home Assistant's labelito integration turns the catalog into a
+# closed slot list). It is therefore not an identifier: it may carry spaces and accents
+# ("comida preparada"), which is exactly what a template *name* may not (see _SAFE_TEMPLATE_NAME in
+# app.main, which gates the save-to-disk filename).
+#
+# The charset is an allowlist of what a person can actually SAY — letters (any script, so "café" and
+# "lasaña" work), digits, spaces, and the three punctuation marks that occur inside real names
+# (``_``, ``-``, ``.``, ``'``). Everything else is rejected, which as a side effect keeps out every
+# metacharacter a downstream sentence-template grammar treats specially (``( ) [ ] { } < > | ; \``
+# in Home Assistant's hassil): an alias can never be mistaken for grammar syntax. That consumer
+# validates independently — this charset is justified on its own terms and is not a substitute for
+# it.
+#
+# Must start with a letter or digit: a leading ``-``/``.``/``'`` is a typo or a stray list dash, a
+# leading space is stripped before matching, and a leading combining mark is malformed text.
+ALIAS_PUNCTUATION = " .'-_"
+MAX_ALIAS_LENGTH = 64
+
+# The same rule as a sentence, for error messages and the generated MCP schema. A regex would be
+# the obvious home for it, but Python's ``re`` has no Unicode-property class (no ``\p{M}``), so the
+# rule is a predicate and this is its only readable form.
+ALIAS_CHARSET = (
+    "an alias starts with a letter or digit, then may contain letters (any script), digits, "
+    f"combining marks, spaces, '_', '-', '.' and apostrophes (1-{MAX_ALIAS_LENGTH} characters)"
+)
+
+
+def is_spoken_alias(value: str) -> bool:
+    """Whether ``value`` is a usable spoken name. Expects an NFC-normalized, whitespace-collapsed string.
+
+    Combining marks are accepted anywhere but the first character, and that is not a nicety: whole
+    writing systems are unusable without them. ``नमस्ते`` is letters plus two ``Mn`` marks with no
+    precomposed form, so no amount of normalization removes them — Devanagari, Thai tone marks and
+    Hebrew niqqud were all rejected while the documentation promised "any script".
+
+    ``str.isalnum`` rather than a word-character class, so ``_`` is excluded from the first
+    position (an identifier habit, not speech) while the check stays Unicode-aware. ``_`` is still
+    allowed after it, since a name like ``simple_text`` is said aloud as two words and an author
+    may write the alias either way.
+    """
+    if not 1 <= len(value) <= MAX_ALIAS_LENGTH:
+        return False
+    if not value[0].isalnum():
+        return False
+    return all(
+        char.isalnum() or char in ALIAS_PUNCTUATION or unicodedata.category(char).startswith("M")
+        for char in value
+    )
+
+
+# Upper bound on how many aliases one template may declare. Aliases exist to cover the handful of
+# ways a person says one name, not to enumerate a vocabulary: every alias becomes a value in a voice
+# assistant's slot list, and an unbounded list would let one template dominate the grammar.
+MAX_TEMPLATE_ALIASES = 16
 
 # Upper bound (in 300 dpi / scale=1 template units) for any single render-affecting pixel
 # dimension. A YAML int is unbounded, so a tiny template can declare ``size: 99999999999`` and
@@ -153,6 +210,7 @@ class Template:
     """A loaded, validated label template."""
 
     __slots__ = (
+        "aliases",
         "description",
         "is_example",
         "label",
@@ -177,6 +235,7 @@ class Template:
         source_path: Path,
         is_example: bool = False,
         valign: str = "top",
+        aliases: list[str] | None = None,
     ) -> None:
         self.name = name
         self.description = description
@@ -186,6 +245,11 @@ class Template:
         self.required_fields = required_fields
         self.optional_fields = optional_fields
         self.layout = layout
+        # Alternative spoken names for voice matching; see is_spoken_alias. Never used for lookup by the
+        # registry, which indexes by `name` alone — an alias is a hint for consumers that resolve
+        # human speech, and resolving collisions BETWEEN templates is their job (two templates can
+        # be added independently and claim the same alias, which no single-file validation can see).
+        self.aliases = aliases or []
         self.source_path = source_path
         # True when this template came from the bundled example dir (not the user's templates_dir).
         # Set by TemplateRegistry._load_dir after construction; used to visually mark example cards.
@@ -775,6 +839,94 @@ def _validate_layout_budget(file_name: str, layout: list[Any]) -> None:
 DRAFT_SOURCE_PATH = Path("<draft>")
 
 
+def _validate_aliases(source_name: str, name: str, raw_aliases: Any) -> list[str]:
+    """Validate the optional top-level ``aliases`` list — alternative SPOKEN names for the template.
+
+    Aliases exist for consumers that match human speech against the catalog: a template saved as
+    ``meal-prep`` is never said aloud with a hyphen, and a Spanish household says "congelado" as
+    often as "congelador". Declaring them on the template keeps them with the thing they name,
+    instead of in a parallel config a consumer has to be told to update.
+
+    Each entry must already BE a string, then is NFC-normalized, whitespace-collapsed, stripped,
+    and required to satisfy :func:`is_spoken_alias`. The type check is not pedantry: PyYAML implements YAML 1.1, where
+    several perfectly ordinary spoken words are keywords. ``aliases: [no]`` parses to ``False``
+    long before this function sees it, so coercing with ``str()`` stored the alias ``"False"`` —
+    measured, along with ``yes``/``on``/``off`` → ``"True"``/``"False"`` and ``null``/``~`` →
+    ``"None"``. Silent corruption of exactly the short, common words an alias is most likely to
+    be. Quoting them (``aliases: ["no"]``) is the fix, and the error says so. The same trap is
+    already handled on the way out, where the visual builder quotes every field name it emits.
+
+    Rejected (rather than silently dropped) because each case is a typo the author wants to see:
+
+    * a non-list ``aliases`` (a bare string is the likely mistake, and iterating it would declare
+      one alias per CHARACTER),
+    * an entry that is not a string, because YAML already changed its type,
+    * an entry that is empty or outside the spoken-name charset,
+    * more than :data:`MAX_TEMPLATE_ALIASES` entries,
+    * two entries that differ only by case or spacing — one of them can never win a match,
+    * an entry equal to the template's own ``name``, which is already matched on its own.
+
+    What is NOT checked here: whether another template already claims the alias. That is a
+    catalog-wide question and this function sees one mapping, so it is answered where the whole set
+    is visible — :func:`spoken_form_collisions`, called from the registry, which REPORTS it rather
+    than rejecting it. Earlier this said only that the consumer must handle such a collision
+    anyway; true, and it does, but it does not follow that the server should stay silent. An alias
+    that can never win a match has no other symptom.
+    """
+    if raw_aliases is None:
+        return []
+    if not isinstance(raw_aliases, list):
+        raise TemplateLoadError(
+            f"{source_name}: 'aliases' must be a list of alternative spoken names, "
+            f"got {type(raw_aliases).__name__}"
+        )
+    if len(raw_aliases) > MAX_TEMPLATE_ALIASES:
+        raise TemplateLoadError(
+            f"{source_name}: too many aliases ({len(raw_aliases)}); at most "
+            f"{MAX_TEMPLATE_ALIASES} are allowed"
+        )
+
+    aliases: list[str] = []
+    seen: dict[str, str] = {}
+    for raw_alias in raw_aliases:
+        if not isinstance(raw_alias, str):
+            raise TemplateLoadError(
+                f"{source_name}: alias {raw_alias!r} is a {type(raw_alias).__name__}, not a "
+                f"string. YAML 1.1 turns the bare words yes/no/on/off/true/false and null/~ into "
+                f"booleans and nulls, and bare digits into numbers — quote the alias to keep it "
+                f'text, e.g. aliases: ["no"]'
+            )
+        # NFC first, and it is a correctness step rather than tidiness. "café" typed as e +
+        # combining acute is a DIFFERENT string from the precomposed form — not equal even after
+        # lower() — so an alias stored decomposed would validate here and then never match anything
+        # a consumer folds the normal way: a silently dead alias, which is the one failure mode
+        # this whole field has to avoid. Storing one canonical form also means two authors who type
+        # the same word two ways get the same alias.
+        #
+        # Then collapse runs of whitespace, so "meal  prep" and "meal prep" are one alias rather
+        # than two that differ invisibly, and a trailing newline from a YAML block scalar is not an
+        # error.
+        alias = " ".join(unicodedata.normalize("NFC", raw_alias).split())
+        if not is_spoken_alias(alias):
+            raise TemplateLoadError(
+                f"{source_name}: invalid alias {str(raw_alias)!r}; {ALIAS_CHARSET}"
+            )
+        key = alias.casefold()
+        if key in seen:
+            raise TemplateLoadError(
+                f"{source_name}: duplicate alias {alias!r} (already declared as {seen[key]!r}); "
+                f"aliases are matched case-insensitively, so only one of them could ever match"
+            )
+        if key == name.casefold():
+            raise TemplateLoadError(
+                f"{source_name}: alias {alias!r} is the template's own name; the name is always "
+                f"matched, so declaring it as an alias has no effect"
+            )
+        seen[key] = alias
+        aliases.append(alias)
+    return aliases
+
+
 def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -> Template:
     """Validate a parsed YAML mapping into a :class:`Template`.
 
@@ -832,6 +984,8 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
     # cross-axis alignment uses, so an out-of-range value is a load error, not a silent fallback.
     valign = str(raw.get("valign", "top"))
     _require_choice(source_name, "template", "valign", valign, VALIGN_CHOICES)
+
+    aliases = _validate_aliases(source_name, name, raw.get("aliases"))
 
     fields_spec = raw.get("fields", {})
     if not isinstance(fields_spec, dict):
@@ -927,6 +1081,7 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
         layout=layout,
         source_path=source_path,
         valign=valign,
+        aliases=aliases,
     )
 
 
@@ -964,6 +1119,75 @@ def validate_template_from_string(yaml_text: str, source_name: str = "<draft>") 
     return build_template_from_mapping(raw, source_name, DRAFT_SOURCE_PATH)
 
 
+def _spoken_key(value: str) -> str:
+    """Fold a name or alias to the form a speech matcher would hear.
+
+    An APPROXIMATION of the consumer's normalization, on purpose. A voice client folds case and
+    separators (Home Assistant's labelito integration turns ``meal-prep`` into "meal prep"), and
+    this repo cannot import that rule — so it is restated here as the conservative core of it:
+    case-folded, ``-``/``_`` as spaces, whitespace collapsed.
+
+    Conservative means it may MISS a collision the consumer would find (it does not strip sentence
+    punctuation, for instance), never that it invents one: every key it collapses is genuinely
+    conflatable. That asymmetry is the right way round, because this drives a warning, not a
+    rejection — the consumer remains the authority on ambiguity and drops it safely regardless.
+    """
+    return " ".join(value.casefold().replace("-", " ").replace("_", " ").split())
+
+
+def spoken_form_collisions(templates: list[Template]) -> list[str]:
+    """Warnings for spoken forms that more than one template claims, across the whole catalog.
+
+    Aliases exist only for voice, so an alias that can never win a match has NO other symptom: the
+    template still lists, still previews, still prints. The only way to discover it is to say it
+    and get the wrong label or none — which is why the catalog is checked here, where the whole set
+    is visible, and reported where somebody is authoring.
+
+    Deliberately NOT an error, unlike a duplicate ``name``:
+
+    * A name is the lookup key, so a duplicate makes the catalog genuinely ambiguous. An alias is
+      never a lookup key — printing is always by name — so a colliding one costs only itself.
+    * :attr:`TemplateRegistry.errors` gates catalog-wide: the save route rolls back on ANY error,
+      not just one about the file being saved. One bad alias pair would therefore make every later
+      save fail, turning an optional voice hint into a read-only templates directory.
+    * Enforcement could not be complete anyway. A YAML file dropped straight into the directory
+      collides without ever passing through a save, so the consumer must resolve ambiguity itself
+      — and it does, by refusing to resolve a contested form at all.
+
+    Only collisions involving at least one USER template are reported. Two bundled examples
+    contesting a form is shipped-content noise the user cannot act on, and the registry already
+    keeps example problems out of anything user-facing.
+    """
+    claimants: dict[str, dict[str, str]] = {}
+    for template in templates:
+        for kind, value in [("name", template.name), *(("alias", a) for a in template.aliases)]:
+            key = _spoken_key(value)
+            if not key:
+                continue
+            # Keyed by template name, so one template claiming a form twice (a name and an alias of
+            # its own that fold alike) is not mistaken for two templates contesting it.
+            claimants.setdefault(key, {}).setdefault(template.name, f"{kind} {value!r}")
+
+    by_name = {t.name: t for t in templates}
+    warnings: list[str] = []
+    for key, claims in sorted(claimants.items()):
+        if len(claims) < 2:
+            continue
+        if all(by_name[name].is_example for name in claims):
+            log.warning("Bundled examples both claim the spoken form %r: %s", key, claims)
+            continue
+        described = ", ".join(
+            f"{name} ({claim}{' — a bundled example' if by_name[name].is_example else ''})"
+            for name, claim in sorted(claims.items())
+        )
+        warnings.append(
+            f"the spoken form {key!r} is claimed by more than one template: {described}. "
+            f"A voice assistant cannot tell which was meant, so it will match NONE of them — "
+            f"rename one of the aliases (printing by name is unaffected)."
+        )
+    return warnings
+
+
 class TemplateRegistry:
     """Hot-reloadable registry of all templates in a directory."""
 
@@ -976,6 +1200,7 @@ class TemplateRegistry:
         self.example_dir = example_dir
         self._templates: dict[str, Template] = {}
         self._errors: list[str] = []
+        self._warnings: list[str] = []
 
     def load_all(self) -> list[str]:
         """(Re)load all .yaml files from the user dir and the bundled-example dir; return loaded names.
@@ -1018,6 +1243,9 @@ class TemplateRegistry:
 
         self._templates = loaded
         self._errors = errors
+        # Non-gating, unlike errors: see spoken_form_collisions for why an alias must not be able
+        # to fail a save.
+        self._warnings = spoken_form_collisions(list(loaded.values()))
         return list(loaded.keys())
 
     def _load_dir(
@@ -1086,6 +1314,16 @@ class TemplateRegistry:
     def errors(self) -> list[str]:
         """Per-file errors from the most recent :meth:`load_all` (empty if all loaded)."""
         return self._errors
+
+    @property
+    def warnings(self) -> list[str]:
+        """Catalog-wide problems that are NOT failures — currently contested spoken forms.
+
+        Kept separate from :attr:`errors` because errors gate: ``/reload`` 422s on them and the
+        save route rolls back on ANY of them. These are things the catalog can live with and the
+        author should still hear about.
+        """
+        return self._warnings
 
     def get(self, name: str) -> Template | None:
         return self._templates.get(name)

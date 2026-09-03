@@ -11,7 +11,7 @@ version = "0.18.1"
 description = "labelito — self-hosted Brother QL label print service with Home Assistant integration"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.13"
+requires-python = ">=3.14.7"
 keywords = ["brother", "label", "printer", "home-assistant", "ql-810w"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -20,19 +20,19 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
-    "pydantic>=2.8.0",
-    "pydantic-settings>=2.4.0",
-    "Pillow>=10.4.0",
-    "cairosvg>=2.7.0",
-    "qrcode[pil]>=8.0.0",
-    "python-barcode[images]>=0.15.1",
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.52.4",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "Pillow>=12.3.0",
+    "cairosvg>=2.9.0",
+    "qrcode[pil]>=8.2",
+    "python-barcode[images]>=0.16.1",
     "brother_ql_next>=0.12.0",
-    "PyYAML>=6.0.2",
-    "Jinja2>=3.1.4",
-    "python-multipart>=0.0.9",
-    "prometheus-client>=0.21.0",
+    "PyYAML>=6.0.3",
+    "Jinja2>=3.1.6",
+    "python-multipart>=0.0.32",
+    "prometheus-client>=0.26.0",
     # 2.1.1 is the release whose server API this code targets: 2.x renamed FastMCP to MCPServer and
     # moved every transport setting off the constructor, so 1.x cannot run it. No ceiling — every
     # other dependency here is declared the same way, and a ceiling is the wrong tool for keeping a
@@ -41,7 +41,7 @@ dependencies = [
     # OAuth 2.0 Resource Server (OIDC) validation for the /mcp endpoint. PyJWT ships PyJWKClient,
     # which fetches an IdP's JWKS, caches signing keys by kid, and refetches on an unknown kid
     # (key rotation). The [crypto] extra pulls in `cryptography` for RS256/ES256 verification.
-    "PyJWT[crypto]>=2.9.0",
+    "PyJWT[crypto]>=2.13.0",
 ]
 
 [project.urls]
@@ -50,21 +50,21 @@ Issues = "https://github.com/chiva/labelito/issues"
 
 [dependency-groups]
 # httpx2 is the backend starlette.testclient is built for (TestClient does `import httpx2 as httpx`).
-test = ["pytest>=8.3.0", "pytest-cov>=5.0.0", "pytest-asyncio>=0.24.0", "httpx2>=2.4.0"]
-lint = ["ruff>=0.6.0"]
-typing = ["mypy>=1.11.0", "types-PyYAML>=6.0.12", "types-Pillow>=10.2.0"]
-license = ["pip-licenses>=5.0.0"]
+test = ["pytest>=8.4.2", "pytest-cov>=5.0.0", "pytest-asyncio>=0.26.0", "httpx2>=2.12.0"]
+lint = ["ruff>=0.16.5"]
+typing = ["mypy>=1.20.2", "types-PyYAML>=6.0.12.20260815", "types-Pillow>=10.2.0.20240822"]
+license = ["pip-licenses>=5.5.5"]
 # End-to-end harness: drives a real uvicorn process with a real browser. Opt-in (the e2e suite is
 # deselected by default via `-m "not e2e"`), and needs a one-time `uv run playwright install
 # chromium` to download the browser. Used by both `pytest -m e2e` and scripts/dev-harness.py.
-e2e = ["pytest-playwright>=0.5.0"]
+e2e = ["pytest-playwright>=0.9.0"]
 # Provenance tooling for scripts/build-brand-assets.py, which regenerates site/assets/brand/**.
 # fonttools outlines the Inter wordmark to paths; uharfbuzz shapes the word (applying Inter's
 # kerning so the outlines match the browser-rendered wordmark); brotli lets fonttools read the
 # .woff2 source. cairosvg (the rasterizer) is already a core runtime dependency above.
-brand-assets = ["fonttools>=4.50.0", "uharfbuzz>=0.39.0", "brotli>=1.1.0"]
+brand-assets = ["fonttools>=4.63.0", "uharfbuzz>=0.56.0", "brotli>=1.2.0"]
 dev = [
-    "pre-commit>=3.8.0",
+    "pre-commit>=4.6.2",
     {include-group = "test"},
     {include-group = "lint"},
     {include-group = "typing"},

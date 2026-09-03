@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/chiva/labelito/actions/workflows/ci.yml"><img src="https://github.com/chiva/labelito/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/chiva/labelito"><img src="https://codecov.io/gh/chiva/labelito/branch/main/graph/badge.svg" alt="Coverage"></a>
   <a href="https://github.com/chiva/labelito/releases"><img src="https://img.shields.io/github/v/release/chiva/labelito" alt="Latest release"></a>
   <a href="https://github.com/chiva/labelito/pkgs/container/labelito"><img src="https://img.shields.io/badge/ghcr.io-chiva%2Flabelito-24292e?logo=docker&logoColor=white" alt="GHCR image"></a>
 </p>

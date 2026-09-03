@@ -564,9 +564,9 @@ def _latest_release_cached() -> tuple[str | None, str | None]:
 # The mounted MCP server, set by the mount block at the end of this module when MCP_ENABLED is true
 # (None otherwise). Kept module-level so ``_lifespan`` can run its streamable-HTTP session manager.
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
 
-_mcp_server: FastMCP | None = None
+_mcp_server: MCPServer | None = None
 
 
 @asynccontextmanager

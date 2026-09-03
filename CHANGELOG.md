@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.0](https://github.com/chiva/labelito/compare/v0.18.1...v0.19.0) (2026-09-03)
+
+
+### Features
+
+* **mcp:** let a client author templates, and document the schema ([#112](https://github.com/chiva/labelito/issues/112)) ([771a7b5](https://github.com/chiva/labelito/commit/771a7b50122411492faf24e9518ee61084ee3707))
+* **templates:** declare alternative spoken names with aliases ([#114](https://github.com/chiva/labelito/issues/114)) ([b896c25](https://github.com/chiva/labelito/commit/b896c2562cce631625d4dd1eb83a0cdede1bb16c))
+
+
+### Bug Fixes
+
+* **deps:** pin dependencies ([#124](https://github.com/chiva/labelito/issues/124)) ([3a4857c](https://github.com/chiva/labelito/commit/3a4857c5e661b18647488365950e592703f59db2))
+* **deps:** update icon collections ([#106](https://github.com/chiva/labelito/issues/106)) ([dfa186f](https://github.com/chiva/labelito/commit/dfa186f0abceba2442594582751b05883d9017a5))
+
 ## [0.18.1](https://github.com/chiva/labelito/compare/v0.18.0...v0.18.1) (2026-07-22)
 
 

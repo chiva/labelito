@@ -356,9 +356,16 @@ module count draws 1 dot per module and grows the box rather than clipping.
 | `data` | string (templated) | `""` |
 | `size` | int 1–2000 (px square, maximum) | `160` |
 | `align` | `left`/`center`/`right` | `center` |
+| `error_correction` | `L`/`M`/`Q`/`H` | `M` |
+
+`error_correction` is the QR level: `L`, `M`, `Q`, `H` survive roughly 7 %, 15 %, 25 % and 30 %
+of the symbol being damaged or obscured, and each step up adds modules for the same payload (so at
+a fixed `size` the modules get smaller). `M` is the usual choice; use `H` for labels that get
+scuffed, or `L` to squeeze a long payload into fewer modules.
 
 ```yaml
 - {type: qr, data: "{{qr}}", size: 140, align: right}
+- {type: qr, data: "{{url}}", size: 200, error_correction: H}
 ```
 
 #### `barcode`

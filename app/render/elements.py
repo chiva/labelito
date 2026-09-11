@@ -694,13 +694,15 @@ class QRElement(Matrix2DElement):
     every module lands on an integer number of dots.
 
     The 4-module quiet zone the spec requires is part of the box. The symbol version (module
-    count) is chosen automatically from the payload length.
+    count) is chosen automatically from the payload length and `error_correction`: L, M, Q or H
+    recover about 7, 15, 25 or 30 percent damage, and each step up adds modules for the same data.
     """
 
     type: str = "qr"
+    error_correction: str = QR_ECL_DEFAULT
 
     def _encode(self, data: str) -> Symbol2D:
-        return encode_qr(data, QR_ECL_DEFAULT)
+        return encode_qr(data, self.error_correction)
 
 
 # ── Barcode element ────────────────────────────────────────────────────────────

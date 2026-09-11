@@ -35,6 +35,7 @@
     'code128', 'code39', 'code93', 'ean13', 'ean8', 'ean14',
     'gs1_128', 'isbn13', 'issn', 'itf', 'jan', 'pzn', 'upca',
   ];
+  const QR_ECL = ['L', 'M', 'Q', 'H'];
 
   // Attributes shared by every element (ElementBase). Paddings live in an "Advanced" group so the
   // common panel stays short. `color` is only meaningful on two-color models but is harmless elsewhere.
@@ -107,8 +108,9 @@
       label: 'QR code', badge: '▦', text: 'data',
       attrs: [
         { key: 'data', label: 'Data', control: 'text', default: '' },
-        { key: 'size', label: 'Size (px)', control: 'number', min: 1, max: 2000, default: 160 },
+        { key: 'size', label: 'Max size (px)', control: 'number', min: 1, max: 2000, default: 160 },
         { key: 'align', label: 'Align', control: 'align', choices: ALIGN, default: 'center' },
+        { key: 'error_correction', label: 'Error correction', control: 'select', choices: QR_ECL, default: 'M' },
       ],
     },
     barcode: {

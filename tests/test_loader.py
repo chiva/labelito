@@ -283,6 +283,39 @@ def test_oversized_qr_size_raises(tmp_path: Path) -> None:
         load_template(path)
 
 
+@pytest.mark.parametrize("level", ["L", "M", "Q", "H"])
+def test_qr_error_correction_choices_load(tmp_path: Path, level: str) -> None:
+    path = write_yaml(
+        tmp_path / "qr-ecl.yaml",
+        f"""\
+        name: qr-ecl
+        description: qr level
+        label: "62"
+        layout:
+          - {{type: qr, data: x, error_correction: {level}}}
+    """,
+    )
+    assert load_template(path).layout[0]["error_correction"] == level
+
+
+@pytest.mark.parametrize("bad", ["X", "m", "high", "1"])
+def test_qr_error_correction_typo_is_rejected(tmp_path: Path, bad: str) -> None:
+    """A level outside L/M/Q/H would raise inside the encoder at render time (a 500); reject it at
+    load like every other enum, and case-sensitively, so `m` is not silently accepted as `M`."""
+    path = write_yaml(
+        tmp_path / "qr-ecl-bad.yaml",
+        f"""\
+        name: qr-ecl-bad
+        description: bad qr level
+        label: "62"
+        layout:
+          - {{type: qr, data: x, error_correction: "{bad}"}}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="error_correction"):
+        load_template(path)
+
+
 def test_oversized_icon_size_raises(tmp_path: Path) -> None:
     """A `icon.size` of 10000 (above MAX_SQUARE_DIMENSION) is rejected for the same square reason."""
     path = write_yaml(

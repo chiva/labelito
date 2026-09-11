@@ -32,6 +32,7 @@ from app.render.engine import (
     referenced_field_tokens,
     unresolved_tokens,
 )
+from app.render.symbols import QR_ECL_CHOICES
 
 log = logging.getLogger(__name__)
 
@@ -614,6 +615,10 @@ def _validate_element(
             raise TemplateLoadError(
                 f"{file_name}: {label} image 'field' must be a non-empty string, got {image_field!r}"
             )
+    if el_type == "qr" and "error_correction" in el:
+        _require_choice(
+            file_name, label, "error_correction", el["error_correction"], QR_ECL_CHOICES
+        )
     if el_type == "barcode" and "symbology" in el:
         _validate_barcode_symbology(file_name, label, el["symbology"])
     if el_type == "box" and "fill" in el:

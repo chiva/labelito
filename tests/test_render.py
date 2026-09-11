@@ -480,6 +480,27 @@ def test_qr_element_high_res_doubles_module_exactly(
     assert hi.height == 2 * base.height
 
 
+def test_qr_element_error_correction_changes_symbol_density(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The default level is M (today's behaviour); H adds modules for the same payload, so at the
+    same `size` the symbol has more, smaller modules and its ink footprint differs."""
+    from app.render.symbols import encode_qr
+
+    data = "https://example.com"
+    args = ({"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    assert QRElement(data=data).error_correction == "M"
+    default = QRElement(data=data, size=160).render(CANVAS_W, *args)
+    explicit_m = QRElement(data=data, size=160, error_correction="M").render(CANVAS_W, *args)
+    high = QRElement(data=data, size=160, error_correction="H").render(CANVAS_W, *args)
+    assert ImageChops.difference(default, explicit_m).getbbox() is None
+    assert ImageChops.difference(default, high).getbbox() is not None
+    b_high = _whole_ink_bbox(high)
+    assert b_high is not None
+    sym_h = encode_qr(data, "H")
+    assert b_high[2] - b_high[0] == sym_h.cols * (160 // sym_h.units_wide)  # 29 x 4 = 116
+
+
 def test_qr_element_red_ink_is_pure(
     fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
 ) -> None:

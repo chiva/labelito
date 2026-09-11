@@ -255,6 +255,10 @@ the element is a child of a `row`, and inert elsewhere.
   the `length` axis is what text wraps against.
 * **Unknown element keys are ignored silently**, so a typo'd field name is a no-op rather than an
   error. If a property seems to do nothing, check its spelling against the table above.
+* **`size` on a matrix symbol is a maximum.** A `qr` (and every other 2D code) is drawn on whole
+  device dots: the module size is the largest integer that fits the symbol plus its quiet zone in
+  `size`, and the symbol is centred in a `size`-square box, so it usually comes out a little
+  smaller than `size`. The strip height is still `size + 8`. Raise `size` for a bolder symbol.
 * **Empty text collapses.** A `title`, `subtitle`, `text` or `list` whose resolved value is empty
   or whitespace-only renders nothing and reserves no height, so an optional field a print omits
   leaves no gap. A banner (`background`) or box (`border`) with no text is therefore not drawn

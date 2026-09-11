@@ -399,6 +399,100 @@ def test_qr_element_empty_data_returns_zero_height(
     assert img.height == 0
 
 
+def _dark_runs_on_row(img: Image.Image, y: int) -> list[int]:
+    """Lengths of the consecutive black runs along scanline *y* of an L-mode image."""
+    runs: list[int] = []
+    run = 0
+    for x in range(img.width):
+        if img.getpixel((x, y)) == 0:
+            run += 1
+        elif run:
+            runs.append(run)
+            run = 0
+    if run:
+        runs.append(run)
+    return runs
+
+
+def test_qr_element_draws_modules_on_whole_dots(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The symbol is drawn at an integer dots-per-module, never resampled: only pure black/white
+    pixels, an ink width of exactly modules x dots, and every dark run a multiple of the module."""
+    from app.render.symbols import encode_qr
+
+    data = "https://example.com"
+    el = QRElement(data=data, size=160)
+    img = el.render(CANVAS_W, {"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    sym = encode_qr(data)
+    module = 160 // sym.units_wide  # 160 // 33 = 4 dots per module
+    assert module == 4
+    assert set(img.getdata()) <= {0, 255}
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    assert bbox[2] - bbox[0] == sym.cols * module  # 25 modules x 4 dots = 100 px of ink
+    assert bbox[3] - bbox[1] == sym.rows * module
+    # Centred in the 160-box: quiet zone + slack sits symmetrically around the ink.
+    box_x = (CANVAS_W - 160) // 2
+    assert (bbox[0] - box_x) == (box_x + 160 - bbox[2])
+    for y in range(bbox[1], bbox[3]):
+        assert all(run % module == 0 for run in _dark_runs_on_row(img, y))
+
+
+def test_qr_element_strip_height_is_size_plus_padding(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """`size` is the box the symbol is centred in, so the strip contract (`size + 8`) holds even
+    though the drawn symbol is smaller than `size`."""
+    el = QRElement(data="https://example.com", size=120)
+    img = el.render(
+        CANVAS_W, {"__data__": "https://example.com"}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert img.height == 128
+
+
+def test_qr_element_size_below_module_count_grows_instead_of_clipping(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A 33-unit symbol asked to fit 20 px draws 1 dot/module (33 px) and the strip grows to hold
+    it — a clipped or sub-dot symbol would be unscannable, so growing is the only honest outcome."""
+    el = QRElement(data="https://example.com", size=20)
+    img = el.render(
+        CANVAS_W, {"__data__": "https://example.com"}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None and bbox[2] - bbox[0] == 25  # 25 modules at 1 dot each
+    assert img.height == 33 + 8
+
+
+def test_qr_element_high_res_doubles_module_exactly(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """scale=2 must double the module size exactly (4 -> 8 dots), not re-derive it from the doubled
+    box (320 // 33 = 9 would be 2.25x and break the uniform-geometry contract)."""
+    data = "https://example.com"
+    args = ({"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    base = QRElement(data=data, size=160).render(CANVAS_W, *args)
+    hi = QRElement(data=data, size=160, scale=2).render(CANVAS_W * 2, *args)
+    b0, b1 = _whole_ink_bbox(base), _whole_ink_bbox(hi)
+    assert b0 is not None and b1 is not None
+    assert (b1[2] - b1[0]) == 2 * (b0[2] - b0[0])
+    assert hi.height == 2 * base.height
+
+
+def test_qr_element_red_ink_is_pure(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The dot-exact graphic is pre-thresholded, so the two-colour tint yields pure red modules."""
+    el = QRElement(data="red", size=120, color="red")
+    el._red_active = True
+    img = el.render(CANVAS_W, {"__data__": "red"}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.mode == "RGB"
+    colours = set(img.getdata())
+    assert (255, 0, 0) in colours
+    assert colours <= {(255, 0, 0), (255, 255, 255)}
+
+
 # ── Engine — continuous label ──────────────────────────────────────────────────
 def test_engine_continuous_min_length(engine: RenderEngine) -> None:
     layout = [{"type": "spacer", "size": 10}]

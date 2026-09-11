@@ -342,12 +342,19 @@ unbounded strip.
 
 #### `qr`
 
-A QR code rendered from the `data` attribute.
+A QR code rendered from the `data` attribute, drawn on **whole device dots**: the module size is
+the largest integer number of dots that fits the symbol (with its 4-module quiet zone) inside
+`size`, and the symbol is centred in a `size × size` box. `size` is therefore a *maximum* — a
+25-module symbol at the default `size: 160` draws 4 dots per module, 132 px including the quiet
+zone — and the strip is always `size + 8` px tall. Resampling a symbol to an arbitrary pixel size
+would put module edges between dots and blur them into grey; integer dots are what keep small
+symbols scannable on a thermal head. Raise `size` for a bolder symbol; a `size` smaller than the
+module count draws 1 dot per module and grows the box rather than clipping.
 
 | Attribute | Type | Default |
 |---|---|---|
 | `data` | string (templated) | `""` |
-| `size` | int 1–2000 (px square) | `160` |
+| `size` | int 1–2000 (px square, maximum) | `160` |
 | `align` | `left`/`center`/`right` | `center` |
 
 ```yaml

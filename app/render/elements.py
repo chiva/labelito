@@ -13,6 +13,8 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from app.render.symbols import QR_ECL_DEFAULT, Symbol2D, draw_marks, encode_qr
+
 log = logging.getLogger(__name__)
 
 # truetype() yields a FreeTypeFont; the load_default() fallback yields a bitmap ImageFont.
@@ -616,13 +618,34 @@ class TextElement(ElementBase):
         return _apply_border(self, img)
 
 
-# ── QR element ─────────────────────────────────────────────────────────────────
+# ── Matrix (2D) symbol elements ────────────────────────────────────────────────
 @dataclass
-class QRElement(ElementBase):
-    type: str = "qr"
+class Matrix2DElement(ElementBase):
+    """Shared geometry for the matrix-symbol elements (qr, and any symbology drawn from a matrix).
+
+    Subclasses supply :meth:`_encode`; this base owns the one rule that keeps small symbols
+    scannable on a thermal head: modules are drawn on WHOLE device dots. The module size is the
+    largest integer that fits the symbol (quiet zone included) inside ``size``, so ``size`` is the
+    *maximum* side of the box the symbol is centred in, never a resample target. The strip height
+    stays ``size + 8`` for a square-boxed symbol, so row/column geometry is unchanged from the
+    resampling renderer this replaced.
+
+    The module size is chosen in template units and THEN multiplied by ``scale``: dividing the
+    already-scaled size would round differently at 600 dpi and break the uniform-2x high_res
+    contract (a 33-unit symbol at size 160 is 4 dots/module at 300 dpi and exactly 8 at 600).
+    """
+
     data: str = ""
     size: int = QR_DEFAULT_SIZE
     align: str = "center"
+
+    @property
+    def _box_is_square(self) -> bool:
+        """Whether the strip reserves a ``size x size`` box (True) or only the symbol's height."""
+        return True
+
+    def _encode(self, data: str) -> Symbol2D:
+        raise NotImplementedError
 
     def render(
         self,
@@ -632,30 +655,52 @@ class QRElement(ElementBase):
         icons_dir: Path,
         icon_collections_dir: Path,
     ) -> Image.Image:
-        import qrcode
-
         data = str(resolved_fields.get("__data__", self.data))
         if not data.strip():
             return self._new_canvas(canvas_width, 0)
 
-        size = self._px(self.size)
+        symbol = self._encode(data)
+        units = max(symbol.units_wide, symbol.units_tall)
+        # At least one dot per module: a `size` smaller than the symbol's module count draws at
+        # 1 dot/module and the box grows to fit rather than clipping the symbol (a sub-dot module is
+        # unprintable anyway, so growing is the only honest outcome).
+        module_px = self._px(max(1, self.size // units))
+        graphic = self._tint(draw_marks(symbol, module_px))
+
+        size_px = self._px(self.size)
+        box_w = max(size_px, graphic.width)
+        box_h = max(size_px, graphic.height) if self._box_is_square else graphic.height
         inset = self._px(QR_ALIGN_INSET)
         pad = self._px(4)
-        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M)
-        qr.add_data(data)
-        qr.make(fit=True)
-        qr_img = qr.make_image(fill_color="black", back_color="white").convert("L")
-        qr_img = self._tint(qr_img.resize((size, size), Image.LANCZOS))
 
-        canvas = self._new_canvas(canvas_width, size + 2 * pad)
+        canvas = self._new_canvas(canvas_width, box_h + 2 * pad)
         if self.align == "center":
-            x = (canvas_width - size) // 2
+            x = (canvas_width - box_w) // 2
         elif self.align == "right":
-            x = canvas_width - size - inset
+            x = canvas_width - box_w - inset
         else:
             x = inset
-        canvas.paste(qr_img, (x, pad))
+        canvas.paste(
+            graphic,
+            (x + (box_w - graphic.width) // 2, pad + (box_h - graphic.height) // 2),
+        )
         return canvas
+
+
+@dataclass
+class QRElement(Matrix2DElement):
+    """A QR Code (ISO/IEC 18004) encoding `data`, drawn on whole device dots and centred in a
+    `size` x `size` box; `size` is the largest the symbol will be, and it may come out smaller so
+    every module lands on an integer number of dots.
+
+    The 4-module quiet zone the spec requires is part of the box. The symbol version (module
+    count) is chosen automatically from the payload length.
+    """
+
+    type: str = "qr"
+
+    def _encode(self, data: str) -> Symbol2D:
+        return encode_qr(data, QR_ECL_DEFAULT)
 
 
 # ── Barcode element ────────────────────────────────────────────────────────────
@@ -1062,16 +1107,18 @@ def _guarded_child_strip(
 ) -> Image.Image:
     """Render a container child (with its padding) and substitute a visible marker if too narrow.
 
-    A data-bearing child (QR/barcode/image) handed a column too narrow to draw its content would
-    otherwise vanish silently — a QR clips, a barcode/image collapses to a blank strip — while the
+    A data-bearing child (matrix symbol such as a QR, barcode, or image) handed a column too narrow
+    to draw its content would otherwise vanish silently — a matrix symbol clips, a barcode/image
+    collapses to a blank strip — while the
     API still reports a successful print (and for image jobs the blob is then stripped from history,
     so the loss is unrecoverable on reprint). This replaces that silent gap with a crossed box.
 
     Shared by :class:`RowElement` (direct children) and :class:`ColumnElement` (children nested one
     level down inside a row column) so the guard fires regardless of nesting: a column drops
     zero-height strips, so without this a too-narrow image/barcode inside a column would be filtered
-    away with no marker. QR clipping is predicted from its fixed size (it never blanks); barcode and
-    image are detected by the blank strip their own renderers return when the column collapses.
+    away with no marker. A matrix symbol's clipping is predicted from its fixed `size` box (it never
+    blanks); barcode and image are detected by the blank strip their own renderers return when the
+    column collapses. Every :class:`Matrix2DElement` subclass gets the guard through the base class.
 
     The child's padding is applied here via :func:`_apply_padding`, so it works identically on row and
     column children. The too-narrow guard is evaluated against the padding-inset *content* width — the
@@ -1082,7 +1129,7 @@ def _guarded_child_strip(
 
     def _render(content_width: int) -> Image.Image:
         if (
-            isinstance(child, QRElement)
+            isinstance(child, Matrix2DElement)
             and RowElement._child_has_content(child, resolved)
             and content_width
             < child._px(child.size) + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
@@ -1208,7 +1255,7 @@ class RowElement(ElementBase):
         Used to scope the too-narrow-column guard to columns that would *drop real content*, so a
         genuinely empty optional field (which legitimately renders a blank strip) is never rejected.
         """
-        if isinstance(child, QRElement | BarcodeElement):
+        if isinstance(child, Matrix2DElement | BarcodeElement):
             return bool(str(resolved.get("__data__", child.data)).strip())
         if isinstance(child, ImageElement):
             return bool(resolved.get(child.field))

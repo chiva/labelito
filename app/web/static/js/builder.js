@@ -197,7 +197,7 @@
   }
 
   // ── State ───────────────────────────────────────────────────────────────────
-  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', aliases: [], layout: [] };
+  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', length: null, aliases: [], layout: [] };
   const fieldOptional = new Set();   // field names the user marked optional (else required)
   let selectedEl = null;             // the selected element OBJECT (survives re-render / DnD)
   let designMode = true;             // true → show {{token}} chips; false → substitute sample values
@@ -342,6 +342,9 @@
     out.push('label: ' + qstr(model.label));
     out.push('rotate: ' + String(model.rotate || 0));
     if (model.valign && model.valign !== 'top') out.push('valign: ' + model.valign);
+    // Landscape length along continuous tape (mm). Emitted whenever set so the server, not the
+    // builder, decides whether it is valid for this label/rotate and says why if it is not.
+    if (typeof model.length === 'number' && model.length > 0) out.push('length: ' + model.length);
     // Quoted for the same reason field names are: YAML 1.1 reads the bare words no/yes/on/off/
     // true/false and null/~ as booleans and nulls, and bare digits as numbers — and an alias is
     // exactly the kind of short common word that collides ("no", "off"). The server rejects a
@@ -1053,6 +1056,15 @@
       (v) => { model.rotate = parseInt(v, 10) || 0; commit(); }));
     insp.appendChild(selectSetting('Vertical align', VALIGN, model.valign || 'top',
       (v) => { model.valign = v; commit(); }));
+    // Millimetres along a continuous tape for a landscape layout (rotate 90/270 on continuous
+    // media); blank means "not a landscape layout". The server validates the combination.
+    insp.appendChild(textSetting('Length (mm, landscape on continuous tape)',
+      model.length == null ? '' : String(model.length),
+      (v) => {
+        const n = parseFloat(v);
+        model.length = Number.isFinite(n) && n > 0 ? n : null;
+        commit();
+      }));
     // Comma-separated: an alias may contain spaces ("comida preparada"), so a space cannot be the
     // separator. Empty entries are dropped rather than sent to the server, which would reject them.
     insp.appendChild(textSetting('Spoken aliases', (model.aliases || []).join(', '),
@@ -1174,6 +1186,7 @@
       model.label = data.label || '62';
       model.rotate = data.rotate || 0;
       model.valign = data.valign || 'top';
+      model.length = (typeof data.length === 'number') ? data.length : null;
       // Carried across the round trip, not just displayed: the builder rebuilds its whole model
       // from this response and re-emits YAML from the model, so a key it does not read is a key it
       // silently DELETES from a template somebody opened, edited and saved.

@@ -71,7 +71,14 @@ from app.loader import (
     load_template,
     validate_template_from_string,
 )
-from app.media import LoadedMedia, MediaMatch, RequiredMedia, media_matches, required_media_for
+from app.media import (
+    LoadedMedia,
+    MediaMatch,
+    RequiredMedia,
+    media_matches,
+    mm_to_dots,
+    required_media_for,
+)
 from app.models import (
     CapabilityResponse,
     DiagnosticsResponse,
@@ -1489,9 +1496,18 @@ def _get_geometry(label_id: str) -> tuple[int, int | None]:
 
 
 def _compose_canvas(
-    width_px: int, height_px: int | None, rotate: int
+    width_px: int, height_px: int | None, rotate: int, *, length_px: int | None = None
 ) -> tuple[int, int | None, bool]:
     """Canvas dimensions the engine should compose on for a given media + rotation.
+
+    CONTINUOUS media with a template ``length`` and a 90°/270° turn is a LANDSCAPE layout along the
+    tape: it composes on a ``(length_px, width_px)`` canvas — the declared length as the width the
+    lines run along, the tape's printable width as a FIXED height (so ``valign`` applies and overflow
+    clips exactly as on die-cut media). The engine then turns that image so the raster handed to the
+    driver is ``width_px`` wide and ``length_px`` long with ``rotate=0``; brother_ql must never see
+    the turn itself, because for endless media it rescales any raster whose width differs from the
+    tape to fit, silently distorting the print. ``swapped`` is True for this case too: the composed
+    image is already in its readable landscape orientation.
 
     A right-angle rotation of RECTANGULAR DIE-CUT media (both dimensions fixed and unequal) must be
     composed on a SWAPPED canvas: brother_ql's ``convert()`` requires the final raster to equal the
@@ -1506,16 +1522,28 @@ def _compose_canvas(
     path) rather than the swapped net-rotation — otherwise a ``rotate: 90`` square label previews
     upright but prints sideways.
 
-    Continuous media (``height_px is None``, elastic length) is unchanged: it composes at the printable
-    width and the whole label is rotated, because there is no fixed second dimension to clash.
+    Continuous media (``height_px is None``, elastic length) WITHOUT a ``length`` is unchanged: it
+    composes at the printable width and the whole label is rotated, because there is no fixed second
+    dimension to clash. (The loader only lets 0°/180° through that path — see
+    :data:`app.loader.LANDSCAPE_ROTATIONS`.)
 
     Returns ``(canvas_width, canvas_height, swapped)``. ``swapped`` tells the caller the composed image
     is already in its readable landscape orientation (so the preview applies the swapped net-rotation
-    and the print path leaves the driver to rotate it back onto ``dots_printable``).
+    and the print path either leaves the driver to rotate it back onto ``dots_printable`` (die-cut) or
+    turns it in the engine (landscape continuous)).
     """
+    if height_px is None and length_px is not None and rotate in (90, 270):
+        return length_px, width_px, True
     if height_px is not None and width_px != height_px and rotate in (90, 270):
         return height_px, width_px, True
     return width_px, height_px, False
+
+
+def _landscape_length_px(tmpl: Template) -> int | None:
+    """The template's landscape ``length`` in printer dots at the configured model's dpi, or None."""
+    if tmpl.length_mm is None:
+        return None
+    return mm_to_dots(tmpl.length_mm, _driver_cls.CAPABILITY.dpi)
 
 
 def _preview_bw_convert(img: Image.Image, *, dither: bool, threshold: float) -> Image.Image:
@@ -1575,12 +1603,16 @@ def _render_template_preview(
     to the readable landscape orientation. The driver still rotates the raster by the full
     ``tmpl.rotate`` for print, so 90° and 270° print rasters differ by a 180° turn; the preview mirrors
     that with a *net* display rotation of ``tmpl.rotate - 90`` (90° → upright, 270° → 180° flip) so a
-    270° preview matches its flipped print and is never confused with the 90° preview. For continuous
-    media (or 0°/180°) the whole image is rotated in PIL by ``tmpl.rotate`` exactly as before, matching
+    270° preview matches its flipped print and is never confused with the 90° preview. A landscape
+    continuous layout (template ``length``) is swapped the same way and gets the same net rotation,
+    so its preview is the readable landscape strip the printer produces. For upright continuous
+    media (0°/180°) the whole image is rotated in PIL by ``tmpl.rotate`` exactly as before, matching
     what the driver produces.
     """
     width_px, height_px = _get_geometry(tmpl.label)
-    canvas_width, canvas_height, swapped = _compose_canvas(width_px, height_px, tmpl.rotate)
+    canvas_width, canvas_height, swapped = _compose_canvas(
+        width_px, height_px, tmpl.rotate, length_px=_landscape_length_px(tmpl)
+    )
     preview_rotate = (tmpl.rotate - 90) if swapped else tmpl.rotate
     img = engine.render(
         tmpl.layout,
@@ -1754,13 +1786,17 @@ def _execute_print(
     uses the current instant, a reprint replays the frozen original so computed ``{{date}}``
     tokens reproduce exactly.
 
-    Rotation is applied by the driver, not here: the raster is rendered unrotated (engine
+    Rotation is normally applied by the driver, not here: the raster is rendered unrotated (engine
     ``rotate=0``) on the media's compose canvas (:func:`_compose_canvas`) and ``tmpl.rotate`` is
     forwarded to ``render_payload``. For a die-cut right-angle rotation the compose canvas is SWAPPED
     (``H x W``) so the driver's quarter turn lands the raster back on ``dots_printable`` (``W x H``) —
-    otherwise brother_ql rejects the rotated image with ``Bad image dimensions``. Continuous media
-    composes at the printable width unchanged. The ``/preview`` path rotates in PIL purely for display
-    parity.
+    otherwise brother_ql rejects the rotated image with ``Bad image dimensions``. Upright continuous
+    media composes at the printable width unchanged. The one exception is a LANDSCAPE continuous
+    layout (template ``length`` + rotate 90/270): there the engine composes on the
+    ``(length x tape width)`` canvas and applies the quarter turn itself, and the driver receives
+    ``rotate=0`` — brother_ql rescales any turned endless raster whose width differs from the tape,
+    so the turn must be done before it sees the image. The ``/preview`` path rotates in PIL purely
+    for display parity.
 
     Sequence batches: when ``sequence`` is not None, the batch is sent ONE LABEL AT A TIME.
     Each item's ``{{seq}}`` is resolved per item, then that single label is rendered → converted →
@@ -1778,8 +1814,16 @@ def _execute_print(
     """
     width_px, height_px = _get_geometry(tmpl.label)
     # Compose canvas: swapped (H x W) for die-cut right-angle rotations so the driver's turn lands
-    # back on dots_printable; unchanged for continuous / 0 / 180 deg. The driver still receives rotate.
-    canvas_width, canvas_height, _canvas_swapped = _compose_canvas(width_px, height_px, tmpl.rotate)
+    # back on dots_printable; (length x W) for a landscape continuous layout; unchanged otherwise.
+    canvas_width, canvas_height, canvas_swapped = _compose_canvas(
+        width_px, height_px, tmpl.rotate, length_px=_landscape_length_px(tmpl)
+    )
+    # Who turns the raster: the engine for a landscape continuous layout (the driver would rescale a
+    # turned endless raster), the driver everywhere else (it needs the turn to land die-cut media on
+    # dots_printable). Exactly one of the two rotates.
+    landscape = canvas_swapped and height_px is None
+    engine_rotate = tmpl.rotate if landscape else 0
+    driver_rotate = 0 if landscape else tmpl.rotate
     effective_high_res = bool(options.high_res) if options.high_res is not None else False
     effective_red = bool(options.red) if options.red is not None else False
     effective_threshold = float(
@@ -1825,7 +1869,7 @@ def _execute_print(
             fields,
             canvas_width,
             canvas_height,
-            rotate=0,
+            rotate=engine_rotate,
             language=language,
             now=now,
             high_res=effective_high_res,
@@ -1841,7 +1885,7 @@ def _execute_print(
         driver_opts: dict[str, Any] = {
             "model": settings.model,
             "label": tmpl.label,
-            "rotate": tmpl.rotate,  # driver rotates the printable-width raster for the hardware
+            "rotate": driver_rotate,  # the driver turns the raster unless the engine already did
             # Each sequence label is its own printer job, so cut applies per label exactly as for a
             # single print: die-cut media yields N identical pieces; continuous tape feeds/cuts at
             # the end of each label when cut is True (one extra feed/cut per label vs one batch cut).
@@ -1878,7 +1922,7 @@ def _execute_print(
                     count=sequence.count,
                     step=sequence.step,
                     padding=sequence.padding,
-                    rotate=0,
+                    rotate=engine_rotate,
                     language=language,
                     now=now,
                     high_res=effective_high_res,
@@ -1892,7 +1936,7 @@ def _execute_print(
                     fields,
                     canvas_width,
                     canvas_height,
-                    rotate=0,
+                    rotate=engine_rotate,
                     language=language,
                     now=now,
                     high_res=effective_high_res,
@@ -2537,6 +2581,7 @@ def _template_info(t: Template) -> TemplateInfo:
         label=t.label,
         rotate=t.rotate,
         valign=t.valign,
+        length=t.length_mm,
         fields=TemplateFieldContract(
             required=t.required_fields,
             optional=t.optional_fields,
@@ -3413,6 +3458,7 @@ async def parse_template(request: TemplateParseRequest) -> TemplateParseResponse
         label=tmpl.label,
         rotate=tmpl.rotate,
         valign=tmpl.valign,
+        length=tmpl.length_mm,
         fields=TemplateFieldContract(
             required=tmpl.required_fields,
             optional=tmpl.optional_fields,
@@ -3449,6 +3495,7 @@ async def parse_template_layout(request: TemplateParseRequest) -> TemplateLayout
         label=tmpl.label,
         rotate=tmpl.rotate,
         valign=tmpl.valign,
+        length=tmpl.length_mm,
         fields=TemplateFieldContract(
             required=tmpl.required_fields,
             optional=tmpl.optional_fields,

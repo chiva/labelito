@@ -97,6 +97,16 @@ class RequiredMedia:
     length_mm: float | None = None
 
 
+def mm_to_dots(mm: float, dpi: int) -> int:
+    """Convert a physical length in millimetres to whole printer dots at ``dpi``.
+
+    Templates state lengths in millimetres (the unit every label id and media report already uses);
+    the driver works in dots, whose count depends on the model's dpi and on the ``high_res`` scale, so
+    the conversion happens once at request time rather than being baked into a YAML file.
+    """
+    return round(mm / 25.4 * dpi)
+
+
 def media_type_for_form_factor(form_factor: FormFactor) -> str:
     """Map a brother_ql ``FormFactor`` to the canonical media type.
 

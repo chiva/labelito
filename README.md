@@ -178,7 +178,7 @@ A template is a YAML file in `templates/`: a media size, an optional rotation, a
 name: freezer-icon
 description: Freezer label with storage date + snowflake
 label: "62"
-rotate: 90
+rotate: 0
 fields:
   required: [title]
   optional: [subtitle]

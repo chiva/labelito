@@ -492,8 +492,9 @@ equally visible on the previewed label (missing padding / crossed box in the squ
 keeping the rest of the label printable.
 
 **Why it isn't validated at save time:** the printable width depends on the resolved driver/label
-geometry (per-model `dots_printable`), the template's `rotate` (die-cut media swaps width/height), and
-whether the print is `high_res` (2× scale) — none of which the geometry-agnostic loader knows. Adding
+geometry (per-model `dots_printable`), the template's `rotate` (die-cut media swaps width/height; a
+landscape continuous layout composes at its declared `length`), and whether the print is `high_res`
+(2× scale) — none of which the geometry-agnostic loader knows. Adding
 a save-time `422` would couple the validator to the driver layer and re-derive the compose-canvas
 width (including the rotate swap and high-res doubling) for every element. **Mitigation if needed
 later:** compute the effective compose-canvas width in the template-validation/save path (where the

@@ -20,8 +20,9 @@ This document is the authoritative reference for every parameter. It is sourced 
 | `description` | **yes** | string | Human-readable summary shown in the template picker. The picker groups templates by the `label` size denomination and, on an SNMP printer, focuses the group matching the loaded roll. |
 | `label` | **yes** | string | The brother_ql label id the template prints on (e.g. `"62"`, `"62x29"`). Quote it so `62` is not parsed as an integer. See [Choosing a label](#choosing-a-label). |
 | `layout` | **yes** | list | Non-empty list of [layout elements](#layout-elements), rendered top-to-bottom. |
-| `rotate` | no | int | Quarter-turn orientation. One of `0`, `90`, `180`, `270` (default `0`); any other value is rejected. For **continuous** media the whole label is rotated. For **die-cut** media (both dimensions fixed) a `90`/`270` rotation composes the layout on a **swapped** canvas — author it for the long edge as width, so an address reads landscape along the length — and the driver rotates it back onto the roll's printable size. (A naive `rotate: 90` without this handling would make brother_ql reject the raster with `Bad image dimensions`; the app does the swap for you.) |
-| `valign` | no | string | Vertical placement of the whole composed layout within the label. One of `top` (default), `center`, `bottom`. Only takes effect on **die-cut** media that has spare height (the block is shorter than the label): `center`/`bottom` shift the stack down so it does not cling to the top edge. On **continuous** media (height grows to fit) and when content overflows a die-cut label it is a no-op. Handy for address labels where a bold name + a couple of lines should sit centred on the long face. |
+| `rotate` | no | int | Quarter-turn orientation. One of `0`, `90`, `180`, `270` (default `0`); any other value is rejected. For **die-cut** media (both dimensions fixed) a `90`/`270` rotation composes the layout on a **swapped** canvas — author it for the long edge as width, so an address reads landscape along the length — and the driver rotates it back onto the roll's printable size. (A naive `rotate: 90` without this handling would make brother_ql reject the raster with `Bad image dimensions`; the app does the swap for you.) For **continuous** media `180` flips the whole label, while `90`/`270` is a [landscape layout along the tape](#landscape-on-continuous-tape) and **requires `length`**: without it the turned raster would be rescaled to the tape width and distorted, so the loader rejects that combination. |
+| `length` | no | number | Millimetres along a **continuous** tape for a [landscape layout](#landscape-on-continuous-tape). Only valid together with `rotate: 90`/`270` on continuous media (20–300 mm); rejected on die-cut media (the label id already fixes the length) and with `rotate` `0`/`180`. |
+| `valign` | no | string | Vertical placement of the whole composed layout within the label. One of `top` (default), `center`, `bottom`. Only takes effect where the block's axis is fixed and has spare height: **die-cut** media, and a **landscape** continuous layout (the tape width is the fixed axis there). `center`/`bottom` shift the stack down so it does not cling to the top edge. On upright **continuous** media (height grows to fit) and when content overflows it is a no-op. Handy for address labels where a bold name + a couple of lines should sit centred on the long face. |
 | `fields` | no | mapping | Declares the [fields](#fields) a caller supplies. Omit it for a fully static label. |
 | `aliases` | no | list | Alternative **spoken** names, for clients that match speech against the catalog. Never a lookup key — printing is always by `name`. See [Aliases (spoken names)](#aliases-spoken-names). |
 
@@ -105,6 +106,48 @@ reference** panel (bottom of `/editor`) lists every supported id with the media 
 when the printer answers SNMP — flags the loaded roll and the matching id(s). Picking a `label`
 whose media does not match the loaded roll is rejected at print time with `409 Conflict` (the
 media-compatibility guard), so it is worth matching it to your roll up front.
+
+### Landscape on continuous tape
+
+Continuous tape has one fixed dimension — its width — and an elastic length, so an upright layout
+stacks lines across the 62 mm (or 29 mm, …) face and grows downward. An address or shipping label
+wants the opposite: lines running along the tape, on a strip of known length. Declare a `length`
+in millimetres together with `rotate: 90` or `270`:
+
+```yaml
+name: address-landscape
+description: Address along a 100 mm strip of 62 mm tape; empty optional lines vanish
+label: "62"
+rotate: 90
+length: 100
+valign: center
+fields:
+  required: [name]
+  optional: [line1, line2]
+layout:
+  - {type: text, text: "{{name}}", size: 64, bold: true, max_lines: 1}
+  - {type: text, text: "{{line1}}", size: 44, max_lines: 1}
+  - {type: text, text: "{{line2}}", size: 44, max_lines: 1}
+```
+
+How it composes: the layout is rendered on a `length × tape-width` canvas (100 mm → 1181 px wide,
+696 px tall at 300 dpi), so text wraps against the *length* and `valign` places the block within
+the tape width, exactly like a die-cut label. The engine then turns the image so the raster handed
+to the printer is tape-width wide and `length` long, and the driver prints it without any rotation
+of its own. The preview shows the same readable landscape strip. `high_res` doubles both axes; the
+`min_length_px`/`max_length_px` clamps do not apply (the length is declared, not measured).
+
+Rules and consequences:
+
+- `length` is only meaningful with `rotate: 90`/`270` on continuous media; any other combination
+  is a load error, and so is a `90`/`270` turn on continuous media *without* `length` — that path
+  used to compose at the tape width and let brother_ql rescale the turned raster to fit, which
+  distorted the print behind a correct-looking preview.
+- The tape width is now the *fixed* axis: a block taller than it is clipped from the bottom, as on
+  die-cut media. Add up your strip heights (a `text` line is roughly `1.2 × size + 8` px) and keep
+  the total under the tape width.
+- Allowed range is 20–300 mm. The tape is cut at `length`; a longer value costs tape, a shorter one
+  clips text along the length.
 
 ---
 
@@ -513,6 +556,7 @@ child, its width and vertical placement come from the row (`width`/`weight`/`val
 | Max single pixel dimension | 10000 px | Bounds any one element's allocation. |
 | Max QR/icon square dimension | 2000 px | Square allocation is quadratic. |
 | Max font size | 512 pt | Quadratic with `max_lines`. |
+| Landscape `length` | 20–300 mm | Below 20 mm is under the printer's minimum feed; above 300 mm exceeds the raster-row ceiling in `high_res`. |
 | Max template YAML size | 64 KiB | A real template is tiny. |
 
 ---

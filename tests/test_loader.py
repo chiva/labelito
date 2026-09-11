@@ -21,7 +21,7 @@ def test_load_valid_template(sample_template_yaml: Path) -> None:
     t = load_template(sample_template_yaml)
     assert t.name == "test-simple"
     assert t.label == "62"
-    assert t.rotate == 90
+    assert t.rotate == 0
     assert "title" in t.required_fields
     assert "subtitle" in t.optional_fields
     assert len(t.layout) == 2
@@ -248,7 +248,8 @@ def test_out_of_range_rotate_raises(tmp_path: Path) -> None:
 
 
 def test_valid_rotations_load(tmp_path: Path) -> None:
-    """Each of the four quarter-turns loads and round-trips to the parsed value."""
+    """Each of the four quarter-turns loads and round-trips to the parsed value (a quarter turn on
+    continuous tape is a landscape layout and needs its `length`)."""
     for good in (0, 90, 180, 270):
         path = write_yaml(
             tmp_path / "rot-ok.yaml",
@@ -257,6 +258,7 @@ def test_valid_rotations_load(tmp_path: Path) -> None:
             description: valid rotate
             label: "62"
             rotate: {good}
+            {"length: 100" if good in (90, 270) else ""}
             layout:
               - {{type: text, text: x}}
         """,
@@ -417,7 +419,7 @@ def test_padding_left_out_of_range_raises(tmp_path: Path) -> None:
 
 def test_in_bounds_render_dimensions_load(tmp_path: Path) -> None:
     """Ordinary in-bounds qr/text/rotate values still load (the tightened caps reject nothing real:
-    qr.size 600, text size 48 with max_lines 4, rotate 90)."""
+    qr.size 600, text size 48 with max_lines 4, rotate 90 with a landscape length)."""
     path = write_yaml(
         tmp_path / "ok-dims.yaml",
         """\
@@ -425,6 +427,7 @@ def test_in_bounds_render_dimensions_load(tmp_path: Path) -> None:
         description: in-bounds dimensions
         label: "62"
         rotate: 90
+        length: 100
         layout:
           - {type: qr, data: x, size: 600}
           - {type: text, text: hi, size: 48, max_lines: 4}
@@ -433,7 +436,70 @@ def test_in_bounds_render_dimensions_load(tmp_path: Path) -> None:
     )
     t = load_template(path)
     assert t.rotate == 90
+    assert t.length_mm == 100.0
     assert len(t.layout) == 3
+
+
+# ── `length`: landscape layouts on continuous tape ───────────────────────────────
+def _length_yaml(label: str, rotate: int, length_line: str) -> str:
+    return f"""\
+        name: length-probe
+        description: probe
+        label: "{label}"
+        rotate: {rotate}
+        {length_line}
+        layout:
+          - {{type: text, text: hi}}
+    """
+
+
+def test_length_absent_on_upright_template_is_none(tmp_path: Path) -> None:
+    t = load_template(write_yaml(tmp_path / "upright.yaml", _length_yaml("62", 0, "")))
+    assert t.length_mm is None
+
+
+@pytest.mark.parametrize("rotate", [90, 270])
+def test_continuous_quarter_turn_without_length_is_rejected(tmp_path: Path, rotate: int) -> None:
+    """The path that used to distort: composed at the tape width, turned, then rescaled by brother_ql.
+    The message names the fix so the author is not left guessing."""
+    path = write_yaml(tmp_path / "nolen.yaml", _length_yaml("62", rotate, ""))
+    with pytest.raises(TemplateLoadError, match=r"requires 'length'"):
+        load_template(path)
+
+
+@pytest.mark.parametrize("raw", ["100", "20", "300", "100.5"])
+def test_length_in_range_loads_as_float(tmp_path: Path, raw: str) -> None:
+    t = load_template(write_yaml(tmp_path / "ok.yaml", _length_yaml("62", 90, f"length: {raw}")))
+    assert t.length_mm == float(raw)
+
+
+@pytest.mark.parametrize("raw", ["19", "301", "0", "-5"])
+def test_length_out_of_range_is_rejected(tmp_path: Path, raw: str) -> None:
+    path = write_yaml(tmp_path / "range.yaml", _length_yaml("62", 90, f"length: {raw}"))
+    with pytest.raises(TemplateLoadError, match=r"between 20 and 300 mm"):
+        load_template(path)
+
+
+@pytest.mark.parametrize("raw", ["true", '"100"', "[100]", "null"])
+def test_length_non_numeric_is_rejected(tmp_path: Path, raw: str) -> None:
+    """Booleans are ints in Python, so `length: true` needs its own rejection; a string, list or
+    explicit null are equally not a number of millimetres (null is a quarter turn without a length)."""
+    path = write_yaml(tmp_path / "type.yaml", _length_yaml("62", 90, f"length: {raw}"))
+    with pytest.raises(TemplateLoadError, match=r"'length'"):
+        load_template(path)
+
+
+def test_length_on_die_cut_is_rejected(tmp_path: Path) -> None:
+    path = write_yaml(tmp_path / "diecut.yaml", _length_yaml("62x29", 90, "length: 100"))
+    with pytest.raises(TemplateLoadError, match=r"only to continuous media"):
+        load_template(path)
+
+
+@pytest.mark.parametrize("rotate", [0, 180])
+def test_length_with_upright_rotation_is_rejected(tmp_path: Path, rotate: int) -> None:
+    path = write_yaml(tmp_path / "upright.yaml", _length_yaml("62", rotate, "length: 100"))
+    with pytest.raises(TemplateLoadError, match=r"requires rotate \[90, 270\]"):
+        load_template(path)
 
 
 def test_text_strip_product_cap_applies_without_max_lines(tmp_path: Path) -> None:

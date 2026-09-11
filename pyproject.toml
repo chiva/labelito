@@ -26,7 +26,6 @@ dependencies = [
     "pydantic-settings==2.15.0",
     "Pillow==12.3.0",
     "cairosvg==2.9.0",
-    "qrcode[pil]==8.2",
     "python-barcode[images]==0.16.1",
     # Pure-Python 2D symbologies (QR, DataMatrix, Aztec, PDF417) and ITF-14. Every encoder exposes
     # its module matrix, which the renderer draws itself on whole device dots — no native library,

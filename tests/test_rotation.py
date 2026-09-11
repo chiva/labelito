@@ -257,9 +257,9 @@ def test_landscape_valign_center_and_overflow_clip_behave_like_die_cut(
 # ── engine → driver raster contract ──────────────────────────────────────────────
 @pytest.mark.parametrize(
     "template_name,label_id",
-    [("29x90-address", "29x90"), ("17x54-address", "17x54")],
+    [("29x90-address", "29x90"), ("17x54-address", "17x54"), ("62-shipping-landscape", "62")],
 )
-def test_die_cut_address_template_is_landscape(template_name: str, label_id: str) -> None:
+def test_address_templates_are_landscape(template_name: str, label_id: str) -> None:
     tmpl = load_template(REPO / "templates" / f"{template_name}.yaml")
     assert tmpl.rotate == 90, "address template must opt into the landscape rotation"
     assert tmpl.label == label_id
@@ -396,3 +396,76 @@ def test_preview_square_die_cut_applies_full_rotation() -> None:
     assert img0.size == img90.size  # square, so dims unchanged
     # The driver rotates the rotate:0 raster by the full 90°; the preview must match that orientation.
     assert img0.rotate(90, expand=True).tobytes() == img90.tobytes()
+
+
+# ── shipped landscape shipping template ─────────────────────────────────────────
+_SHIPPING = REPO / "templates" / "62-shipping-landscape.yaml"
+_SHIPPING_FULL = {
+    "name": "Margaret Hamilton",
+    "address1": "Apollo Guidance Way 1969",
+    "address2": "Building 4, Suite 11",
+    "zip": "02139",
+    "city": "Cambridge",
+    "region": "Massachusetts",
+    "country": "United States",
+}
+
+
+def test_shipping_template_is_a_100mm_landscape_on_62mm_tape() -> None:
+    tmpl = load_template(_SHIPPING)
+    assert tmpl.name == "shipping-62"
+    assert (tmpl.label, tmpl.rotate, tmpl.length_mm, tmpl.valign) == ("62", 90, 100.0, "center")
+    assert tmpl.required_fields == ["name"]
+    assert tmpl.optional_fields == ["address1", "address2", "city", "zip", "region", "country"]
+
+
+def test_shipping_template_prints_tape_wide_without_resize(
+    engine: RenderEngine, caplog: Any
+) -> None:
+    tmpl = load_template(_SHIPPING)
+    length_px = mm_to_dots(100, 300)
+    canvas_w, canvas_h, swapped = main_mod._compose_canvas(
+        696, None, tmpl.rotate, length_px=length_px
+    )
+    assert swapped
+    png = engine.render_to_png(
+        tmpl.layout, _SHIPPING_FULL, canvas_w, canvas_h, rotate=tmpl.rotate, valign=tmpl.valign
+    )
+    assert Image.open(io.BytesIO(png)).size == (696, length_px)
+    driver = BrotherQLDriver.for_model("QL-810W")()
+    with caplog.at_level(logging.WARNING, logger="brother_ql.conversion"):
+        payload = driver.render_payload(png, _driver_opts("62"))
+    assert isinstance(payload, bytes) and len(payload) > 0
+    assert not any("resize" in r.getMessage().lower() for r in caplog.records)
+
+
+def test_shipping_template_unused_lines_vanish(
+    engine: RenderEngine, fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """Only `name` set: the composed block IS the name strip (every optional line collapsed,
+    including the space-joined "zip city" line). Adding `country` appends exactly that strip, and
+    the full sample fits within the tape width with slack for valign to centre. Ink rows are
+    compared against the same elements rendered alone, so glyph metrics cancel out exactly."""
+    from app.render.elements import TextElement
+
+    tmpl = load_template(_SHIPPING)
+    length_px = mm_to_dots(100, 300)
+
+    def strip(text: str, size: int, bold: bool) -> Image.Image:
+        el = TextElement(text=text, size=size, bold=bold, align="left", max_lines=1)
+        return el.render(length_px, {"__text__": text}, fonts_dir, icons_dir, icon_collections_dir)
+
+    def composed(fields: dict[str, str]) -> Image.Image:
+        return engine.render(tmpl.layout, fields, length_px, 696, rotate=0, valign="top")
+
+    name_strip = strip("Margaret Hamilton", 64, True)
+    country_strip = strip("United States", 44, True)
+
+    assert _ink_rows(composed({"name": "Margaret Hamilton"})) == _ink_rows(name_strip)
+
+    _c_top, c_bottom = _ink_rows(country_strip)
+    with_country = composed({"name": "Margaret Hamilton", "country": "United States"})
+    assert _ink_rows(with_country) == (_ink_rows(name_strip)[0], name_strip.height + c_bottom)
+
+    _top, bottom = _ink_rows(composed(_SHIPPING_FULL))
+    assert bottom < 696  # the full address fits the tape width, so valign: center has room

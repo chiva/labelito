@@ -1,0 +1,19 @@
+name: shipping-62
+description: Shipping / address label along a 100 mm strip of 62 mm continuous tape; unused address lines vanish
+label: "62"
+rotate: 90
+length: 100
+valign: center
+aliases: [shipping label, address label, etiqueta de envío, etiqueta de dirección]
+fields:
+  required: [name]
+  optional: [address1, address2, city, zip, region, country]
+layout:
+  - {type: text, text: "{{name}}", size: 64, align: left, bold: true, max_lines: 1}
+  - {type: text, text: "{{address1}}", size: 44, align: left, max_lines: 1}
+  - {type: text, text: "{{address2}}", size: 44, align: left, max_lines: 1}
+  # A space join only: text wrapping collapses whitespace, so an empty zip or city leaves no gap.
+  # A punctuation join ("{{region}}, {{country}}") would leave a stray comma, hence separate lines.
+  - {type: text, text: "{{zip}} {{city}}", size: 44, align: left, max_lines: 1}
+  - {type: text, text: "{{region}}", size: 44, align: left, max_lines: 1}
+  - {type: text, text: "{{country}}", size: 44, align: left, bold: true, max_lines: 1}

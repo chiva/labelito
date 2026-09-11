@@ -21,7 +21,9 @@ from app.render.symbols import (
     PDF417_ROW_HEIGHT_DEFAULT,
     QR_ECL_DEFAULT,
     Symbol2D,
+    draw_bars,
     draw_marks,
+    encode_1d,
     encode_aztec,
     encode_datamatrix,
     encode_pdf417,
@@ -51,6 +53,9 @@ QR_DEFAULT_SIZE = 160
 # or the code clips. Shared by QRElement.render and the row too-narrow guard so they stay in sync.
 QR_ALIGN_INSET = 8
 BARCODE_DEFAULT_HEIGHT = 60
+# Point size of the value printed under a barcode with `show_value`; small enough to sit under a
+# 60 px symbol without doubling the strip.
+BARCODE_VALUE_FONT_SIZE = 24
 LINE_DEFAULT_THICKNESS = 2
 SPACER_DEFAULT_PX = 16
 ICON_DEFAULT_SIZE = 80
@@ -790,6 +795,16 @@ class PDF417Element(Matrix2DElement):
 # ── Barcode element ────────────────────────────────────────────────────────────
 @dataclass
 class BarcodeElement(ElementBase):
+    """A linear (1D) barcode encoding `data` in `symbology` (code128 by default; ean13, upca,
+    code39, itf, codabar, gs1_128, ...), drawn on whole device dots: the module width is the
+    largest integer number of dots for which the symbol, with its 10-module quiet zones, fits the
+    column, and the bars are exactly `height` px tall. `show_value` prints the encoded value (with
+    any computed check digit) under the bars in the label font.
+
+    A bad payload for a fixed-format symbology (letters in an EAN, a wrong length) fails at render
+    with a clear message, because the data is templated and not known at load.
+    """
+
     type: str = "barcode"
     data: str = ""
     symbology: str = "code128"
@@ -805,43 +820,51 @@ class BarcodeElement(ElementBase):
         icons_dir: Path,
         icon_collections_dir: Path,
     ) -> Image.Image:
-        import barcode as python_barcode
-        from barcode.writer import ImageWriter
-
         data = str(resolved_fields.get("__data__", self.data))
         if not data.strip():
             return self._new_canvas(canvas_width, 0)
 
+        bars = encode_1d(self.symbology, data)
         inset = self._px(8)
         pad = self._px(4)
-        bc_class = python_barcode.get_barcode_class(self.symbology)
-        buf = io.BytesIO()
-        writer = ImageWriter()
-        # The generator's built-in value text is tiny/unstyled and outside labelito's font
-        # control, so bars-only is the default — value display belongs to the template's own
-        # `text` elements. `show_value: true` re-enables it for quick templates.
-        bc_class(data, writer=writer).write(buf, options={"write_text": bool(self.show_value)})
-        buf.seek(0)
-        bc_img = Image.open(buf).convert("L")
-
-        new_w = canvas_width - 2 * inset
-        bc_scale = new_w / bc_img.width
-        new_h = int(bc_img.height * bc_scale)
-        if new_w <= 0 or new_h <= 0:
-            # Column too narrow to draw into (e.g. a tiny fixed `width` or a flex column
-            # squeezed to zero inside a row). Degrade to an empty strip rather than letting
-            # Image.resize raise ValueError and turn the request into a 500.
+        # The module width is the widest whole dot that fits the column, chosen in TEMPLATE units
+        # (the unscaled column) and then scaled, so high_res is a uniform 2x rather than a fresh
+        # integer division of the doubled width. A column too narrow for even 1 dot/module yields a
+        # blank strip, which the row guard turns into the crossed-box marker rather than a silently
+        # missing barcode.
+        module_units = (canvas_width // self.scale - 2 * 8) // bars.units_wide
+        if module_units < 1:
             return self._new_canvas(canvas_width, 0)
-        bc_img = self._tint(bc_img.resize((new_w, new_h), Image.LANCZOS))
+        module_px = self._px(module_units)
+        graphic = draw_bars(bars, module_px, self._px(self.height))
 
-        canvas = self._new_canvas(canvas_width, new_h + 2 * pad)
+        if self.show_value:
+            # The value in labelito's own font under the bars, so it matches the label's text.
+            font = _load_font(fonts_dir, self._px(BARCODE_VALUE_FONT_SIZE), False)
+            bbox = font.getbbox(bars.text)
+            text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            gap = self._px(4)
+            labelled = Image.new(
+                "L", (max(graphic.width, text_w), graphic.height + gap + text_h), 255
+            )
+            labelled.paste(graphic, ((labelled.width - graphic.width) // 2, 0))
+            ImageDraw.Draw(labelled).text(
+                ((labelled.width - text_w) // 2 - bbox[0], graphic.height + gap - bbox[1]),
+                bars.text,
+                font=font,
+                fill=0,
+            )
+            graphic = labelled
+        graphic = self._tint(graphic)
+
+        canvas = self._new_canvas(canvas_width, graphic.height + 2 * pad)
         if self.align == "center":
-            x = (canvas_width - new_w) // 2
+            x = (canvas_width - graphic.width) // 2
         elif self.align == "right":
-            x = canvas_width - new_w - inset
+            x = canvas_width - graphic.width - inset
         else:
             x = inset
-        canvas.paste(bc_img, (x, pad))
+        canvas.paste(graphic, (x, pad))
         return canvas
 
 

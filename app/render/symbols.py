@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import barcode as python_barcode
 from PIL import Image, ImageDraw
 
 # One dark run: x, y, width, height — all in MODULE units, relative to the symbol's top-left
@@ -278,3 +279,89 @@ def encode_pdf417(
     except PyStrichError as exc:
         raise SymbolEncodeError(f"pdf417: cannot encode {len(data)} characters: {exc}") from exc
     return runs_from_matrix(encoder.matrix, PDF417_QUIET_MODULES)
+
+
+# ── Linear (1D) barcodes ─────────────────────────────────────────────────────────
+
+# ISO/IEC 15417 and friends ask for a quiet zone of at least 10 narrow modules on each side of a
+# linear symbol; it is what lets a scanner find the first and last bar.
+BARCODE_QUIET_MODULES = 10
+# The 1D symbologies a template may name: python-barcode's registry (code128, ean13, upca, code39,
+# itf, codabar, gs1_128, ...). One set drives the renderer, the loader's error message and the
+# studio's drift test, so they cannot disagree.
+SUPPORTED_SYMBOLOGIES: frozenset[str] = frozenset(python_barcode.PROVIDED_BARCODES)
+
+
+@dataclass(frozen=True)
+class Bars1D:
+    """A linear barcode as a module string plus the frame its spec puts around it."""
+
+    pattern: (
+        str  # one char per narrow module: '1'/'G' dark (G = guard bar, drawn the same), '0' light
+    )
+    quiet: int  # light modules on each side
+    bearer: int  # bearer-bar thickness in modules (top/bottom and both ends); 0 = none
+    text: str  # the human-readable value (with any computed check digit) for `show_value`
+
+    @property
+    def units_wide(self) -> int:
+        return len(self.pattern) + 2 * (self.quiet + self.bearer)
+
+
+def encode_1d(symbology: str, data: str) -> Bars1D:
+    """Encode *data* in a linear *symbology* as its module string.
+
+    python-barcode's ``build()`` yields exactly one module string per symbol and validates the
+    payload for the fixed-format codes (EAN/UPC digits and length, ISBN prefixes, ...); its errors
+    become :class:`SymbolEncodeError` so a bad value is a clear "Render error", as before.
+    """
+    from barcode.errors import BarcodeError
+
+    if symbology not in SUPPORTED_SYMBOLOGIES:
+        raise SymbolEncodeError(
+            f"barcode: unknown symbology {symbology!r}; valid: {sorted(SUPPORTED_SYMBOLOGIES)}"
+        )
+    try:
+        code = python_barcode.get_barcode_class(symbology)(data)
+        pattern = code.build()[0]
+        text = code.get_fullcode()
+    except BarcodeError as exc:
+        raise SymbolEncodeError(f"barcode: cannot encode {data!r} as {symbology}: {exc}") from exc
+    return Bars1D(pattern=pattern, quiet=BARCODE_QUIET_MODULES, bearer=0, text=str(text))
+
+
+def draw_bars(bars: Bars1D, module_px: int, bar_height_px: int) -> Image.Image:
+    """Draw *bars* with every module exactly ``module_px`` dots wide and ``bar_height_px`` tall.
+
+    Quiet zones are part of the image; bearer bars (ITF-14) are drawn ``bearer`` modules thick
+    above and below the bars and at both ends, outside the quiet zones per ISO/IEC 16390. Output is
+    a binary ``"L"`` image, like :func:`draw_marks`.
+    """
+    if module_px < 1:
+        raise ValueError(f"module_px must be at least one dot, got {module_px}")
+    if bar_height_px < 1:
+        raise ValueError(f"bar_height_px must be at least one dot, got {bar_height_px}")
+    bearer_px = bars.bearer * module_px
+    width = bars.units_wide * module_px
+    height = bar_height_px + 2 * bearer_px
+    img = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(img)
+    left = (bars.bearer + bars.quiet) * module_px
+    x = 0
+    while x < len(bars.pattern):
+        if bars.pattern[x] == "0":
+            x += 1
+            continue
+        start = x
+        while x < len(bars.pattern) and bars.pattern[x] != "0":
+            x += 1
+        x0 = left + start * module_px
+        draw.rectangle(
+            (x0, bearer_px, left + x * module_px - 1, bearer_px + bar_height_px - 1), fill=0
+        )
+    if bearer_px:
+        draw.rectangle((0, 0, width - 1, bearer_px - 1), fill=0)
+        draw.rectangle((0, height - bearer_px, width - 1, height - 1), fill=0)
+        draw.rectangle((0, 0, bearer_px - 1, height - 1), fill=0)
+        draw.rectangle((width - bearer_px, 0, width - 1, height - 1), fill=0)
+    return img

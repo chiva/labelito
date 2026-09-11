@@ -191,3 +191,74 @@ def test_encode_pdf417_rejects_encoder_option_errors_as_symbol_errors() -> None:
 
     with pytest.raises(SymbolEncodeError, match="pdf417"):
         encode_pdf417("x", columns=99)
+
+
+# ── encode_1d / draw_bars ───────────────────────────────────────────────────────
+def test_encode_1d_code128_module_string_and_quiet_zone() -> None:
+    from app.render.symbols import BARCODE_QUIET_MODULES, encode_1d
+
+    bars = encode_1d("code128", "12345678")
+    assert set(bars.pattern) == {"0", "1"} and len(bars.pattern) == 79
+    assert bars.quiet == BARCODE_QUIET_MODULES == 10 and bars.bearer == 0
+    assert bars.units_wide == 79 + 20
+    assert bars.text == "12345678"
+
+
+def test_encode_1d_ean13_computes_the_check_digit_and_guards_are_dark() -> None:
+    from app.render.symbols import encode_1d
+
+    bars = encode_1d("ean13", "590123412345")
+    assert bars.text == "5901234123457"  # python-barcode appends the check digit
+    guard = encode_1d("ean13-guard", "590123412345")
+    assert "G" in guard.pattern and len(guard.pattern) == len(bars.pattern)
+
+
+def test_encode_1d_rejects_unknown_symbology_and_bad_payload() -> None:
+    from app.render.symbols import SUPPORTED_SYMBOLOGIES, SymbolEncodeError, encode_1d
+
+    assert {"code128", "ean13", "upca", "code39", "itf", "codabar"} <= SUPPORTED_SYMBOLOGIES
+    with pytest.raises(SymbolEncodeError, match="unknown symbology 'code93'"):
+        encode_1d("code93", "x")
+    with pytest.raises(SymbolEncodeError, match="cannot encode 'abc' as ean13"):
+        encode_1d("ean13", "abc")
+
+
+@pytest.mark.parametrize("module_px", [1, 2, 5])
+def test_draw_bars_is_dot_exact_at_the_requested_height(module_px: int) -> None:
+    from app.render.symbols import Bars1D, draw_bars
+
+    bars = Bars1D(pattern="1011G0", quiet=2, bearer=0, text="x")
+    img = draw_bars(bars, module_px, 40)
+    assert img.size == ((6 + 4) * module_px, 40)
+    assert _pixel_values(img) <= {0, 255}
+    left = 2 * module_px
+    # module 0 dark, 1 light, 2-4 dark (1,1,G), 5 light; full height.
+    for y in (0, 39):
+        assert img.getpixel((left, y)) == 0
+        assert img.getpixel((left + module_px, y)) == 255
+        assert img.getpixel((left + 2 * module_px, y)) == 0
+        assert img.getpixel((left + 5 * module_px - 1, y)) == 0
+        assert img.getpixel((left + 5 * module_px, y)) == 255
+    assert img.getpixel((0, 20)) == 255  # quiet zone
+
+
+def test_draw_bars_bearer_frames_the_symbol_outside_the_quiet_zone() -> None:
+    from app.render.symbols import Bars1D, draw_bars
+
+    bars = Bars1D(pattern="101", quiet=2, bearer=3, text="x")
+    img = draw_bars(bars, 2, 20)
+    assert img.size == ((3 + 4 + 6) * 2, 20 + 2 * 6)
+    assert img.getpixel((0, 0)) == 0 and img.getpixel((img.width - 1, img.height - 1)) == 0
+    assert img.getpixel((8, 6)) == 255  # inside the bearer frame, in the quiet zone: light
+    assert img.getpixel((8, 5)) == 0  # the top bearer bar just above it
+    assert img.getpixel((10, 6)) == 0  # the first bar starts after the quiet zone
+
+
+def test_draw_bars_rejects_sub_dot_geometry() -> None:
+    from app.render.symbols import Bars1D, draw_bars
+
+    bars = Bars1D(pattern="1", quiet=0, bearer=0, text="x")
+    with pytest.raises(ValueError, match="module_px"):
+        draw_bars(bars, 0, 10)
+    with pytest.raises(ValueError, match="bar_height_px"):
+        draw_bars(bars, 1, 0)

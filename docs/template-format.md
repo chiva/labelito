@@ -432,20 +432,29 @@ maximum **width**; the strip is only as tall as the symbol, so it fits under a l
 
 #### `barcode`
 
-A 1-D barcode rendered from the `data` attribute. Bars-only by default — the generator's
-human-readable value under the bars is off unless you opt in; add a styled `text` element instead
-if you want the value printed with labelito's own font control.
+A 1-D barcode rendered from the `data` attribute, drawn on **whole device dots**: the module
+(narrow bar) width is the largest integer number of dots for which the symbol, with its 10-module
+quiet zones, fits the column, and the bars are exactly `height` px tall (60 px ≈ 5 mm, the
+practical scanner minimum; 100–150 px for a code that will be scanned from a distance). Any
+leftover column width is distributed by `align`. Bars-only by default; `show_value` prints the
+encoded value (with any computed check digit) under the bars in labelito's own font.
+
+Symbologies come from python-barcode: `code128`, `gs1_128`, `code39`, `ean13`, `ean8`, `ean14`,
+`upca`, `itf`, `codabar`, `isbn13`, `issn`, `jan`, `pzn`, and their aliases. A payload the
+symbology cannot hold (letters in an EAN, a wrong digit count) fails at render with a clear
+message, because `data` is templated and unknown at load time.
 
 | Attribute | Type | Default |
 |---|---|---|
 | `data` | string (templated) | `""` |
 | `symbology` | string | `code128` |
-| `height` | int 1–10000 (px) | `60` |
+| `height` | int 1–10000 (px, bar height) | `60` |
 | `align` | `left`/`center`/`right` | `center` |
 | `show_value` | bool | `false` |
 
 ```yaml
 - {type: barcode, data: "{{asset_id}}", symbology: code128, height: 70, align: center}
+- {type: barcode, data: "{{gtin}}", symbology: ean13, height: 100, show_value: true}
 ```
 
 #### `image`

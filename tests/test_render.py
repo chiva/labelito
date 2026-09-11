@@ -15,6 +15,7 @@ from PIL import Image, ImageChops
 from app.render.elements import (
     ROW_MIN_FLEX_WIDTH,
     AztecElement,
+    BarcodeElement,
     BoxElement,
     ColumnElement,
     DataMatrixElement,
@@ -2960,3 +2961,108 @@ def test_pdf417_strip_is_only_as_tall_as_the_symbol_and_options_change_shape(
     narrow = PDF417Element(data=data, columns=2, row_height=2).render(CANVAS_W, *args)
     nb = _whole_ink_bbox(narrow)
     assert nb is not None and (nb[2] - nb[0]) < (b[2] - b[0])
+
+
+# ── Barcode element: dot-exact bars at the declared height ────────────────────────
+def _render_barcode(
+    el: BarcodeElement, fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> Image.Image:
+    return el.render(CANVAS_W, {"__data__": el.data}, fonts_dir, icons_dir, icon_collections_dir)
+
+
+@pytest.mark.parametrize("height", [60, 120])
+def test_barcode_height_is_honoured_exactly(
+    height: int, fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """`height` used to be ignored (bars came out ~490 px on a 62 mm label); the bar ink is now
+    exactly `height` px tall and the strip is that plus the 4 px pads."""
+    img = _render_barcode(
+        BarcodeElement(data="12345678", height=height), fonts_dir, icons_dir, icon_collections_dir
+    )
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None and bbox[3] - bbox[1] == height
+    assert img.height == height + 8
+    assert set(img.getdata()) <= {0, 255}
+
+
+def test_barcode_modules_are_whole_dots_and_fill_the_column(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    from app.render.symbols import encode_1d
+
+    bars = encode_1d("code128", "12345678")
+    module = (CANVAS_W - 16) // bars.units_wide  # 680 // 99 = 6 dots per module
+    img = _render_barcode(
+        BarcodeElement(data="12345678"), fonts_dir, icons_dir, icon_collections_dir
+    )
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    dark_modules = len(bars.pattern.rstrip("0")) - (
+        len(bars.pattern) - len(bars.pattern.lstrip("0"))
+    )
+    assert bbox[2] - bbox[0] == dark_modules * module
+    y = (bbox[1] + bbox[3]) // 2
+    assert all(run % module == 0 for run in _dark_runs_on_row(img, y))
+
+
+def test_barcode_align_distributes_the_leftover_width(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The symbol is drawn at the widest whole-dot module that fits, so the column has leftover
+    width and `align` (a no-op under the old stretch-to-fit renderer) now positions the symbol."""
+    boxes = {}
+    for align in ("left", "center", "right"):
+        img = _render_barcode(
+            BarcodeElement(data="12345678", align=align), fonts_dir, icons_dir, icon_collections_dir
+        )
+        boxes[align] = _whole_ink_bbox(img)
+    assert boxes["left"] is not None and boxes["center"] is not None and boxes["right"] is not None
+    assert boxes["left"][0] < boxes["center"][0] < boxes["right"][0]
+    assert all(b[2] - b[0] == boxes["left"][2] - boxes["left"][0] for b in boxes.values())
+
+
+def test_barcode_show_value_prints_the_full_code_under_the_bars(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    plain = _render_barcode(
+        BarcodeElement(data="590123412345", symbology="ean13", height=60),
+        fonts_dir,
+        icons_dir,
+        icon_collections_dir,
+    )
+    labelled = _render_barcode(
+        BarcodeElement(data="590123412345", symbology="ean13", height=60, show_value=True),
+        fonts_dir,
+        icons_dir,
+        icon_collections_dir,
+    )
+    assert labelled.height > plain.height
+    # Bars occupy exactly the top `height` rows after the pad; the text is ink below them.
+    bars_bottom = 4 + 60
+    below = labelled.crop((0, bars_bottom, CANVAS_W, labelled.height))
+    assert _has_ink(below)
+
+
+def test_barcode_bad_payload_for_symbology_is_a_clear_render_error(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    from app.render.symbols import SymbolEncodeError
+
+    with pytest.raises(SymbolEncodeError, match="cannot encode 'abc' as ean13"):
+        _render_barcode(
+            BarcodeElement(data="abc", symbology="ean13"),
+            fonts_dir,
+            icons_dir,
+            icon_collections_dir,
+        )
+
+
+def test_barcode_high_res_doubles_bars_exactly(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    args = ({"__data__": "12345678"}, fonts_dir, icons_dir, icon_collections_dir)
+    base = BarcodeElement(data="12345678").render(CANVAS_W, *args)
+    hi = BarcodeElement(data="12345678", scale=2).render(CANVAS_W * 2, *args)
+    b0, b1 = _whole_ink_bbox(base), _whole_ink_bbox(hi)
+    assert b0 is not None and b1 is not None
+    assert (b1[3] - b1[1]) == 2 * (b0[3] - b0[1]) and (b1[2] - b1[0]) == 2 * (b0[2] - b0[0])

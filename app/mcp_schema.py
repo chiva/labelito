@@ -261,6 +261,11 @@ the element is a child of a `row`, and inert elsewhere.
   little smaller than `size`. The strip height is still `size + 8` (a rectangular `datamatrix` and
   a `pdf417` reserve only the symbol's height). Raise `size` for a bolder symbol; a `pdf417` is
   120+ modules wide, hence its 600 default.
+* **`barcode` `height` is the bar height in px.** 60 px is about 5 mm — the practical scanner
+  minimum; use 100-150 for a code read from a distance. The bars are drawn on whole device dots at
+  the widest module that fits the column, so `align` only distributes the leftover width. A
+  payload the `symbology` cannot hold (letters in an EAN, a wrong digit count) fails at render, not
+  at load, because `data` is templated.
 * **GS1 separators are ASCII 29.** With `gs1: true` a `datamatrix` turns every U+001D in `data`
   into the FNC1 that ends a variable-length application identifier — write it as `\\u001d` inside
   a double-quoted YAML string, e.g. `"01{{{{gtin}}}}\\u001d10{{{{batch}}}}"`. GS1 data must be ASCII.

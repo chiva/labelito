@@ -440,9 +440,11 @@ leftover column width is distributed by `align`. Bars-only by default; `show_val
 encoded value (with any computed check digit) under the bars in labelito's own font.
 
 Symbologies come from python-barcode: `code128`, `gs1_128`, `code39`, `ean13`, `ean8`, `ean14`,
-`upca`, `itf`, `codabar`, `isbn13`, `issn`, `jan`, `pzn`, and their aliases. A payload the
-symbology cannot hold (letters in an EAN, a wrong digit count) fails at render with a clear
-message, because `data` is templated and unknown at load time.
+`upca`, `itf`, `codabar`, `isbn13`, `issn`, `jan`, `pzn`, and their aliases — plus `itf14`, the
+GS1 carton code (GTIN-14 as Interleaved 2 of 5 inside a bearer-bar frame), which takes 13 digits
+and computes the check digit, or 14 and verifies it. A payload the symbology cannot hold (letters
+in an EAN, a wrong digit count) fails at render with a clear message, because `data` is templated
+and unknown at load time.
 
 | Attribute | Type | Default |
 |---|---|---|
@@ -455,6 +457,7 @@ message, because `data` is templated and unknown at load time.
 ```yaml
 - {type: barcode, data: "{{asset_id}}", symbology: code128, height: 70, align: center}
 - {type: barcode, data: "{{gtin}}", symbology: ean13, height: 100, show_value: true}
+- {type: barcode, data: "{{carton}}", symbology: itf14, height: 120, show_value: true}
 ```
 
 #### `image`

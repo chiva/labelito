@@ -2501,3 +2501,29 @@ def test_matrix_elements_reject_out_of_range_options(
     that loads also prints."""
     with pytest.raises(TemplateLoadError, match=match):
         load_template(_one_element(tmp_path, element))
+
+
+def test_barcode_symbology_itf14_loads_and_unknown_lists_it(tmp_path: Path) -> None:
+    ok = write_yaml(
+        tmp_path / "itf14.yaml",
+        """\
+        name: itf14-ok
+        description: carton code
+        label: "62"
+        layout:
+          - {type: barcode, data: "1234567890123", symbology: itf14}
+    """,
+    )
+    assert load_template(ok).layout[0]["symbology"] == "itf14"
+    bad = write_yaml(
+        tmp_path / "bad.yaml",
+        """\
+        name: itf14-bad
+        description: not a symbology
+        label: "62"
+        layout:
+          - {type: barcode, data: x, symbology: code93}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match=r"unknown barcode 'symbology' 'code93'.*'itf14'"):
+        load_template(bad)

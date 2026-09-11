@@ -3066,3 +3066,28 @@ def test_barcode_high_res_doubles_bars_exactly(
     b0, b1 = _whole_ink_bbox(base), _whole_ink_bbox(hi)
     assert b0 is not None and b1 is not None
     assert (b1[3] - b1[1]) == 2 * (b0[3] - b0[1]) and (b1[2] - b1[0]) == 2 * (b0[2] - b0[0])
+
+
+def test_barcode_itf14_draws_bearer_bars_around_the_symbol(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The ITF-14 bearer frame is part of the ink: full-width rules above and below the bars and
+    end rules the whole height, each 4 modules thick, so the ink is taller than `height`."""
+    from app.render.symbols import encode_1d
+
+    bars = encode_1d("itf14", "1234567890123")
+    module = (CANVAS_W - 16) // bars.units_wide
+    img = _render_barcode(
+        BarcodeElement(data="1234567890123", symbology="itf14", height=100),
+        fonts_dir,
+        icons_dir,
+        icon_collections_dir,
+    )
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    assert bbox[3] - bbox[1] == 100 + 2 * 4 * module  # bars plus top and bottom bearer
+    assert bbox[2] - bbox[0] == bars.units_wide * module  # end bearers span the quiet zones too
+    top_rule = img.crop((bbox[0], bbox[1], bbox[2], bbox[1] + 4 * module))
+    assert set(top_rule.getdata()) == {0}  # solid rule across the full width
+    left_rule = img.crop((bbox[0], bbox[1], bbox[0] + 4 * module, bbox[3]))
+    assert set(left_rule.getdata()) == {0}

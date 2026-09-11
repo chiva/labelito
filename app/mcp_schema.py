@@ -40,6 +40,7 @@ from app.render.elements import (
     ElementBase,
 )
 from app.render.engine import _FIELD_RE, _TEMPLATED_ATTRS, COMPUTED_TOKENS
+from app.render.symbols import SUPPORTED_SYMBOLOGIES
 
 # Element dataclass fields that a template must never set: the engine owns them (see
 # app.render.elements.build_element, which filters both out of any incoming spec).
@@ -119,6 +120,7 @@ def template_schema_markdown() -> str:
     fa_styles = ", ".join(f"`{s}`" for s in sorted(FA_STYLES))
     exts = " then ".join(f"`{e}`" for e in ICON_ASSET_EXTS)
     valigns = ", ".join(f"`{v}`" for v in sorted(VALIGN_CHOICES))
+    symbologies = ", ".join(f"`{s}`" for s in sorted(SUPPORTED_SYMBOLOGIES))
 
     return f"""# labelito template schema
 
@@ -233,6 +235,12 @@ the element is a child of a `row`, and inert elsewhere.
 ## Element types
 
 {chr(10).join(f"{chr(10)}{section}" for section in element_sections)}
+
+## Barcode symbologies
+
+`barcode.symbology` accepts: {symbologies}. `itf14` (GS1 carton codes) takes 13 or 14 digits and
+draws the bearer-bar frame the standard requires; `ean13`/`upca` compute the check digit when given
+one digit fewer.
 
 ## Gotchas
 

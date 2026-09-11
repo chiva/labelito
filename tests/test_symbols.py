@@ -262,3 +262,22 @@ def test_draw_bars_rejects_sub_dot_geometry() -> None:
         draw_bars(bars, 0, 10)
     with pytest.raises(ValueError, match="bar_height_px"):
         draw_bars(bars, 1, 0)
+
+
+# ── ITF-14 ──────────────────────────────────────────────────────────────────────
+def test_encode_1d_itf14_computes_check_digit_and_frames_with_bearer_bars() -> None:
+    from app.render.symbols import ITF14_BEARER_MODULES, SUPPORTED_SYMBOLOGIES, encode_1d
+
+    assert "itf14" in SUPPORTED_SYMBOLOGIES
+    bars = encode_1d("itf14", "1234567890123")
+    assert bars.text == "12345678901231"  # 13 digits in, check digit appended
+    assert len(bars.pattern) == 107 and set(bars.pattern) == {"0", "1"}
+    assert bars.bearer == ITF14_BEARER_MODULES == 4
+    assert encode_1d("itf14", "12345678901231").pattern == bars.pattern  # 14 digits verified
+
+
+def test_encode_1d_itf14_rejects_wrong_length() -> None:
+    from app.render.symbols import SymbolEncodeError, encode_1d
+
+    with pytest.raises(SymbolEncodeError, match="needs 13 or 14 digits"):
+        encode_1d("itf14", "12")

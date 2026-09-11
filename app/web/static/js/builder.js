@@ -31,9 +31,12 @@
   const MARKERS = ['bullet', 'number', 'none'];
   const COLLECTIONS = ['', 'fontawesome', 'material', 'octicons'];
   const FA_STYLES = ['solid', 'regular', 'brands'];
+  // Mirrors app.render.symbols.SUPPORTED_SYMBOLOGIES (python-barcode's registry plus itf14);
+  // tests/test_builder_vocab.py fails if the two lists drift.
   const SYMBOLOGIES = [
-    'code128', 'code39', 'code93', 'ean13', 'ean8', 'ean14',
-    'gs1_128', 'isbn13', 'issn', 'itf', 'jan', 'pzn', 'upca',
+    'codabar', 'code128', 'code39', 'ean', 'ean13', 'ean13-guard', 'ean14', 'ean8', 'ean8-guard',
+    'gs1', 'gs1_128', 'gtin', 'isbn', 'isbn10', 'isbn13', 'issn', 'itf', 'itf14', 'jan', 'nw-7',
+    'pzn', 'upc', 'upca',
   ];
   const QR_ECL = ['L', 'M', 'Q', 'H'];
   const DM_SHAPES = ['square', 'rectangular', 'auto'];

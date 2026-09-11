@@ -48,6 +48,7 @@ from app.render.symbols import (
     PDF417_ROW_HEIGHT_MAX,
     PDF417_ROW_HEIGHT_MIN,
     QR_ECL_CHOICES,
+    SUPPORTED_SYMBOLOGIES,
 )
 
 log = logging.getLogger(__name__)
@@ -551,26 +552,22 @@ def _validate_row_child_sizing(file_name: str, label: str, child: dict[str, Any]
 def _validate_barcode_symbology(file_name: str, label: str, symbology: Any) -> None:
     """Reject an unknown barcode ``symbology`` at load time.
 
-    The renderer calls ``python-barcode``'s ``get_barcode_class(symbology)``, which raises
-    ``BarcodeNotFoundError`` for an unknown name — surfacing as a render-time 500 on /print and
-    /preview. Validating here (by the SAME lookup the renderer uses) turns a typo, or a crafted
-    inline template, into a clean load error / 422, matching how every other render-affecting enum
-    (color, marker, background, …) is validated up front.
+    The renderer encodes through :func:`app.render.symbols.encode_1d`, which raises for a name
+    outside :data:`SUPPORTED_SYMBOLOGIES` — a render-time 500 on /print and /preview. Validating
+    here against the SAME set turns a typo, or a crafted inline template, into a clean load error /
+    422, matching how every other render-affecting enum (color, marker, background, …) is validated
+    up front. The set is python-barcode's registry plus ITF-14, so `itf14` is accepted here exactly
+    when the renderer can draw it.
     """
-    import barcode as python_barcode
-    from barcode.errors import BarcodeNotFoundError
-
     if not isinstance(symbology, str):
         raise TemplateLoadError(
             f"{file_name}: {label} barcode 'symbology' must be a string, got {symbology!r}"
         )
-    try:
-        python_barcode.get_barcode_class(symbology)
-    except BarcodeNotFoundError as exc:
+    if symbology not in SUPPORTED_SYMBOLOGIES:
         raise TemplateLoadError(
             f"{file_name}: {label} unknown barcode 'symbology' {symbology!r}; "
-            f"valid: {sorted(python_barcode.PROVIDED_BARCODES)}"
-        ) from exc
+            f"valid: {sorted(SUPPORTED_SYMBOLOGIES)}"
+        )
 
 
 def _validate_element(

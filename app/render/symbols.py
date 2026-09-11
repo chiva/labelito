@@ -286,10 +286,18 @@ def encode_pdf417(
 # ISO/IEC 15417 and friends ask for a quiet zone of at least 10 narrow modules on each side of a
 # linear symbol; it is what lets a scanner find the first and last bar.
 BARCODE_QUIET_MODULES = 10
+# ITF-14 (GS1 carton codes) is Interleaved 2 of 5 inside a bearer bar frame; ISO/IEC 16390 puts
+# the frame at 4.8 mm minimum, which at typical module widths is about 4 narrow modules — the
+# default pyStrich also uses.
+ITF14_SYMBOLOGY = "itf14"
+ITF14_BEARER_MODULES = 4
 # The 1D symbologies a template may name: python-barcode's registry (code128, ean13, upca, code39,
-# itf, codabar, gs1_128, ...). One set drives the renderer, the loader's error message and the
-# studio's drift test, so they cannot disagree.
-SUPPORTED_SYMBOLOGIES: frozenset[str] = frozenset(python_barcode.PROVIDED_BARCODES)
+# itf, codabar, gs1_128, ...) plus ITF-14 from pyStrich, which python-barcode lacks (its `itf` is
+# plain Interleaved 2 of 5 with no bearer bars). One set drives the renderer, the loader's error
+# message, the schema document and the studio's drift test, so they cannot disagree.
+SUPPORTED_SYMBOLOGIES: frozenset[str] = frozenset(python_barcode.PROVIDED_BARCODES) | {
+    ITF14_SYMBOLOGY
+}
 
 
 @dataclass(frozen=True)
@@ -321,6 +329,8 @@ def encode_1d(symbology: str, data: str) -> Bars1D:
         raise SymbolEncodeError(
             f"barcode: unknown symbology {symbology!r}; valid: {sorted(SUPPORTED_SYMBOLOGIES)}"
         )
+    if symbology == ITF14_SYMBOLOGY:
+        return _encode_itf14(data)
     try:
         code = python_barcode.get_barcode_class(symbology)(data)
         pattern = code.build()[0]
@@ -328,6 +338,25 @@ def encode_1d(symbology: str, data: str) -> Bars1D:
     except BarcodeError as exc:
         raise SymbolEncodeError(f"barcode: cannot encode {data!r} as {symbology}: {exc}") from exc
     return Bars1D(pattern=pattern, quiet=BARCODE_QUIET_MODULES, bearer=0, text=str(text))
+
+
+def _encode_itf14(data: str) -> Bars1D:
+    """ITF-14 via pyStrich: 13 digits (the check digit is computed) or 14 (it is verified)."""
+    from pystrich.exceptions import PyStrichError
+    from pystrich.itf import ITF14Encoder
+
+    try:
+        encoder = ITF14Encoder(data)
+    except PyStrichError as exc:
+        raise SymbolEncodeError(
+            f"barcode: cannot encode {data!r} as itf14 (needs 13 or 14 digits): {exc}"
+        ) from exc
+    return Bars1D(
+        pattern=encoder.bars,
+        quiet=BARCODE_QUIET_MODULES,
+        bearer=ITF14_BEARER_MODULES,
+        text=encoder.full_code,
+    )
 
 
 def draw_bars(bars: Bars1D, module_px: int, bar_height_px: int) -> Image.Image:

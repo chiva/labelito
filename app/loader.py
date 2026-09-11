@@ -13,6 +13,7 @@ import yaml
 
 from app.media import MEDIA_TYPE_CONTINUOUS, required_media_for
 from app.render.elements import (
+    ALIGN_CHOICES,
     COLOR_CHOICES,
     DEFAULT_TEXT_MAX_LINES,
     FA_STYLES,
@@ -594,6 +595,11 @@ def _validate_element(
     # ignored value. Only honoured when a print resolves red=true; otherwise the element draws black.
     if "color" in el:
         _require_choice(file_name, label, "color", el["color"], COLOR_CHOICES)
+    # Horizontal alignment: every renderer falls back to left for an unknown value, so a typo
+    # (`align: centre`) used to print left-aligned with no signal. Validate it like `color`, for
+    # every element type — `align` means the same thing wherever it appears.
+    if "align" in el:
+        _require_choice(file_name, label, "align", el["align"], ALIGN_CHOICES)
     # Text-family decorations: `background` (badge/banner fill) and `border`+`border_color` (boxed
     # text). Validate the enums up front like `color`; `border` (a pixel count) is bounded by the
     # numeric guard above. Only meaningful on text/title/subtitle — a stray value elsewhere is a typo.

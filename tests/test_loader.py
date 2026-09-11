@@ -283,6 +283,45 @@ def test_oversized_qr_size_raises(tmp_path: Path) -> None:
         load_template(path)
 
 
+@pytest.mark.parametrize("el_type", ["text", "title", "qr", "barcode", "icon", "image", "list"])
+@pytest.mark.parametrize("bad", ["centre", "middle", "Left", "justify"])
+def test_align_typo_is_rejected_on_every_element(tmp_path: Path, el_type: str, bad: str) -> None:
+    """Renderers fall back to left for an unknown `align`, so a typo used to print left-aligned
+    silently. It is a load error now, on every element type that carries the attribute."""
+    extra = {"qr": ", data: x", "barcode": ", data: 12345678", "icon": ", name: snowflake"}.get(
+        el_type, ""
+    )
+    text = ", text: x" if el_type in ("text", "title", "list") else ""
+    path = write_yaml(
+        tmp_path / "align-bad.yaml",
+        f"""\
+        name: align-bad
+        description: bad align
+        label: "62"
+        layout:
+          - {{type: {el_type}{text}{extra}, align: {bad}}}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match=r"'align'"):
+        load_template(path)
+
+
+@pytest.mark.parametrize("good", ["left", "center", "right"])
+def test_align_choices_load(tmp_path: Path, good: str) -> None:
+    path = write_yaml(
+        tmp_path / "align-ok.yaml",
+        f"""\
+        name: align-ok
+        description: valid align
+        label: "62"
+        layout:
+          - {{type: text, text: x, align: {good}}}
+          - {{type: qr, data: x, align: {good}}}
+    """,
+    )
+    assert [el["align"] for el in load_template(path).layout] == [good, good]
+
+
 @pytest.mark.parametrize("level", ["L", "M", "Q", "H"])
 def test_qr_error_correction_choices_load(tmp_path: Path, level: str) -> None:
     path = write_yaml(

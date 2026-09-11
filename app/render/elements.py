@@ -29,6 +29,10 @@ FONT_SIZES = {"title": 60, "subtitle": 40, "text": 32}
 # default for an uncapped text element (loader.DEFAULT_TEXT_MAX_LINES re-exports this value).
 DEFAULT_TEXT_MAX_LINES = 10
 ALIGN_DEFAULT = "left"
+# Horizontal alignment vocabulary shared by every element that has an `align`. The renderers treat
+# anything that is not "center"/"right" as left, so without load-time validation a typo such as
+# `centre` silently left-aligns; the loader rejects it against this set instead.
+ALIGN_CHOICES = frozenset({"left", "center", "right"})
 QR_DEFAULT_SIZE = 160
 # Horizontal inset a left/right-aligned QR is pasted at; a column must hold the QR *plus* this inset
 # or the code clips. Shared by QRElement.render and the row too-narrow guard so they stay in sync.

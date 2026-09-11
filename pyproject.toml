@@ -28,6 +28,10 @@ dependencies = [
     "cairosvg==2.9.0",
     "qrcode[pil]==8.2",
     "python-barcode[images]==0.16.1",
+    # Pure-Python 2D symbologies (QR, DataMatrix, Aztec, PDF417) and ITF-14. Every encoder exposes
+    # its module matrix, which the renderer draws itself on whole device dots — no native library,
+    # so the Docker/HA images need nothing beyond Pillow.
+    "pyStrich==0.20",
     "brother_ql_next==0.12.0",
     "PyYAML==6.0.3",
     "Jinja2==3.1.6",

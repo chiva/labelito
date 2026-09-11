@@ -873,6 +873,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "pystrich" },
     { name = "python-barcode", extra = ["images"] },
     { name = "python-multipart" },
     { name = "pyyaml" },
@@ -935,6 +936,7 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.13.5" },
     { name = "pydantic-settings", specifier = "==2.15.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.13.0" },
+    { name = "pystrich", specifier = "==0.20" },
     { name = "python-barcode", extras = ["images"], specifier = "==0.16.1" },
     { name = "python-multipart", specifier = "==0.0.32" },
     { name = "pyyaml", specifier = "==6.0.3" },
@@ -1532,6 +1534,19 @@ wheels = [
 [package.optional-dependencies]
 crypto = [
     { name = "cryptography" },
+]
+
+[[package]]
+name = "pystrich"
+version = "0.20"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pillow" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/20/43/59de87934e6e0c804ab95f0b64ab5a59949865907fd2964af8d4ce215f0f/pystrich-0.20.tar.gz", hash = "sha256:0b49b446068348173ac37fc42dc1a25722d948480c6cb0a58c1e31d4b402e6f5", size = 290983, upload-time = "2026-08-27T11:22:02.394Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/51/b7ae875155273424e901f3d14dfec2983ca80272058ccbd4454634c8fe86/pystrich-0.20-py3-none-any.whl", hash = "sha256:d4cbe70da69ee9afd526e760bbd0274919de45c6cb75aab99c2702160cd0b66d", size = 237591, upload-time = "2026-08-27T11:22:00.773Z" },
 ]
 
 [[package]]

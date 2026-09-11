@@ -14,12 +14,16 @@ from PIL import Image, ImageChops
 
 from app.render.elements import (
     ROW_MIN_FLEX_WIDTH,
+    AztecElement,
     BoxElement,
     ColumnElement,
+    DataMatrixElement,
     ElementBase,
     IconElement,
     LineElement,
     ListElement,
+    Matrix2DElement,
+    PDF417Element,
     QRElement,
     RowElement,
     SpacerElement,
@@ -2793,3 +2797,166 @@ def test_draft_renders_identically_to_saved_template(engine: RenderEngine, tmp_p
         draft.layout, fields, CANVAS_W, None, draft.rotate, "en", now=now
     )
     assert draft_png == saved_png, "a draft must render byte-identically to its saved equivalent"
+
+
+# ── Matrix symbol elements: datamatrix / aztec / pdf417 ───────────────────────────
+
+_MATRIX_ELEMENTS: list[tuple[type[Matrix2DElement], str]] = [
+    (DataMatrixElement, "SN-2026-0001"),
+    (AztecElement, "TICKET-0001"),
+    (PDF417Element, "MANIFEST 0001"),
+]
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_matrix_element_renders_binary_ink(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    el = cls(data=data)
+    img = el.render(CANVAS_W, {"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.width == CANVAS_W and img.height > 0
+    assert _has_ink(img)
+    assert set(img.getdata()) <= {0, 255}
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_matrix_element_empty_data_returns_zero_height(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    img = cls(data="").render(
+        CANVAS_W, {"__data__": "  "}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert img.height == 0
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_matrix_element_high_res_doubles_exactly(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    args = ({"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    base = cls(data=data).render(CANVAS_W, *args)
+    hi = cls(data=data, scale=2).render(CANVAS_W * 2, *args)
+    b0, b1 = _whole_ink_bbox(base), _whole_ink_bbox(hi)
+    assert b0 is not None and b1 is not None
+    assert (b1[2] - b1[0], b1[3] - b1[1]) == (2 * (b0[2] - b0[0]), 2 * (b0[3] - b0[1]))
+    assert hi.height == 2 * base.height
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_matrix_element_red_ink_is_pure(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    el = cls(data=data, color="red")
+    el._red_active = True
+    img = el.render(CANVAS_W, {"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.mode == "RGB"
+    assert set(img.getdata()) <= {(255, 0, 0), (255, 255, 255)} and (255, 0, 0) in set(
+        img.getdata()
+    )
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_row_narrow_matrix_element_draws_failure_placeholder(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    """Every Matrix2DElement gets the QR's narrow-column guard through the base class."""
+    el = cls(data=data, size=120)
+    el.width = 40
+    row = RowElement(children=[el])
+    img = row.render(
+        CANVAS_W, {"__children__": [{"__data__": data}]}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert img.height == 120 and _has_ink(img)
+    blank = cls(data="", size=120)
+    blank.width = 40
+    empty = RowElement(children=[blank]).render(
+        CANVAS_W, {"__children__": [{"__data__": ""}]}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert empty.height == 0
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_column_nested_narrow_matrix_element_draws_failure_placeholder(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    el = cls(data=data, size=120)
+    col = ColumnElement(children=[el])
+    col.width = 40
+    row = RowElement(children=[TextElement(text="x"), col])
+    res = {"__children__": [{"__text__": "x"}, {"__children__": [{"__data__": data}]}]}
+    img = row.render(CANVAS_W, res, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.height >= 120 and _has_ink(img)
+
+
+def test_datamatrix_square_box_and_rectangular_strip(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A square symbol reserves the size box (strip = size + 8, like qr); a rectangular one is only
+    as tall as the symbol it draws, so it sits beside text without a blank band."""
+    args = ({"__data__": "Hello"}, fonts_dir, icons_dir, icon_collections_dir)
+    square = DataMatrixElement(data="Hello", size=160).render(CANVAS_W, *args)
+    rect = DataMatrixElement(data="Hello", size=160, symbol_shape="rectangular").render(
+        CANVAS_W, *args
+    )
+    assert square.height == 168
+    assert 0 < rect.height < square.height
+    bbox = _whole_ink_bbox(rect)
+    assert bbox is not None and (bbox[2] - bbox[0]) > (bbox[3] - bbox[1])
+
+
+def test_datamatrix_gs1_renders_a_different_symbol(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    payload = "0109501101020917\x1d10ABC123"
+    args = ({"__data__": payload}, fonts_dir, icons_dir, icon_collections_dir)
+    plain = DataMatrixElement(data=payload).render(CANVAS_W, *args)
+    gs1 = DataMatrixElement(data=payload, gs1=True).render(CANVAS_W, *args)
+    assert ImageChops.difference(plain, gs1).getbbox() is not None
+
+
+def test_aztec_full_four_layers_is_31_modules_at_integer_dots(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    el = AztecElement(data="Hi", size=160, symbol_kind="full", layers=4)
+    img = el.render(CANVAS_W, {"__data__": "Hi"}, fonts_dir, icons_dir, icon_collections_dir)
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    assert bbox[2] - bbox[0] == 31 * (160 // 31)  # no quiet zone: 31 modules x 5 dots = 155 px
+
+
+def test_pdf417_strip_is_only_as_tall_as_the_symbol_and_options_change_shape(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    data = "MANIFEST 0001 / 12 cartons / dock 4"
+    args = ({"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    default = PDF417Element(data=data).render(CANVAS_W, *args)
+    assert default.height < 600  # never a 600 x 600 box for a shallow symbol
+    b = _whole_ink_bbox(default)
+    assert b is not None and (b[2] - b[0]) > 3 * (b[3] - b[1])  # wide and shallow
+    narrow = PDF417Element(data=data, columns=2, row_height=2).render(CANVAS_W, *args)
+    nb = _whole_ink_bbox(narrow)
+    assert nb is not None and (nb[2] - nb[0]) < (b[2] - b[0])

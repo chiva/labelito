@@ -36,6 +36,8 @@
     'gs1_128', 'isbn13', 'issn', 'itf', 'jan', 'pzn', 'upca',
   ];
   const QR_ECL = ['L', 'M', 'Q', 'H'];
+  const DM_SHAPES = ['square', 'rectangular', 'auto'];
+  const AZTEC_KINDS = ['auto', 'compact', 'full'];
 
   // Attributes shared by every element (ElementBase). Paddings live in an "Advanced" group so the
   // common panel stays short. `color` is only meaningful on two-color models but is harmless elsewhere.
@@ -113,6 +115,38 @@
         { key: 'error_correction', label: 'Error correction', control: 'select', choices: QR_ECL, default: 'M' },
       ],
     },
+    datamatrix: {
+      label: 'Data Matrix', badge: '▩', text: 'data',
+      attrs: [
+        { key: 'data', label: 'Data', control: 'text', default: '' },
+        { key: 'size', label: 'Max size (px)', control: 'number', min: 1, max: 2000, default: 160 },
+        { key: 'align', label: 'Align', control: 'align', choices: ALIGN, default: 'center' },
+        { key: 'symbol_shape', label: 'Shape', control: 'select', choices: DM_SHAPES, default: 'square' },
+        { key: 'gs1', label: 'GS1 (FNC1, \\u001d separators)', control: 'toggle', default: false },
+      ],
+    },
+    aztec: {
+      label: 'Aztec', badge: '◎', text: 'data',
+      attrs: [
+        { key: 'data', label: 'Data', control: 'text', default: '' },
+        { key: 'size', label: 'Max size (px)', control: 'number', min: 1, max: 2000, default: 160 },
+        { key: 'align', label: 'Align', control: 'align', choices: ALIGN, default: 'center' },
+        { key: 'ecc', label: 'Error correction (%)', control: 'number', min: 5, max: 95, default: 23 },
+        { key: 'symbol_kind', label: 'Kind', control: 'select', choices: AZTEC_KINDS, default: 'auto' },
+        { key: 'layers', label: 'Layers (needs kind)', control: 'number', min: 1, max: 32, default: null },
+      ],
+    },
+    pdf417: {
+      label: 'PDF417', badge: '▤', text: 'data',
+      attrs: [
+        { key: 'data', label: 'Data', control: 'text', default: '' },
+        { key: 'size', label: 'Max width (px)', control: 'number', min: 1, max: 2000, default: 600 },
+        { key: 'align', label: 'Align', control: 'align', choices: ALIGN, default: 'center' },
+        { key: 'columns', label: 'Columns (auto if blank)', control: 'number', min: 1, max: 30, default: null },
+        { key: 'ecl', label: 'Error correction 0-8 (auto if blank)', control: 'number', min: 0, max: 8, default: null },
+        { key: 'row_height', label: 'Row height (modules)', control: 'number', min: 1, max: 10, default: 3 },
+      ],
+    },
     barcode: {
       label: 'Barcode', badge: '‖', text: 'data',
       attrs: [
@@ -182,7 +216,7 @@
   };
 
   // Palette order (grouped visually by kind).
-  const PALETTE = ['title', 'subtitle', 'text', 'list', 'qr', 'barcode', 'image', 'icon', 'line', 'box', 'spacer', 'row', 'column'];
+  const PALETTE = ['title', 'subtitle', 'text', 'list', 'qr', 'datamatrix', 'aztec', 'pdf417', 'barcode', 'image', 'icon', 'line', 'box', 'spacer', 'row', 'column'];
   const CONTAINER_TYPES = new Set(['row', 'column']);
   const COMPUTED_TOKENS = new Set(['date', 'now', 'seq']);
 
@@ -220,6 +254,9 @@
       case 'text': return { type, text: 'Text' };
       case 'list': return { type, text: 'item 1; item 2', separator: ';' };
       case 'qr': return { type, data: 'https://example.com' };
+      case 'datamatrix': return { type, data: 'SN-2026-0001' };
+      case 'aztec': return { type, data: 'TICKET-0001' };
+      case 'pdf417': return { type, data: 'MANIFEST 0001' };
       case 'barcode': return { type, data: '12345678' };
       case 'image': return { type, field: 'image' };
       case 'icon': return { type, name: 'star', collection: 'fontawesome' };
@@ -429,6 +466,9 @@
   function schematicSummary(el) {
     switch (el.type) {
       case 'qr': return 'QR · ' + (el.size || 160) + 'px';
+      case 'datamatrix': return 'Data Matrix · ' + (el.symbol_shape || 'square') + ' · ' + (el.size || 160) + 'px' + (el.gs1 ? ' · GS1' : '');
+      case 'aztec': return 'Aztec · ' + (el.size || 160) + 'px';
+      case 'pdf417': return 'PDF417 · ' + (el.size || 600) + 'px wide';
       case 'barcode': return 'Barcode · ' + (el.symbology || 'code128');
       case 'image': return 'Image · field "' + (el.field || 'image') + '"';
       case 'line': return 'Horizontal rule';

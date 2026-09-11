@@ -13,7 +13,20 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
-from app.render.symbols import QR_ECL_DEFAULT, Symbol2D, draw_marks, encode_qr
+from app.render.symbols import (
+    AZTEC_ECC_DEFAULT,
+    AZTEC_KIND_DEFAULT,
+    DATAMATRIX_SHAPE_DEFAULT,
+    PDF417_DEFAULT_SIZE,
+    PDF417_ROW_HEIGHT_DEFAULT,
+    QR_ECL_DEFAULT,
+    Symbol2D,
+    draw_marks,
+    encode_aztec,
+    encode_datamatrix,
+    encode_pdf417,
+    encode_qr,
+)
 
 log = logging.getLogger(__name__)
 
@@ -707,6 +720,71 @@ class QRElement(Matrix2DElement):
 
     def _encode(self, data: str) -> Symbol2D:
         return encode_qr(data, self.error_correction)
+
+
+@dataclass
+class DataMatrixElement(Matrix2DElement):
+    """A Data Matrix ECC200 (ISO/IEC 16022) encoding `data`, drawn on whole device dots. Dense
+    and robust at small sizes, it is the industrial and healthcare workhorse (UDI, parts, PCBs).
+    `symbol_shape` picks the square sizes, the six rectangular ones (for a low strip) or whichever
+    fits in fewer modules; `size` is the maximum side.
+
+    `gs1: true` encodes a GS1 payload: the symbol is flagged with a leading FNC1 and every ASCII 29
+    (GS, written `\\u001d` in a double-quoted YAML string) in the data becomes the separator that ends
+    a variable-length application identifier, e.g. `"01{{gtin}}\\u001d10{{batch}}"`.
+    """
+
+    type: str = "datamatrix"
+    symbol_shape: str = DATAMATRIX_SHAPE_DEFAULT
+    gs1: bool = False
+
+    @property
+    def _box_is_square(self) -> bool:
+        return self.symbol_shape == "square"
+
+    def _encode(self, data: str) -> Symbol2D:
+        return encode_datamatrix(data, self.symbol_shape, gs1=self.gs1)
+
+
+@dataclass
+class AztecElement(Matrix2DElement):
+    """An Aztec Code (ISO/IEC 24778) encoding `data`, drawn on whole device dots. Its bull's-eye
+    finder needs no quiet zone, so it packs tightest against neighbouring content; common on
+    tickets and boarding passes. `ecc` is the percentage of the symbol reserved for error
+    correction, `symbol_kind` selects the compact (1-4 layers) or full (1-32 layers) family, and
+    `layers` pins the symbol size (it requires an explicit `symbol_kind`).
+    """
+
+    type: str = "aztec"
+    ecc: int = AZTEC_ECC_DEFAULT
+    symbol_kind: str = AZTEC_KIND_DEFAULT
+    layers: int | None = None
+
+    def _encode(self, data: str) -> Symbol2D:
+        return encode_aztec(data, ecc=self.ecc, symbol_kind=self.symbol_kind, layers=self.layers)
+
+
+@dataclass
+class PDF417Element(Matrix2DElement):
+    """A PDF417 (ISO/IEC 15438) stacked linear symbol encoding `data`, drawn on whole device dots.
+    Wide and shallow, it is the code on shipping manifests, ID cards and boarding passes; `size`
+    is the maximum WIDTH and the strip is only as tall as the symbol. `columns` fixes the data
+    columns (auto otherwise), `ecl` the error-correction level 0-8 (auto otherwise) and
+    `row_height` how many modules tall each codeword row is drawn.
+    """
+
+    type: str = "pdf417"
+    size: int = PDF417_DEFAULT_SIZE
+    columns: int | None = None
+    ecl: int | None = None
+    row_height: int = PDF417_ROW_HEIGHT_DEFAULT
+
+    @property
+    def _box_is_square(self) -> bool:
+        return False
+
+    def _encode(self, data: str) -> Symbol2D:
+        return encode_pdf417(data, columns=self.columns, ecl=self.ecl, row_height=self.row_height)
 
 
 # ── Barcode element ────────────────────────────────────────────────────────────
@@ -1500,6 +1578,9 @@ ELEMENT_REGISTRY: dict[str, type[ElementBase]] = {
     "subtitle": SubtitleElement,
     "text": TextElement,
     "qr": QRElement,
+    "datamatrix": DataMatrixElement,
+    "aztec": AztecElement,
+    "pdf417": PDF417Element,
     "barcode": BarcodeElement,
     "image": ImageElement,
     "icon": IconElement,

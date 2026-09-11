@@ -24,13 +24,49 @@ from PIL import Image, ImageDraw
 # module (the quiet zone is added at draw time).
 Mark = tuple[int, int, int, int]
 
-# Spec quiet zones, in modules per side. ISO/IEC 18004 §9.3 asks for 4 around a QR symbol.
+# Spec quiet zones, in modules per side. ISO/IEC 18004 §9.3 asks for 4 around a QR symbol;
+# ISO/IEC 16022 asks for 1 around a Data Matrix; Aztec (ISO/IEC 24778) needs none because its
+# bull's-eye finder is in the centre; ISO/IEC 15438 asks for 2 around a PDF417.
 QR_QUIET_MODULES = 4
+DATAMATRIX_QUIET_MODULES = 1
+AZTEC_QUIET_MODULES = 0
+PDF417_QUIET_MODULES = 2
 
 QR_ECL_CHOICES = frozenset({"L", "M", "Q", "H"})
 # Matches the level the qr element has always used, so a template that says nothing keeps its
 # symbol density (a higher level adds modules for the same payload).
 QR_ECL_DEFAULT = "M"
+
+# Data Matrix ECC200 symbol shapes: the 24 square sizes, the 6 rectangular ones, or whichever of
+# the two families fits the payload in fewer modules.
+DATAMATRIX_SHAPE_CHOICES = frozenset({"square", "rectangular", "auto"})
+DATAMATRIX_SHAPE_DEFAULT = "square"
+# ASCII 29 (GS) separates variable-length GS1 application identifiers in a GS1 payload; the
+# encoder turns each into the FNC1 codeword the standard requires.
+GS1_SEPARATOR = "\x1d"
+
+# Aztec: error-correction is a percentage of the symbol reserved for correction codewords (23 is
+# the ISO default); `compact` symbols have 1..4 layers, `full` ones 1..32.
+AZTEC_ECC_DEFAULT = 23
+AZTEC_ECC_MIN = 5
+AZTEC_ECC_MAX = 95
+AZTEC_KIND_CHOICES = frozenset({"auto", "compact", "full"})
+AZTEC_KIND_DEFAULT = "auto"
+AZTEC_LAYERS_MAX = 32
+AZTEC_COMPACT_LAYERS_MAX = 4
+
+# PDF417: 1..30 data columns, error-correction level 0..8 (each level doubles the correction
+# codewords), and each codeword row is drawn `row_height` modules tall (3 is the ISO recommendation).
+PDF417_COLUMNS_MIN = 1
+PDF417_COLUMNS_MAX = 30
+PDF417_ECL_MIN = 0
+PDF417_ECL_MAX = 8
+PDF417_ROW_HEIGHT_DEFAULT = 3
+PDF417_ROW_HEIGHT_MIN = 1
+PDF417_ROW_HEIGHT_MAX = 10
+# A PDF417 is wide and shallow (a default symbol is 120+ modules across), so at the qr default of
+# 160 px it would draw 1 dot per module — unreadable. Default it near the 62 mm tape width instead.
+PDF417_DEFAULT_SIZE = 600
 
 
 class SymbolEncodeError(ValueError):
@@ -125,3 +161,120 @@ def encode_qr(data: str, error_correction: str = QR_ECL_DEFAULT) -> Symbol2D:
             f"qr: cannot encode {len(data)} characters at error_correction {error_correction}: {exc}"
         ) from exc
     return runs_from_matrix(encoder.matrix, QR_QUIET_MODULES)
+
+
+def encode_datamatrix(
+    data: str, symbol_shape: str = DATAMATRIX_SHAPE_DEFAULT, *, gs1: bool = False
+) -> Symbol2D:
+    """Encode *data* as a Data Matrix ECC200 (ISO/IEC 16022).
+
+    pyStrich's ``.matrix`` is only the data mapping region (the L-shaped finder pattern is added by
+    its renderer), so the symbol is read back from ``get_rect_marks()`` with the encoder's own quiet
+    zone disabled; the spec 1-module quiet zone is re-applied at draw time like every other symbol.
+
+    ``gs1`` encodes a GS1 payload: a leading FNC1 marks the symbol as GS1, and every
+    :data:`GS1_SEPARATOR` (ASCII 29) in *data* becomes the FNC1 that terminates a variable-length
+    application identifier — so a template writes ``01{{gtin}}\\u001d10{{batch}}``. GS1 data is
+    ASCII by definition; anything else is rejected rather than silently re-encoded.
+    """
+    from pystrich.datamatrix import FNC1, DataMatrixData, DataMatrixEncoder
+    from pystrich.exceptions import PyStrichError
+
+    if symbol_shape not in DATAMATRIX_SHAPE_CHOICES:
+        raise SymbolEncodeError(
+            f"datamatrix: symbol_shape must be one of {sorted(DATAMATRIX_SHAPE_CHOICES)}, "
+            f"got {symbol_shape!r}"
+        )
+    try:
+        if gs1:
+            if not data.isascii():
+                raise SymbolEncodeError("datamatrix: gs1 data must be ASCII")
+            segments: list[object] = [FNC1]
+            for i, part in enumerate(data.split(GS1_SEPARATOR)):
+                if i:
+                    segments.append(FNC1)
+                if part:
+                    segments.append(part)
+            payload = DataMatrixData(*segments, encoding="ascii")  # type: ignore[arg-type]
+        else:
+            payload = DataMatrixData(data, auto_encoding=True)
+        encoder = DataMatrixEncoder(
+            payload,
+            quiet_zone=0,
+            symbol_shape=symbol_shape,  # type: ignore[arg-type]
+        )
+        marks = encoder.get_rect_marks()
+    except PyStrichError as exc:
+        raise SymbolEncodeError(
+            f"datamatrix: cannot encode {len(data)} characters as a {symbol_shape} symbol: {exc}"
+        ) from exc
+    return Symbol2D(
+        marks=tuple(marks.marks),
+        cols=marks.width,
+        rows=marks.height,
+        quiet=DATAMATRIX_QUIET_MODULES,
+    )
+
+
+def encode_aztec(
+    data: str,
+    *,
+    ecc: int = AZTEC_ECC_DEFAULT,
+    symbol_kind: str = AZTEC_KIND_DEFAULT,
+    layers: int | None = None,
+) -> Symbol2D:
+    """Encode *data* as an Aztec Code (ISO/IEC 24778).
+
+    ``ecc`` is the percentage of the symbol given to error correction, ``symbol_kind`` picks the
+    compact (1-4 layers) or full (1-32 layers) family or lets the encoder choose, and ``layers``
+    pins the symbol size — the encoder needs an explicit family for that, so the loader requires
+    ``symbol_kind`` alongside ``layers``.
+    """
+    from pystrich.aztec import AztecEncoder
+    from pystrich.exceptions import PyStrichError
+
+    if symbol_kind not in AZTEC_KIND_CHOICES:
+        raise SymbolEncodeError(
+            f"aztec: symbol_kind must be one of {sorted(AZTEC_KIND_CHOICES)}, got {symbol_kind!r}"
+        )
+    try:
+        encoder = AztecEncoder(
+            data,
+            ecc=ecc,
+            symbol_kind=symbol_kind,  # type: ignore[arg-type]
+            layers=layers,
+            quiet_zone=0,
+        )
+    except PyStrichError as exc:
+        raise SymbolEncodeError(f"aztec: cannot encode {len(data)} characters: {exc}") from exc
+    return runs_from_matrix(encoder.matrix, AZTEC_QUIET_MODULES)
+
+
+def encode_pdf417(
+    data: str,
+    *,
+    columns: int | None = None,
+    ecl: int | None = None,
+    row_height: int = PDF417_ROW_HEIGHT_DEFAULT,
+) -> Symbol2D:
+    """Encode *data* as a PDF417 (ISO/IEC 15438).
+
+    ``columns`` fixes the number of data columns (the encoder picks one otherwise), ``ecl`` the
+    error-correction level 0-8 (the encoder scales it with the payload otherwise), and
+    ``row_height`` how many modules tall each codeword row is drawn — the matrix pyStrich returns is
+    already stretched by it, so a taller row is more rows of the same runs.
+    """
+    from pystrich.exceptions import PyStrichError
+    from pystrich.pdf417 import PDF417Encoder
+
+    try:
+        encoder = PDF417Encoder(
+            data,
+            ecl=ecl,  # type: ignore[arg-type]
+            columns=columns,
+            quiet_zone=0,
+            row_height=row_height,
+        )
+    except PyStrichError as exc:
+        raise SymbolEncodeError(f"pdf417: cannot encode {len(data)} characters: {exc}") from exc
+    return runs_from_matrix(encoder.matrix, PDF417_QUIET_MODULES)

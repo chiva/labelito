@@ -255,10 +255,17 @@ the element is a child of a `row`, and inert elsewhere.
   the `length` axis is what text wraps against.
 * **Unknown element keys are ignored silently**, so a typo'd field name is a no-op rather than an
   error. If a property seems to do nothing, check its spelling against the table above.
-* **`size` on a matrix symbol is a maximum.** A `qr` (and every other 2D code) is drawn on whole
-  device dots: the module size is the largest integer that fits the symbol plus its quiet zone in
-  `size`, and the symbol is centred in a `size`-square box, so it usually comes out a little
-  smaller than `size`. The strip height is still `size + 8`. Raise `size` for a bolder symbol.
+* **`size` on a matrix symbol is a maximum.** A `qr`, `datamatrix`, `aztec` or `pdf417` is drawn
+  on whole device dots: the module size is the largest integer that fits the symbol plus its quiet
+  zone in `size`, and the symbol is centred in a `size`-square box, so it usually comes out a
+  little smaller than `size`. The strip height is still `size + 8` (a rectangular `datamatrix` and
+  a `pdf417` reserve only the symbol's height). Raise `size` for a bolder symbol; a `pdf417` is
+  120+ modules wide, hence its 600 default.
+* **GS1 separators are ASCII 29.** With `gs1: true` a `datamatrix` turns every U+001D in `data`
+  into the FNC1 that ends a variable-length application identifier — write it as `\\u001d` inside
+  a double-quoted YAML string, e.g. `"01{{{{gtin}}}}\\u001d10{{{{batch}}}}"`. GS1 data must be ASCII.
+* **`aztec` `layers` needs a family.** Pinning the symbol size requires `symbol_kind: compact`
+  (1-4 layers) or `full` (1-32); with the default `auto` it is rejected at load.
 * **Empty text collapses.** A `title`, `subtitle`, `text` or `list` whose resolved value is empty
   or whitespace-only renders nothing and reserves no height, so an optional field a print omits
   leaves no gap. A banner (`background`) or box (`border`) with no text is therefore not drawn

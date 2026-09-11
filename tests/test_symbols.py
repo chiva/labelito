@@ -99,3 +99,95 @@ def test_encode_qr_overflow_names_the_level() -> None:
         SymbolEncodeError, match=r"cannot encode 5000 characters at error_correction H"
     ):
         encode_qr("x" * 5000, "H")
+
+
+# ── encode_datamatrix ───────────────────────────────────────────────────────────
+def test_encode_datamatrix_square_symbol_with_finder_and_spec_quiet_zone() -> None:
+    from app.render.symbols import DATAMATRIX_QUIET_MODULES, encode_datamatrix
+
+    sym = encode_datamatrix("Hello labelito")
+    assert sym.cols == sym.rows == 16
+    assert sym.quiet == DATAMATRIX_QUIET_MODULES == 1
+    # The L-shaped finder: the whole left column and bottom row are dark.
+    dark = {(x + dx, y) for x, y, w, _h in sym.marks for dx in range(w)}
+    assert all((0, y) in dark for y in range(sym.rows))
+    assert all((x, sym.rows - 1) in dark for x in range(sym.cols))
+
+
+def test_encode_datamatrix_rectangular_is_wider_than_tall() -> None:
+    from app.render.symbols import encode_datamatrix
+
+    sym = encode_datamatrix("Hello", "rectangular")
+    assert sym.cols > sym.rows  # one of the six ECC200 rectangular sizes (here 18 x 8)
+
+
+def test_encode_datamatrix_gs1_changes_the_symbol_and_requires_ascii() -> None:
+    from app.render.symbols import GS1_SEPARATOR, SymbolEncodeError, encode_datamatrix
+
+    payload = f"0109501101020917{GS1_SEPARATOR}10ABC123"
+    plain = encode_datamatrix(payload)
+    gs1 = encode_datamatrix(payload, gs1=True)
+    assert gs1.marks != plain.marks  # the leading FNC1 and the separator codeword are encoded
+    with pytest.raises(SymbolEncodeError, match="gs1 data must be ASCII"):
+        encode_datamatrix("01éé", gs1=True)
+
+
+def test_encode_datamatrix_rejects_unknown_shape() -> None:
+    from app.render.symbols import SymbolEncodeError, encode_datamatrix
+
+    with pytest.raises(SymbolEncodeError, match="symbol_shape must be one of"):
+        encode_datamatrix("x", "round")
+
+
+# ── encode_aztec ────────────────────────────────────────────────────────────────
+def test_encode_aztec_compact_symbol_has_no_quiet_zone() -> None:
+    from app.render.symbols import AZTEC_QUIET_MODULES, encode_aztec
+
+    sym = encode_aztec("Hello labelito")
+    assert sym.cols == sym.rows == 19  # smallest compact symbol
+    assert sym.quiet == AZTEC_QUIET_MODULES == 0
+    assert sym.units_wide == 19
+
+
+def test_encode_aztec_full_symbol_size_follows_layers() -> None:
+    from app.render.symbols import encode_aztec
+
+    assert encode_aztec("Hi", symbol_kind="full", layers=4).cols == 31
+    assert encode_aztec("Hi", symbol_kind="compact", layers=2).cols == 19
+
+
+def test_encode_aztec_layers_without_kind_and_bad_kind_are_errors() -> None:
+    from app.render.symbols import SymbolEncodeError, encode_aztec
+
+    with pytest.raises(SymbolEncodeError, match="symbol_kind"):
+        encode_aztec("x", layers=3)
+    with pytest.raises(SymbolEncodeError, match="symbol_kind must be one of"):
+        encode_aztec("x", symbol_kind="huge")
+
+
+# ── encode_pdf417 ───────────────────────────────────────────────────────────────
+def test_encode_pdf417_is_wide_and_stretched_by_row_height() -> None:
+    from app.render.symbols import PDF417_QUIET_MODULES, encode_pdf417
+
+    sym = encode_pdf417("Hello labelito")
+    assert sym.quiet == PDF417_QUIET_MODULES == 2
+    assert sym.cols > sym.rows  # stacked linear: wide and shallow
+    assert sym.rows % 3 == 0  # default row_height 3 stretches every codeword row
+    one = encode_pdf417("Hello labelito", row_height=1)
+    assert one.rows * 3 == sym.rows and one.cols == sym.cols
+
+
+def test_encode_pdf417_columns_and_ecl_change_the_geometry() -> None:
+    from app.render.symbols import encode_pdf417
+
+    narrow = encode_pdf417("Hello labelito, hello world", columns=2)
+    wide = encode_pdf417("Hello labelito, hello world", columns=8)
+    assert narrow.cols < wide.cols and narrow.rows > wide.rows
+    assert encode_pdf417("x", ecl=8).rows > encode_pdf417("x", ecl=0).rows
+
+
+def test_encode_pdf417_rejects_encoder_option_errors_as_symbol_errors() -> None:
+    from app.render.symbols import SymbolEncodeError, encode_pdf417
+
+    with pytest.raises(SymbolEncodeError, match="pdf417"):
+        encode_pdf417("x", columns=99)

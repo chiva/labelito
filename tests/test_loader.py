@@ -2434,3 +2434,70 @@ def test_two_bundled_examples_colliding_is_not_the_users_problem(tmp_path: Path)
     registry.load_all()
 
     assert registry.warnings == []
+
+
+# ── matrix symbol elements: datamatrix / aztec / pdf417 ─────────────────────────
+def test_valid_element_types_match_the_renderer_registry() -> None:
+    from app.loader import VALID_ELEMENT_TYPES
+    from app.render.elements import ELEMENT_REGISTRY
+
+    assert VALID_ELEMENT_TYPES == frozenset(ELEMENT_REGISTRY)
+    assert {"datamatrix", "aztec", "pdf417"} <= VALID_ELEMENT_TYPES
+
+
+def _one_element(tmp_path: Path, element: str) -> Path:
+    return write_yaml(
+        tmp_path / "matrix.yaml",
+        f"""\
+        name: matrix-probe
+        description: probe
+        label: "62"
+        layout:
+          - {{{element}}}
+    """,
+    )
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        "type: datamatrix, data: x",
+        "type: datamatrix, data: x, symbol_shape: rectangular, gs1: true, size: 200",
+        "type: aztec, data: x",
+        "type: aztec, data: x, ecc: 50, symbol_kind: full, layers: 6",
+        "type: aztec, data: x, symbol_kind: compact, layers: 4",
+        "type: pdf417, data: x",
+        "type: pdf417, data: x, columns: 4, ecl: 3, row_height: 2, size: 500",
+    ],
+)
+def test_matrix_elements_with_valid_options_load(tmp_path: Path, element: str) -> None:
+    assert len(load_template(_one_element(tmp_path, element)).layout) == 1
+
+
+@pytest.mark.parametrize(
+    ("element", "match"),
+    [
+        ("type: datamatrix, data: x, symbol_shape: round", "symbol_shape"),
+        ("type: datamatrix, data: x, gs1: yes please", "gs1"),
+        ("type: datamatrix, data: x, size: 5000", "size"),
+        ("type: aztec, data: x, ecc: 4", "ecc"),
+        ("type: aztec, data: x, ecc: 96", "ecc"),
+        ("type: aztec, data: x, symbol_kind: huge", "symbol_kind"),
+        ("type: aztec, data: x, layers: 3", "requires an explicit 'symbol_kind'"),
+        ("type: aztec, data: x, symbol_kind: compact, layers: 5", "at most 4 layers"),
+        ("type: aztec, data: x, symbol_kind: full, layers: 33", "layers"),
+        ("type: aztec, data: x, symbol_kind: full, layers: null", "layers"),
+        ("type: pdf417, data: x, columns: 0", "columns"),
+        ("type: pdf417, data: x, columns: 31", "columns"),
+        ("type: pdf417, data: x, ecl: 9", "ecl"),
+        ("type: pdf417, data: x, row_height: 11", "row_height"),
+        ("type: pdf417, data: x, row_height: 0", "row_height"),
+    ],
+)
+def test_matrix_elements_reject_out_of_range_options(
+    tmp_path: Path, element: str, match: str
+) -> None:
+    """Every knob the encoder would refuse at render is refused at load instead, so a template
+    that loads also prints."""
+    with pytest.raises(TemplateLoadError, match=match):
+        load_template(_one_element(tmp_path, element))

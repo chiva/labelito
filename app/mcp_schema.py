@@ -228,4 +228,8 @@ the element is a child of a `row`, and inert elsewhere.
   `get_capabilities`.
 * **Unknown element keys are ignored silently**, so a typo'd field name is a no-op rather than an
   error. If a property seems to do nothing, check its spelling against the table above.
+* **Empty text collapses.** A `title`, `subtitle`, `text` or `list` whose resolved value is empty
+  or whitespace-only renders nothing and reserves no height, so an optional field a print omits
+  leaves no gap. A banner (`background`) or box (`border`) with no text is therefore not drawn
+  either; use a `box` or `spacer` for a fixed-height decoration.
 """

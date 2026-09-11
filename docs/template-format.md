@@ -256,7 +256,9 @@ fill/border span the full strip width. See the `shipping-badge` template for a w
 #### `title` / `subtitle`
 
 Bold (title) or regular (subtitle) heading text. Fixed font sizes (60 pt / 40 pt) — the author
-cannot change the size, only `max_lines`.
+cannot change the size, only `max_lines`. An empty or whitespace-only resolved value renders
+nothing (zero height): an unused optional field leaves no gap, and a banner or box with no text is
+not drawn.
 
 | Attribute | Type | Default | Notes |
 |---|---|---|---|
@@ -274,7 +276,9 @@ cannot change the size, only `max_lines`.
 
 #### `text`
 
-Body text with an author-controlled font size.
+Body text with an author-controlled font size. Like `title` and `subtitle`, an empty or
+whitespace-only resolved value renders nothing, so optional lines collapse instead of leaving a
+blank strip.
 
 | Attribute | Type | Default | Notes |
 |---|---|---|---|

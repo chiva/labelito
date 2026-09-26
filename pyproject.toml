@@ -21,11 +21,11 @@ classifiers = [
 ]
 dependencies = [
     "fastapi==0.141.1",
-    "uvicorn[standard]==0.52.4",
+    "uvicorn[standard]==0.53.0",
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
     "Pillow==12.3.0",
-    "cairosvg==2.9.0",
+    "cairosvg==2.9.1",
     "qrcode[pil]==8.2",
     "python-barcode[images]==0.16.1",
     "brother_ql_next==0.12.0",
@@ -37,11 +37,11 @@ dependencies = [
     # moved every transport setting off the constructor, so 1.x cannot run it. No ceiling — every
     # other dependency here is declared the same way, and a ceiling is the wrong tool for keeping a
     # major out of a lock refresh (see renovate.json: rangeStrategy "pin" is what does that).
-    "mcp==2.1.1",
+    "mcp==2.2.0",
     # OAuth 2.0 Resource Server (OIDC) validation for the /mcp endpoint. PyJWT ships PyJWKClient,
     # which fetches an IdP's JWKS, caches signing keys by kid, and refetches on an unknown kid
     # (key rotation). The [crypto] extra pulls in `cryptography` for RS256/ES256 verification.
-    "PyJWT[crypto]==2.13.0",
+    "PyJWT[crypto]==2.15.0",
 ]
 
 [project.urls]
@@ -50,9 +50,9 @@ Issues = "https://github.com/chiva/labelito/issues"
 
 [dependency-groups]
 # httpx2 is the backend starlette.testclient is built for (TestClient does `import httpx2 as httpx`).
-test = ["pytest==9.1.1", "pytest-cov==7.1.0", "pytest-asyncio==1.4.0", "httpx2==2.12.0"]
-lint = ["ruff==0.16.5"]
-typing = ["mypy==2.3.1", "types-PyYAML==6.0.12.20260815", "types-Pillow==10.2.0.20240822"]
+test = ["pytest==9.1.1", "pytest-cov==7.1.0", "pytest-asyncio==1.4.0", "httpx2==2.13.1"]
+lint = ["ruff==0.16.8"]
+typing = ["mypy==2.3.1", "types-PyYAML==6.0.12.20260906", "types-Pillow==10.2.0.20240822"]
 license = ["pip-licenses==5.5.5"]
 # End-to-end harness: drives a real uvicorn process with a real browser. Opt-in (the e2e suite is
 # deselected by default via `-m "not e2e"`), and needs a one-time `uv run playwright install
@@ -62,7 +62,7 @@ e2e = ["pytest-playwright==0.9.0"]
 # fonttools outlines the Inter wordmark to paths; uharfbuzz shapes the word (applying Inter's
 # kerning so the outlines match the browser-rendered wordmark); brotli lets fonttools read the
 # .woff2 source. cairosvg (the rasterizer) is already a core runtime dependency above.
-brand-assets = ["fonttools==4.64.0", "uharfbuzz==0.56.1", "brotli==1.2.0"]
+brand-assets = ["fonttools==4.65.0", "uharfbuzz==0.56.2", "brotli==1.2.0"]
 dev = [
     "pre-commit==4.6.2",
     {include-group = "test"},

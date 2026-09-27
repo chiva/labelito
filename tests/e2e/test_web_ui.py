@@ -16,7 +16,8 @@ from harness import DEFAULT_API_TOKEN, web_token_init_script
 
 pytest.importorskip("playwright.sync_api")
 
-from playwright.sync_api import Browser, Locator, Page, expect
+from playwright.sync_api import Browser, Locator, Page, Response, expect
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from app.config import settings
 
@@ -182,9 +183,17 @@ def test_seq_template_previews_first_item_without_error(authed_page: Page) -> No
     _select_template(authed_page, SEQ_TEMPLATE)
     _fill_all_fields(authed_page)
 
-    with authed_page.expect_response(
-        lambda r: r.url.endswith("/preview") and r.request.method == "POST"
-    ) as resp_info:
+    # Picking the template previews at once (required fields still empty → 422), and every field
+    # input has its own 600 ms debounced preview, so on a slow runner an earlier, partially-filled
+    # preview can still be in flight when the button is clicked. Wait for the response to a request
+    # that actually carried the filled fields, not whichever /preview answers first.
+    def filled_preview(r: Response) -> bool:
+        if not (r.url.endswith("/preview") and r.request.method == "POST"):
+            return False
+        fields = _json.loads(r.request.post_data or "{}").get("fields") or {}
+        return bool(fields) and all(v == "E2E test" for v in fields.values())
+
+    with authed_page.expect_response(filled_preview) as resp_info:
         authed_page.click("button.btn-preview")
 
     response = resp_info.value
@@ -676,9 +685,15 @@ def test_image_pick_survives_late_status_refocus(authed_page_snmp: Page) -> None
         "a late status refocus must not switch away from the image template after a pick"
     )
     authed_page_snmp.evaluate("window.__flushFR()")
-    committed = authed_page_snmp.evaluate(
-        "() => collectImageFields((currentTemplate().image_fields) || [])"
-    )
+    # Flushing only STARTS the deferred read; FileReader delivers onload asynchronously, so poll for
+    # the commit instead of reading the fields once — on a slow runner that single read ran before
+    # onload and saw {}. A read the refocus really discarded never commits, and still fails here.
+    collect = "() => collectImageFields((currentTemplate().image_fields) || [])"
+    try:
+        authed_page_snmp.wait_for_function(f"() => !!({collect})().image", timeout=5000)
+    except PlaywrightTimeoutError:
+        pass
+    committed = authed_page_snmp.evaluate(collect)
     assert committed.get("image"), "the chosen image must survive a mid-read status refocus"
 
 
@@ -1952,6 +1967,30 @@ def test_studio_large_seq_print_confirms_via_dialog(authed_page: Page) -> None:
     assert sent["sequence"]["count"] == 25 and sent["copies"] == 1
 
 
+_YAML_SCROLL_STATE = """() => {
+  const t = document.getElementById('yaml'), h = document.getElementById('yaml-hscroll');
+  return {textarea: {scrollLeft: t.scrollLeft, scrollWidth: t.scrollWidth, clientWidth: t.clientWidth,
+                     valueLength: t.value.length},
+          proxy: {scrollLeft: h.scrollLeft, scrollWidth: h.scrollWidth, clientWidth: h.clientWidth,
+                  hidden: h.classList.contains('hscroll-hidden')}};
+}"""
+
+
+def _wait_for_scroll_left(page: Page, element_id: str, value: int) -> None:
+    """Wait for #element_id.scrollLeft == value; on timeout fail with both scrollers' state.
+
+    This mirror has flaked in CI (a 30 s timeout) without reproducing locally, even under 8x CPU
+    throttling, so a failure reports every input to the sync instead of a bare TimeoutError.
+    """
+    try:
+        page.wait_for_function(
+            f"() => document.getElementById('{element_id}').scrollLeft === {value}", timeout=10000
+        )
+    except PlaywrightTimeoutError:
+        state = page.evaluate(_YAML_SCROLL_STATE)
+        raise AssertionError(f"#{element_id}.scrollLeft never reached {value}: {state}") from None
+
+
 def test_studio_horizontal_scroll_proxy_shows_and_syncs_for_long_lines(authed_page: Page) -> None:
     """A long, unwrapped line overflows #yaml horizontally: the themed proxy scroller (#yaml-hscroll)
     becomes visible, and its scrollLeft stays mirrored with the textarea's in both directions. The
@@ -1965,14 +2004,21 @@ def test_studio_horizontal_scroll_proxy_shows_and_syncs_for_long_lines(authed_pa
     expect(hscroll).not_to_have_class(re.compile(r"\bhscroll-hidden\b"))
 
     # textarea scroll -> proxy scroll.
-    authed_page.evaluate("() => { document.getElementById('yaml').scrollLeft = 120; }")
+    # fill() leaves the caret at the end of the 500-char line, and the browser scrolls the textarea
+    # to keep it in view (scrollLeft ends near its maximum). Let that reveal land and blur, so a
+    # late caret reveal on a slow runner cannot override the scroll set below.
     authed_page.wait_for_function(
-        "() => document.getElementById('yaml-hscroll').scrollLeft === 120"
+        "() => { const t = document.getElementById('yaml'), h = document.getElementById('yaml-hscroll');"
+        " return t.scrollLeft > 0 && h.scrollLeft === t.scrollLeft; }"
     )
+    authed_page.locator("#yaml").blur()
+
+    authed_page.evaluate("() => { document.getElementById('yaml').scrollLeft = 120; }")
+    _wait_for_scroll_left(authed_page, "yaml-hscroll", 120)
 
     # proxy scroll -> textarea scroll.
     authed_page.evaluate("() => { document.getElementById('yaml-hscroll').scrollLeft = 40; }")
-    authed_page.wait_for_function("() => document.getElementById('yaml').scrollLeft === 40")
+    _wait_for_scroll_left(authed_page, "yaml", 40)
 
 
 def test_studio_horizontal_scroll_proxy_hidden_for_short_drafts(authed_page: Page) -> None:
@@ -3063,6 +3109,7 @@ def test_preview_placeholder_shown_before_any_successful_preview(authed_page: Pa
 
     expect(authed_page.locator("#preview-placeholder")).to_be_visible()
     expect(authed_page.locator("#preview-img")).to_be_hidden()
+    expect(authed_page.locator("#preview-error")).to_have_text(re.compile(r"\S"))
     assert authed_page.locator("#preview-error").inner_text(), (
         "expected an inline error message too"
     )
@@ -3157,7 +3204,10 @@ def test_preview_error_renders_inline_in_preview_card_not_toast(authed_page: Pag
     with authed_page.expect_response(lambda r: r.url.endswith("/preview")):
         authed_page.click("button.btn-preview")
 
+    # The response event fires before the page has read the 422 body and rendered the message, so
+    # wait for the text (inner_text() does not) — on a slow runner it was read while still empty.
     error = authed_page.locator("#preview-error")
+    expect(error).to_have_text(re.compile(r"\S"))
     error_text = error.inner_text()
     assert error_text, "expected a friendly inline error message"
     assert "forced preview failure" not in error_text, (
@@ -3209,6 +3259,8 @@ def test_preview_error_missing_required_field_shows_friendly_sentence(authed_pag
     with authed_page.expect_response(lambda r: r.url.endswith("/preview")):
         authed_page.click("button.btn-preview")
 
+    # Wait for the rendered message: the response event precedes the page reading the 422 body.
+    expect(authed_page.locator("#preview-error")).to_have_text(re.compile(r"\S"))
     error_text = authed_page.locator("#preview-error").inner_text()
     assert "title" in error_text, f"expected the missing field named in the message: {error_text!r}"
     assert "missing_required" not in error_text, f"must not leak the raw JSON key: {error_text!r}"

@@ -105,6 +105,9 @@ def _render(spec: dict[str, Any], dirs: tuple[Path, Path], **kwargs: Any) -> Ima
 def test_manifest_has_one_builtin_default_and_known_categories() -> None:
     builtins = [f for f in MANIFEST["families"] if f.get("builtin")]
     assert [f["key"] for f in builtins] == [MANIFEST["default"]] == [DEFAULT_FONT]
+    # The builtin's fonts come from the OS package; its licence is pinned and ships like the rest.
+    licence = builtins[0]["license_file"]
+    assert "/dejavu-fonts/version_2_37/" in licence["url"] and SHA256_RE.match(licence["sha256"])
     assert {f["category"] for f in MANIFEST["families"]} <= set(FONT_CATEGORIES)
     keys = [f["key"] for f in MANIFEST["families"]]
     assert len(keys) == len(set(keys)), "duplicate font keys"
@@ -596,3 +599,94 @@ def test_bitmap_last_resort_font_reports_its_glyph_height() -> None:
     bitmap = ImageFont.load_default_imagefont()
     ascent, descent = elements._metrics(bitmap)
     assert ascent == bitmap.getbbox("Ay")[3] and descent == 0
+
+
+# ── Studio: public font + licence routes, picker data ──────────────────────────────
+@pytest.fixture
+def font_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The app with LABEL_FONTS_DIR / FONTS_DIR pointed at small fake trees (no fetch needed)."""
+    from fastapi.testclient import TestClient
+
+    import app.main as main_mod
+
+    label_dir = tmp_path / "label-fonts"
+    (label_dir / "inter").mkdir(parents=True)
+    (label_dir / "inter" / "Inter[opsz,wght].ttf").write_bytes(b"inter-variable")
+    (label_dir / "inter" / "LICENSE.txt").write_text("SIL Open Font License 1.1")
+    (label_dir / "patrick-hand").mkdir()
+    (label_dir / "patrick-hand" / "PatrickHand-Regular.ttf").write_bytes(b"patrick-regular")
+    dejavu = tmp_path / "fonts"
+    dejavu.mkdir()
+    (dejavu / "DejaVuSans-Bold.ttf").write_bytes(b"dejavu-bold")
+    (label_dir / "dejavu-sans").mkdir()
+    (label_dir / "dejavu-sans" / "LICENSE.txt").write_text("Bitstream Vera")
+    monkeypatch.setattr(main_mod.settings, "label_fonts_dir", label_dir)
+    monkeypatch.setattr(main_mod.settings, "fonts_dir", dejavu)
+    monkeypatch.setattr(elements, "DEJAVU_SYSTEM_DIR", tmp_path / "no-system-dejavu")
+    return TestClient(main_mod.app)
+
+
+@pytest.mark.parametrize(
+    ("url", "body"),
+    [
+        ("/label-fonts/inter/regular", b"inter-variable"),
+        ("/label-fonts/inter/bold", b"inter-variable"),  # one variable file covers both weights
+        ("/label-fonts/patrick-hand/bold", b"patrick-regular"),  # no bold style: its regular
+        ("/label-fonts/dejavu-sans/bold", b"dejavu-bold"),  # the builtin resolves like _load_font
+    ],
+)
+def test_font_route_serves_the_files_the_printer_uses(
+    font_server: Any, url: str, body: bytes
+) -> None:
+    response = font_server.get(url)
+    assert response.status_code == 200
+    assert response.content == body
+    assert response.headers["content-type"] == "font/ttf"
+    assert "immutable" in response.headers["cache-control"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/label-fonts/comic-sans/regular",
+        "/label-fonts/inter/italic",
+        "/label-fonts/inter/..%2F..%2FLICENSE.txt",
+        "/label-fonts/..%2Finter/regular",
+        "/label-fonts/%2e%2e/regular",
+        "/label-fonts/caveat/regular",  # known family, file not installed
+        "/label-fonts/dejavu-sans/regular",  # builtin, not installed on this host
+    ],
+)
+def test_font_route_rejects_unknown_malformed_and_missing(font_server: Any, url: str) -> None:
+    assert font_server.get(url).status_code == 404
+
+
+def test_licence_route_serves_each_family_licence(font_server: Any) -> None:
+    fetched = font_server.get("/label-fonts/inter/license")
+    assert fetched.status_code == 200 and fetched.text == "SIL Open Font License 1.1"
+    assert fetched.headers["content-type"].startswith("text/plain")
+    assert font_server.get("/label-fonts/dejavu-sans/license").text == "Bitstream Vera"
+    assert font_server.get("/label-fonts/patrick-hand/license").status_code == 404
+    assert font_server.get("/label-fonts/nope/license").status_code == 404
+
+
+def test_studio_font_data_lists_faces_by_weight() -> None:
+    import app.main as main_mod
+
+    fonts_by_key = {f["key"]: f for f in main_mod._studio_fonts()}
+    assert list(fonts_by_key) == list(FONT_REGISTRY)
+    version = fonts.MANIFEST_VERSION
+    assert fonts_by_key["inter"]["faces"] == [
+        {"style": "regular", "weight": "100 900", "path": f"/label-fonts/inter/regular?v={version}"}
+    ]
+    assert [f["weight"] for f in fonts_by_key["kalam"]["faces"]] == ["400", "700"]
+    assert [f["style"] for f in fonts_by_key["patrick-hand"]["faces"]] == ["regular"]
+    assert fonts_by_key["dseg7-classic"]["preview_sample"] == "12:30"
+    assert fonts_by_key["share-tech-mono"]["preview_sample"] is None
+
+
+def test_about_box_links_every_label_font_licence(font_server: Any) -> None:
+    html = font_server.get("/").text
+    assert "28 families, each under its own licence" in html
+    for key in ("inter", "roboto-slab", "dseg7-classic", "dejavu-sans"):
+        assert f"/label-fonts/{key}/license" in html

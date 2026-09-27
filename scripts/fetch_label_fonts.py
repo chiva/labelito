@@ -50,9 +50,13 @@ def _planned_files(manifest: dict) -> list[tuple[str, dict]]:
     """(relative destination path, source entry) for every file the manifest ships."""
     planned: list[tuple[str, dict]] = []
     for family in manifest["families"]:
-        if family.get("builtin"):
-            continue
         key = family["key"]
+        if family.get("builtin"):
+            # The builtin family's font files come from the OS package, but its licence still
+            # ships with the label fonts (slim images strip /usr/share/doc).
+            if "license_file" in family:
+                planned.append((f"{key}/{LICENSE_FILE_NAME}", family["license_file"]))
+            continue
         seen: set[str] = set()
         for style in family["styles"].values():
             if style["file"] not in seen:

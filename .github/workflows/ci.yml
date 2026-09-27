@@ -160,8 +160,15 @@ jobs:
       - name: Install system fonts
         run: sudo apt-get install -y fonts-dejavu-core
       # Same pinned, SHA-256-verified fetch the Dockerfile `label-fonts` stage runs (~12 MB).
+      # Cached on the manifest hash; a hit is still verified offline against the pins, and any
+      # mismatch refetches, so a stale or tampered cache can never reach the tests.
+      - name: Cache label fonts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: label-fonts
+          key: label-fonts-${{ hashFiles('app/render/font_manifest.json') }}
       - name: Fetch label fonts
-        run: python3 scripts/fetch_label_fonts.py
+        run: python3 scripts/fetch_label_fonts.py --verify || python3 scripts/fetch_label_fonts.py
       - run: uv sync --group test
       - name: Render every label font
         run: uv run pytest -m label_fonts -v
@@ -181,6 +188,16 @@ jobs:
       # the test matrix.
       - name: Install system fonts
         run: sudo apt-get install -y fonts-dejavu-core
+      # The studio font picker loads each label font from the live server.
+      # Cached on the manifest hash; a hit is still verified offline against the pins, and any
+      # mismatch refetches, so a stale or tampered cache can never reach the tests.
+      - name: Cache label fonts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: label-fonts
+          key: label-fonts-${{ hashFiles('app/render/font_manifest.json') }}
+      - name: Fetch label fonts
+        run: python3 scripts/fetch_label_fonts.py --verify || python3 scripts/fetch_label_fonts.py
       # `test` supplies httpx2 (the e2e api_client fixture); `e2e` supplies pytest-playwright
       # (an opt-in group — see dependency-groups in pyproject.toml).
       - run: uv sync --group test --group e2e

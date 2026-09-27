@@ -11,6 +11,7 @@ existing resolution in :func:`app.render.elements._load_font` so the default out
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,9 @@ class LabelFont:
     builtin: bool
     regular: FontStyle | None
     bold: FontStyle | None
+    # Text the studio shows in this font next to its name, for faces that cannot legibly spell
+    # their own name (seven/fourteen-segment displays).
+    preview_sample: str | None = None
 
     @property
     def has_bold(self) -> bool:
@@ -52,8 +56,8 @@ class LabelFont:
         chosen = self.style(bold)
         return None if chosen is None else label_fonts_dir / self.key / chosen.file
 
-    def license_path(self, label_fonts_dir: Path) -> Path | None:
-        return None if self.builtin else label_fonts_dir / self.key / LICENSE_FILE_NAME
+    def license_path(self, label_fonts_dir: Path) -> Path:
+        return label_fonts_dir / self.key / LICENSE_FILE_NAME
 
 
 def _style(raw: dict[str, object] | None) -> FontStyle | None:
@@ -76,9 +80,13 @@ def _load_manifest() -> tuple[str, tuple[str, ...], dict[str, LabelFont]]:
             builtin=bool(family.get("builtin", False)),
             regular=_style(styles.get(STYLE_REGULAR)),
             bold=_style(styles.get(STYLE_BOLD)),
+            preview_sample=family.get("preview_sample"),
         )
     return raw["default"], tuple(raw["categories"]), registry
 
 
 DEFAULT_FONT, FONT_CATEGORIES, FONT_REGISTRY = _load_manifest()
 FONT_KEYS = frozenset(FONT_REGISTRY)
+# Cache-buster for font URLs served to the browser: the manifest pins every file's SHA-256, so its
+# content hash changes exactly when any served font does.
+MANIFEST_VERSION = hashlib.sha256(MANIFEST_PATH.read_bytes()).hexdigest()[:10]

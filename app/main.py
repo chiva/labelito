@@ -105,6 +105,7 @@ from app.models import (
     TemplateSourceResponse,
     UpdateCheckResponse,
 )
+from app.render.elements import dejavu_path
 from app.render.engine import (
     RenderEngine,
     _brother_ql_model_max_rows,
@@ -114,7 +115,14 @@ from app.render.engine import (
     missing_label_fonts,
     uses_seq,
 )
-from app.render.fonts import DEFAULT_FONT, FONT_REGISTRY
+from app.render.fonts import (
+    DEFAULT_FONT,
+    FONT_REGISTRY,
+    MANIFEST_VERSION,
+    STYLE_BOLD,
+    STYLE_REGULAR,
+    LabelFont,
+)
 from app.render.i18n import Translator
 from app.transports.base import (
     PrinterStatus,
@@ -3098,6 +3106,9 @@ def _web_ctx(page: str, request: Request) -> dict[str, Any]:
         "api_version": API_VERSION,
         "repo_url": REPO_URL,
         "app_license": APP_LICENSE,
+        # Third-party label fonts and their licences, linked from the About box (OFL-1.1 asks that
+        # the licence accompany the fonts wherever they are distributed).
+        "label_fonts": _ABOUT_LABEL_FONTS,
         # Whether to render the in-browser API-token entry (nav key button + dialog). Only in
         # bearer mode: with HTTP Basic auth the browser sends credentials automatically, and in
         # unauthenticated mode there is nothing to enter — both hide the token UI entirely.
@@ -4161,6 +4172,86 @@ async def favicon() -> FileResponse:
     return FileResponse(_web_dir / "logo.svg", media_type="image/svg+xml")
 
 
+# Label fonts are public, freely-licensed image content (like /static): the studio loads them to
+# show each font in its own typeface. URLs carry ?v=<manifest hash>, and the manifest pins every
+# file's bytes, so a year-long immutable cache is safe.
+_LABEL_FONT_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
+_LABEL_FONT_STYLES = {STYLE_REGULAR: False, STYLE_BOLD: True}
+
+
+def _label_font_entry(key: str) -> LabelFont:
+    """Resolve *key* through the registry only — a path is never built from request input."""
+    entry = FONT_REGISTRY.get(key)
+    if entry is None:
+        raise HTTPException(404, "Unknown label font")
+    return entry
+
+
+@app.get("/label-fonts/{key}/license", include_in_schema=False)
+async def label_font_license(key: str) -> FileResponse:
+    """A label font's licence text (OFL-1.1, Apache-2.0 or DejaVu's), linked from the About box.
+
+    Every family's licence — the builtin DejaVu's included — is fetched with the label fonts.
+    """
+    path = _label_font_entry(key).license_path(settings.label_fonts_dir)
+    if not path.is_file():
+        raise HTTPException(404, "Licence file not installed")
+    return FileResponse(path, media_type="text/plain; charset=utf-8", headers=_LABEL_FONT_CACHE)
+
+
+@app.get("/label-fonts/{key}/{style}", include_in_schema=False)
+async def label_font_file(key: str, style: str) -> FileResponse:
+    """The TrueType file a label font draws *style* with — the exact bytes the printer path uses."""
+    entry = _label_font_entry(key)
+    if style not in _LABEL_FONT_STYLES:
+        raise HTTPException(404, "Unknown font style")
+    bold = _LABEL_FONT_STYLES[style]
+    if entry.builtin:
+        path = dejavu_path(settings.fonts_dir, bold)
+    else:
+        path = entry.path(settings.label_fonts_dir, bold)
+    if path is None or not path.is_file():
+        raise HTTPException(404, "Font file not installed")
+    return FileResponse(path, media_type="font/ttf", headers=_LABEL_FONT_CACHE)
+
+
+_ABOUT_LABEL_FONTS = [
+    {"name": f.name, "license": f.license, "license_path": f"/label-fonts/{f.key}/license"}
+    for f in FONT_REGISTRY.values()
+]
+
+
+def _studio_fonts() -> list[dict[str, Any]]:
+    """What the studio's font picker needs per family, in manifest order.
+
+    ``weights`` tells the browser which faces exist: a variable font is one file covering a weight
+    range, a static family has a regular (and maybe a bold) file.
+    """
+    fonts: list[dict[str, Any]] = []
+    for entry in FONT_REGISTRY.values():
+        variable = entry.regular is not None and entry.regular.wght is not None
+        faces = [{"style": STYLE_REGULAR, "weight": "100 900" if variable else "400"}]
+        if entry.has_bold and not variable:
+            faces.append({"style": STYLE_BOLD, "weight": "700"})
+        fonts.append(
+            {
+                "key": entry.key,
+                "name": entry.name,
+                "category": entry.category,
+                "has_bold": entry.has_bold,
+                "preview_sample": entry.preview_sample,
+                "faces": [
+                    {
+                        **face,
+                        "path": f"/label-fonts/{entry.key}/{face['style']}?v={MANIFEST_VERSION}",
+                    }
+                    for face in faces
+                ],
+            }
+        )
+    return fonts
+
+
 @app.get(
     "/editor",
     response_class=HTMLResponse,
@@ -4203,10 +4294,7 @@ async def editor_page(request: Request) -> HTMLResponse:
             "editor_default_mode": settings.editor_default_mode,
             "labels": labels,
             # Selectable label fonts for the builder's font controls, in manifest order.
-            "fonts": [
-                {"key": f.key, "name": f.name, "category": f.category, "has_bold": f.has_bold}
-                for f in FONT_REGISTRY.values()
-            ],
+            "fonts": _studio_fonts(),
             "default_font": DEFAULT_FONT,
             # The draft print row mirrors the Print page's options block, so it needs the same
             # context web_ui() injects: server defaults for each nullable-inherit option plus the

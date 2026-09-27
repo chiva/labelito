@@ -13,6 +13,23 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from app.render.symbols import (
+    AZTEC_ECC_DEFAULT,
+    AZTEC_KIND_DEFAULT,
+    DATAMATRIX_SHAPE_DEFAULT,
+    PDF417_DEFAULT_SIZE,
+    PDF417_ROW_HEIGHT_DEFAULT,
+    QR_ECL_DEFAULT,
+    Symbol2D,
+    draw_bars,
+    draw_marks,
+    encode_1d,
+    encode_aztec,
+    encode_datamatrix,
+    encode_pdf417,
+    encode_qr,
+)
+
 log = logging.getLogger(__name__)
 
 # truetype() yields a FreeTypeFont; the load_default() fallback yields a bitmap ImageFont.
@@ -27,11 +44,18 @@ FONT_SIZES = {"title": 60, "subtitle": 40, "text": 32}
 # default for an uncapped text element (loader.DEFAULT_TEXT_MAX_LINES re-exports this value).
 DEFAULT_TEXT_MAX_LINES = 10
 ALIGN_DEFAULT = "left"
+# Horizontal alignment vocabulary shared by every element that has an `align`. The renderers treat
+# anything that is not "center"/"right" as left, so without load-time validation a typo such as
+# `centre` silently left-aligns; the loader rejects it against this set instead.
+ALIGN_CHOICES = frozenset({"left", "center", "right"})
 QR_DEFAULT_SIZE = 160
 # Horizontal inset a left/right-aligned QR is pasted at; a column must hold the QR *plus* this inset
 # or the code clips. Shared by QRElement.render and the row too-narrow guard so they stay in sync.
 QR_ALIGN_INSET = 8
 BARCODE_DEFAULT_HEIGHT = 60
+# Point size of the value printed under a barcode with `show_value`; small enough to sit under a
+# 60 px symbol without doubling the strip.
+BARCODE_VALUE_FONT_SIZE = 24
 LINE_DEFAULT_THICKNESS = 2
 SPACER_DEFAULT_PX = 16
 ICON_DEFAULT_SIZE = 80
@@ -616,13 +640,34 @@ class TextElement(ElementBase):
         return _apply_border(self, img)
 
 
-# ── QR element ─────────────────────────────────────────────────────────────────
+# ── Matrix (2D) symbol elements ────────────────────────────────────────────────
 @dataclass
-class QRElement(ElementBase):
-    type: str = "qr"
+class Matrix2DElement(ElementBase):
+    """Shared geometry for the matrix-symbol elements (qr, and any symbology drawn from a matrix).
+
+    Subclasses supply :meth:`_encode`; this base owns the one rule that keeps small symbols
+    scannable on a thermal head: modules are drawn on WHOLE device dots. The module size is the
+    largest integer that fits the symbol (quiet zone included) inside ``size``, so ``size`` is the
+    *maximum* side of the box the symbol is centred in, never a resample target. The strip height
+    stays ``size + 8`` for a square-boxed symbol, so row/column geometry is unchanged from the
+    resampling renderer this replaced.
+
+    The module size is chosen in template units and THEN multiplied by ``scale``: dividing the
+    already-scaled size would round differently at 600 dpi and break the uniform-2x high_res
+    contract (a 33-unit symbol at size 160 is 4 dots/module at 300 dpi and exactly 8 at 600).
+    """
+
     data: str = ""
     size: int = QR_DEFAULT_SIZE
     align: str = "center"
+
+    @property
+    def _box_is_square(self) -> bool:
+        """Whether the strip reserves a ``size x size`` box (True) or only the symbol's height."""
+        return True
+
+    def _encode(self, data: str) -> Symbol2D:
+        raise NotImplementedError
 
     def render(
         self,
@@ -632,35 +677,134 @@ class QRElement(ElementBase):
         icons_dir: Path,
         icon_collections_dir: Path,
     ) -> Image.Image:
-        import qrcode
-
         data = str(resolved_fields.get("__data__", self.data))
         if not data.strip():
             return self._new_canvas(canvas_width, 0)
 
-        size = self._px(self.size)
+        symbol = self._encode(data)
+        units = max(symbol.units_wide, symbol.units_tall)
+        # At least one dot per module: a `size` smaller than the symbol's module count draws at
+        # 1 dot/module and the box grows to fit rather than clipping the symbol (a sub-dot module is
+        # unprintable anyway, so growing is the only honest outcome).
+        module_px = self._px(max(1, self.size // units))
+        graphic = self._tint(draw_marks(symbol, module_px))
+
+        size_px = self._px(self.size)
+        box_w = max(size_px, graphic.width)
+        box_h = max(size_px, graphic.height) if self._box_is_square else graphic.height
         inset = self._px(QR_ALIGN_INSET)
         pad = self._px(4)
-        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M)
-        qr.add_data(data)
-        qr.make(fit=True)
-        qr_img = qr.make_image(fill_color="black", back_color="white").convert("L")
-        qr_img = self._tint(qr_img.resize((size, size), Image.LANCZOS))
 
-        canvas = self._new_canvas(canvas_width, size + 2 * pad)
+        canvas = self._new_canvas(canvas_width, box_h + 2 * pad)
         if self.align == "center":
-            x = (canvas_width - size) // 2
+            x = (canvas_width - box_w) // 2
         elif self.align == "right":
-            x = canvas_width - size - inset
+            x = canvas_width - box_w - inset
         else:
             x = inset
-        canvas.paste(qr_img, (x, pad))
+        canvas.paste(
+            graphic,
+            (x + (box_w - graphic.width) // 2, pad + (box_h - graphic.height) // 2),
+        )
         return canvas
+
+
+@dataclass
+class QRElement(Matrix2DElement):
+    """A QR Code (ISO/IEC 18004) encoding `data`, drawn on whole device dots and centred in a
+    `size` x `size` box; `size` is the largest the symbol will be, and it may come out smaller so
+    every module lands on an integer number of dots.
+
+    The 4-module quiet zone the spec requires is part of the box. The symbol version (module
+    count) is chosen automatically from the payload length and `error_correction`: L, M, Q or H
+    recover about 7, 15, 25 or 30 percent damage, and each step up adds modules for the same data.
+    """
+
+    type: str = "qr"
+    error_correction: str = QR_ECL_DEFAULT
+
+    def _encode(self, data: str) -> Symbol2D:
+        return encode_qr(data, self.error_correction)
+
+
+@dataclass
+class DataMatrixElement(Matrix2DElement):
+    """A Data Matrix ECC200 (ISO/IEC 16022) encoding `data`, drawn on whole device dots. Dense
+    and robust at small sizes, it is the industrial and healthcare workhorse (UDI, parts, PCBs).
+    `symbol_shape` picks the square sizes, the six rectangular ones (for a low strip) or whichever
+    fits in fewer modules; `size` is the maximum side.
+
+    `gs1: true` encodes a GS1 payload: the symbol is flagged with a leading FNC1 and every ASCII 29
+    (GS, written `\\u001d` in a double-quoted YAML string) in the data becomes the separator that ends
+    a variable-length application identifier, e.g. `"01{{gtin}}\\u001d10{{batch}}"`.
+    """
+
+    type: str = "datamatrix"
+    symbol_shape: str = DATAMATRIX_SHAPE_DEFAULT
+    gs1: bool = False
+
+    @property
+    def _box_is_square(self) -> bool:
+        return self.symbol_shape == "square"
+
+    def _encode(self, data: str) -> Symbol2D:
+        return encode_datamatrix(data, self.symbol_shape, gs1=self.gs1)
+
+
+@dataclass
+class AztecElement(Matrix2DElement):
+    """An Aztec Code (ISO/IEC 24778) encoding `data`, drawn on whole device dots. Its bull's-eye
+    finder needs no quiet zone, so it packs tightest against neighbouring content; common on
+    tickets and boarding passes. `ecc` is the percentage of the symbol reserved for error
+    correction, `symbol_kind` selects the compact (1-4 layers) or full (1-32 layers) family, and
+    `layers` pins the symbol size (it requires an explicit `symbol_kind`).
+    """
+
+    type: str = "aztec"
+    ecc: int = AZTEC_ECC_DEFAULT
+    symbol_kind: str = AZTEC_KIND_DEFAULT
+    layers: int | None = None
+
+    def _encode(self, data: str) -> Symbol2D:
+        return encode_aztec(data, ecc=self.ecc, symbol_kind=self.symbol_kind, layers=self.layers)
+
+
+@dataclass
+class PDF417Element(Matrix2DElement):
+    """A PDF417 (ISO/IEC 15438) stacked linear symbol encoding `data`, drawn on whole device dots.
+    Wide and shallow, it is the code on shipping manifests, ID cards and boarding passes; `size`
+    is the maximum WIDTH and the strip is only as tall as the symbol. `columns` fixes the data
+    columns (auto otherwise), `ecl` the error-correction level 0-8 (auto otherwise) and
+    `row_height` how many modules tall each codeword row is drawn.
+    """
+
+    type: str = "pdf417"
+    size: int = PDF417_DEFAULT_SIZE
+    columns: int | None = None
+    ecl: int | None = None
+    row_height: int = PDF417_ROW_HEIGHT_DEFAULT
+
+    @property
+    def _box_is_square(self) -> bool:
+        return False
+
+    def _encode(self, data: str) -> Symbol2D:
+        return encode_pdf417(data, columns=self.columns, ecl=self.ecl, row_height=self.row_height)
 
 
 # ── Barcode element ────────────────────────────────────────────────────────────
 @dataclass
 class BarcodeElement(ElementBase):
+    """A linear (1D) barcode encoding `data` in `symbology` (code128 by default; ean13, upca,
+    code39, itf, codabar, gs1_128, ...), drawn on whole device dots: the module width is the
+    largest integer number of dots for which the symbol, with its 10-module quiet zones, fits the
+    column, and the bars are exactly `height` px tall. `show_value` prints the encoded value (with
+    any computed check digit) under the bars in the label font.
+
+    A bad payload for a fixed-format symbology (letters in an EAN, a wrong length) fails at render
+    with a clear message, because the data is templated and not known at load.
+    """
+
     type: str = "barcode"
     data: str = ""
     symbology: str = "code128"
@@ -676,43 +820,51 @@ class BarcodeElement(ElementBase):
         icons_dir: Path,
         icon_collections_dir: Path,
     ) -> Image.Image:
-        import barcode as python_barcode
-        from barcode.writer import ImageWriter
-
         data = str(resolved_fields.get("__data__", self.data))
         if not data.strip():
             return self._new_canvas(canvas_width, 0)
 
+        bars = encode_1d(self.symbology, data)
         inset = self._px(8)
         pad = self._px(4)
-        bc_class = python_barcode.get_barcode_class(self.symbology)
-        buf = io.BytesIO()
-        writer = ImageWriter()
-        # The generator's built-in value text is tiny/unstyled and outside labelito's font
-        # control, so bars-only is the default — value display belongs to the template's own
-        # `text` elements. `show_value: true` re-enables it for quick templates.
-        bc_class(data, writer=writer).write(buf, options={"write_text": bool(self.show_value)})
-        buf.seek(0)
-        bc_img = Image.open(buf).convert("L")
-
-        new_w = canvas_width - 2 * inset
-        bc_scale = new_w / bc_img.width
-        new_h = int(bc_img.height * bc_scale)
-        if new_w <= 0 or new_h <= 0:
-            # Column too narrow to draw into (e.g. a tiny fixed `width` or a flex column
-            # squeezed to zero inside a row). Degrade to an empty strip rather than letting
-            # Image.resize raise ValueError and turn the request into a 500.
+        # The module width is the widest whole dot that fits the column, chosen in TEMPLATE units
+        # (the unscaled column) and then scaled, so high_res is a uniform 2x rather than a fresh
+        # integer division of the doubled width. A column too narrow for even 1 dot/module yields a
+        # blank strip, which the row guard turns into the crossed-box marker rather than a silently
+        # missing barcode.
+        module_units = (canvas_width // self.scale - 2 * 8) // bars.units_wide
+        if module_units < 1:
             return self._new_canvas(canvas_width, 0)
-        bc_img = self._tint(bc_img.resize((new_w, new_h), Image.LANCZOS))
+        module_px = self._px(module_units)
+        graphic = draw_bars(bars, module_px, self._px(self.height))
 
-        canvas = self._new_canvas(canvas_width, new_h + 2 * pad)
+        if self.show_value:
+            # The value in labelito's own font under the bars, so it matches the label's text.
+            font = _load_font(fonts_dir, self._px(BARCODE_VALUE_FONT_SIZE), False)
+            bbox = font.getbbox(bars.text)
+            text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            gap = self._px(4)
+            labelled = Image.new(
+                "L", (max(graphic.width, text_w), graphic.height + gap + text_h), 255
+            )
+            labelled.paste(graphic, ((labelled.width - graphic.width) // 2, 0))
+            ImageDraw.Draw(labelled).text(
+                ((labelled.width - text_w) // 2 - bbox[0], graphic.height + gap - bbox[1]),
+                bars.text,
+                font=font,
+                fill=0,
+            )
+            graphic = labelled
+        graphic = self._tint(graphic)
+
+        canvas = self._new_canvas(canvas_width, graphic.height + 2 * pad)
         if self.align == "center":
-            x = (canvas_width - new_w) // 2
+            x = (canvas_width - graphic.width) // 2
         elif self.align == "right":
-            x = canvas_width - new_w - inset
+            x = canvas_width - graphic.width - inset
         else:
             x = inset
-        canvas.paste(bc_img, (x, pad))
+        canvas.paste(graphic, (x, pad))
         return canvas
 
 
@@ -1062,16 +1214,18 @@ def _guarded_child_strip(
 ) -> Image.Image:
     """Render a container child (with its padding) and substitute a visible marker if too narrow.
 
-    A data-bearing child (QR/barcode/image) handed a column too narrow to draw its content would
-    otherwise vanish silently — a QR clips, a barcode/image collapses to a blank strip — while the
+    A data-bearing child (matrix symbol such as a QR, barcode, or image) handed a column too narrow
+    to draw its content would otherwise vanish silently — a matrix symbol clips, a barcode/image
+    collapses to a blank strip — while the
     API still reports a successful print (and for image jobs the blob is then stripped from history,
     so the loss is unrecoverable on reprint). This replaces that silent gap with a crossed box.
 
     Shared by :class:`RowElement` (direct children) and :class:`ColumnElement` (children nested one
     level down inside a row column) so the guard fires regardless of nesting: a column drops
     zero-height strips, so without this a too-narrow image/barcode inside a column would be filtered
-    away with no marker. QR clipping is predicted from its fixed size (it never blanks); barcode and
-    image are detected by the blank strip their own renderers return when the column collapses.
+    away with no marker. A matrix symbol's clipping is predicted from its fixed `size` box (it never
+    blanks); barcode and image are detected by the blank strip their own renderers return when the
+    column collapses. Every :class:`Matrix2DElement` subclass gets the guard through the base class.
 
     The child's padding is applied here via :func:`_apply_padding`, so it works identically on row and
     column children. The too-narrow guard is evaluated against the padding-inset *content* width — the
@@ -1082,7 +1236,7 @@ def _guarded_child_strip(
 
     def _render(content_width: int) -> Image.Image:
         if (
-            isinstance(child, QRElement)
+            isinstance(child, Matrix2DElement)
             and RowElement._child_has_content(child, resolved)
             and content_width
             < child._px(child.size) + (0 if child.align == "center" else child._px(QR_ALIGN_INSET))
@@ -1208,7 +1362,7 @@ class RowElement(ElementBase):
         Used to scope the too-narrow-column guard to columns that would *drop real content*, so a
         genuinely empty optional field (which legitimately renders a blank strip) is never rejected.
         """
-        if isinstance(child, QRElement | BarcodeElement):
+        if isinstance(child, Matrix2DElement | BarcodeElement):
             return bool(str(resolved.get("__data__", child.data)).strip())
         if isinstance(child, ImageElement):
             return bool(resolved.get(child.field))
@@ -1447,6 +1601,9 @@ ELEMENT_REGISTRY: dict[str, type[ElementBase]] = {
     "subtitle": SubtitleElement,
     "text": TextElement,
     "qr": QRElement,
+    "datamatrix": DataMatrixElement,
+    "aztec": AztecElement,
+    "pdf417": PDF417Element,
     "barcode": BarcodeElement,
     "image": ImageElement,
     "icon": IconElement,

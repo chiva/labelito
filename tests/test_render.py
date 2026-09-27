@@ -14,12 +14,17 @@ from PIL import Image, ImageChops
 
 from app.render.elements import (
     ROW_MIN_FLEX_WIDTH,
+    AztecElement,
+    BarcodeElement,
     BoxElement,
     ColumnElement,
+    DataMatrixElement,
     ElementBase,
     IconElement,
     LineElement,
     ListElement,
+    Matrix2DElement,
+    PDF417Element,
     QRElement,
     RowElement,
     SpacerElement,
@@ -397,6 +402,121 @@ def test_qr_element_empty_data_returns_zero_height(
     el = QRElement(data="")
     img = el.render(CANVAS_W, {"__data__": ""}, fonts_dir, icons_dir, icon_collections_dir)
     assert img.height == 0
+
+
+def _dark_runs_on_row(img: Image.Image, y: int) -> list[int]:
+    """Lengths of the consecutive black runs along scanline *y* of an L-mode image."""
+    runs: list[int] = []
+    run = 0
+    for x in range(img.width):
+        if img.getpixel((x, y)) == 0:
+            run += 1
+        elif run:
+            runs.append(run)
+            run = 0
+    if run:
+        runs.append(run)
+    return runs
+
+
+def test_qr_element_draws_modules_on_whole_dots(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The symbol is drawn at an integer dots-per-module, never resampled: only pure black/white
+    pixels, an ink width of exactly modules x dots, and every dark run a multiple of the module."""
+    from app.render.symbols import encode_qr
+
+    data = "https://example.com"
+    el = QRElement(data=data, size=160)
+    img = el.render(CANVAS_W, {"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    sym = encode_qr(data)
+    module = 160 // sym.units_wide  # 160 // 33 = 4 dots per module
+    assert module == 4
+    assert set(img.getdata()) <= {0, 255}
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    assert bbox[2] - bbox[0] == sym.cols * module  # 25 modules x 4 dots = 100 px of ink
+    assert bbox[3] - bbox[1] == sym.rows * module
+    # Centred in the 160-box: quiet zone + slack sits symmetrically around the ink.
+    box_x = (CANVAS_W - 160) // 2
+    assert (bbox[0] - box_x) == (box_x + 160 - bbox[2])
+    for y in range(bbox[1], bbox[3]):
+        assert all(run % module == 0 for run in _dark_runs_on_row(img, y))
+
+
+def test_qr_element_strip_height_is_size_plus_padding(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """`size` is the box the symbol is centred in, so the strip contract (`size + 8`) holds even
+    though the drawn symbol is smaller than `size`."""
+    el = QRElement(data="https://example.com", size=120)
+    img = el.render(
+        CANVAS_W, {"__data__": "https://example.com"}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert img.height == 128
+
+
+def test_qr_element_size_below_module_count_grows_instead_of_clipping(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A 33-unit symbol asked to fit 20 px draws 1 dot/module (33 px) and the strip grows to hold
+    it — a clipped or sub-dot symbol would be unscannable, so growing is the only honest outcome."""
+    el = QRElement(data="https://example.com", size=20)
+    img = el.render(
+        CANVAS_W, {"__data__": "https://example.com"}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None and bbox[2] - bbox[0] == 25  # 25 modules at 1 dot each
+    assert img.height == 33 + 8
+
+
+def test_qr_element_high_res_doubles_module_exactly(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """scale=2 must double the module size exactly (4 -> 8 dots), not re-derive it from the doubled
+    box (320 // 33 = 9 would be 2.25x and break the uniform-geometry contract)."""
+    data = "https://example.com"
+    args = ({"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    base = QRElement(data=data, size=160).render(CANVAS_W, *args)
+    hi = QRElement(data=data, size=160, scale=2).render(CANVAS_W * 2, *args)
+    b0, b1 = _whole_ink_bbox(base), _whole_ink_bbox(hi)
+    assert b0 is not None and b1 is not None
+    assert (b1[2] - b1[0]) == 2 * (b0[2] - b0[0])
+    assert hi.height == 2 * base.height
+
+
+def test_qr_element_error_correction_changes_symbol_density(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The default level is M (today's behaviour); H adds modules for the same payload, so at the
+    same `size` the symbol has more, smaller modules and its ink footprint differs."""
+    from app.render.symbols import encode_qr
+
+    data = "https://example.com"
+    args = ({"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    assert QRElement(data=data).error_correction == "M"
+    default = QRElement(data=data, size=160).render(CANVAS_W, *args)
+    explicit_m = QRElement(data=data, size=160, error_correction="M").render(CANVAS_W, *args)
+    high = QRElement(data=data, size=160, error_correction="H").render(CANVAS_W, *args)
+    assert ImageChops.difference(default, explicit_m).getbbox() is None
+    assert ImageChops.difference(default, high).getbbox() is not None
+    b_high = _whole_ink_bbox(high)
+    assert b_high is not None
+    sym_h = encode_qr(data, "H")
+    assert b_high[2] - b_high[0] == sym_h.cols * (160 // sym_h.units_wide)  # 29 x 4 = 116
+
+
+def test_qr_element_red_ink_is_pure(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The dot-exact graphic is pre-thresholded, so the two-colour tint yields pure red modules."""
+    el = QRElement(data="red", size=120, color="red")
+    el._red_active = True
+    img = el.render(CANVAS_W, {"__data__": "red"}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.mode == "RGB"
+    colours = set(img.getdata())
+    assert (255, 0, 0) in colours
+    assert colours <= {(255, 0, 0), (255, 255, 255)}
 
 
 # ── Engine — continuous label ──────────────────────────────────────────────────
@@ -2678,3 +2798,296 @@ def test_draft_renders_identically_to_saved_template(engine: RenderEngine, tmp_p
         draft.layout, fields, CANVAS_W, None, draft.rotate, "en", now=now
     )
     assert draft_png == saved_png, "a draft must render byte-identically to its saved equivalent"
+
+
+# ── Matrix symbol elements: datamatrix / aztec / pdf417 ───────────────────────────
+
+_MATRIX_ELEMENTS: list[tuple[type[Matrix2DElement], str]] = [
+    (DataMatrixElement, "SN-2026-0001"),
+    (AztecElement, "TICKET-0001"),
+    (PDF417Element, "MANIFEST 0001"),
+]
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_matrix_element_renders_binary_ink(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    el = cls(data=data)
+    img = el.render(CANVAS_W, {"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.width == CANVAS_W and img.height > 0
+    assert _has_ink(img)
+    assert set(img.getdata()) <= {0, 255}
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_matrix_element_empty_data_returns_zero_height(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    img = cls(data="").render(
+        CANVAS_W, {"__data__": "  "}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert img.height == 0
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_matrix_element_high_res_doubles_exactly(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    args = ({"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    base = cls(data=data).render(CANVAS_W, *args)
+    hi = cls(data=data, scale=2).render(CANVAS_W * 2, *args)
+    b0, b1 = _whole_ink_bbox(base), _whole_ink_bbox(hi)
+    assert b0 is not None and b1 is not None
+    assert (b1[2] - b1[0], b1[3] - b1[1]) == (2 * (b0[2] - b0[0]), 2 * (b0[3] - b0[1]))
+    assert hi.height == 2 * base.height
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_matrix_element_red_ink_is_pure(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    el = cls(data=data, color="red")
+    el._red_active = True
+    img = el.render(CANVAS_W, {"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.mode == "RGB"
+    assert set(img.getdata()) <= {(255, 0, 0), (255, 255, 255)} and (255, 0, 0) in set(
+        img.getdata()
+    )
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_row_narrow_matrix_element_draws_failure_placeholder(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    """Every Matrix2DElement gets the QR's narrow-column guard through the base class."""
+    el = cls(data=data, size=120)
+    el.width = 40
+    row = RowElement(children=[el])
+    img = row.render(
+        CANVAS_W, {"__children__": [{"__data__": data}]}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert img.height == 120 and _has_ink(img)
+    blank = cls(data="", size=120)
+    blank.width = 40
+    empty = RowElement(children=[blank]).render(
+        CANVAS_W, {"__children__": [{"__data__": ""}]}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert empty.height == 0
+
+
+@pytest.mark.parametrize(("cls", "data"), _MATRIX_ELEMENTS)
+def test_column_nested_narrow_matrix_element_draws_failure_placeholder(
+    cls: type[Matrix2DElement],
+    data: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    el = cls(data=data, size=120)
+    col = ColumnElement(children=[el])
+    col.width = 40
+    row = RowElement(children=[TextElement(text="x"), col])
+    res = {"__children__": [{"__text__": "x"}, {"__children__": [{"__data__": data}]}]}
+    img = row.render(CANVAS_W, res, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.height >= 120 and _has_ink(img)
+
+
+def test_datamatrix_square_box_and_rectangular_strip(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A square symbol reserves the size box (strip = size + 8, like qr); a rectangular one is only
+    as tall as the symbol it draws, so it sits beside text without a blank band."""
+    args = ({"__data__": "Hello"}, fonts_dir, icons_dir, icon_collections_dir)
+    square = DataMatrixElement(data="Hello", size=160).render(CANVAS_W, *args)
+    rect = DataMatrixElement(data="Hello", size=160, symbol_shape="rectangular").render(
+        CANVAS_W, *args
+    )
+    assert square.height == 168
+    assert 0 < rect.height < square.height
+    bbox = _whole_ink_bbox(rect)
+    assert bbox is not None and (bbox[2] - bbox[0]) > (bbox[3] - bbox[1])
+
+
+def test_datamatrix_gs1_renders_a_different_symbol(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    payload = "0109501101020917\x1d10ABC123"
+    args = ({"__data__": payload}, fonts_dir, icons_dir, icon_collections_dir)
+    plain = DataMatrixElement(data=payload).render(CANVAS_W, *args)
+    gs1 = DataMatrixElement(data=payload, gs1=True).render(CANVAS_W, *args)
+    assert ImageChops.difference(plain, gs1).getbbox() is not None
+
+
+def test_aztec_full_four_layers_is_31_modules_at_integer_dots(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    el = AztecElement(data="Hi", size=160, symbol_kind="full", layers=4)
+    img = el.render(CANVAS_W, {"__data__": "Hi"}, fonts_dir, icons_dir, icon_collections_dir)
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    assert bbox[2] - bbox[0] == 31 * (160 // 31)  # no quiet zone: 31 modules x 5 dots = 155 px
+
+
+def test_pdf417_strip_is_only_as_tall_as_the_symbol_and_options_change_shape(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    data = "MANIFEST 0001 / 12 cartons / dock 4"
+    args = ({"__data__": data}, fonts_dir, icons_dir, icon_collections_dir)
+    default = PDF417Element(data=data).render(CANVAS_W, *args)
+    assert default.height < 600  # never a 600 x 600 box for a shallow symbol
+    b = _whole_ink_bbox(default)
+    assert b is not None and (b[2] - b[0]) > 3 * (b[3] - b[1])  # wide and shallow
+    narrow = PDF417Element(data=data, columns=2, row_height=2).render(CANVAS_W, *args)
+    nb = _whole_ink_bbox(narrow)
+    assert nb is not None and (nb[2] - nb[0]) < (b[2] - b[0])
+
+
+# ── Barcode element: dot-exact bars at the declared height ────────────────────────
+def _render_barcode(
+    el: BarcodeElement, fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> Image.Image:
+    return el.render(CANVAS_W, {"__data__": el.data}, fonts_dir, icons_dir, icon_collections_dir)
+
+
+@pytest.mark.parametrize("height", [60, 120])
+def test_barcode_height_is_honoured_exactly(
+    height: int, fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """`height` used to be ignored (bars came out ~490 px on a 62 mm label); the bar ink is now
+    exactly `height` px tall and the strip is that plus the 4 px pads."""
+    img = _render_barcode(
+        BarcodeElement(data="12345678", height=height), fonts_dir, icons_dir, icon_collections_dir
+    )
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None and bbox[3] - bbox[1] == height
+    assert img.height == height + 8
+    assert set(img.getdata()) <= {0, 255}
+
+
+def test_barcode_modules_are_whole_dots_and_fill_the_column(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    from app.render.symbols import encode_1d
+
+    bars = encode_1d("code128", "12345678")
+    module = (CANVAS_W - 16) // bars.units_wide  # 680 // 99 = 6 dots per module
+    img = _render_barcode(
+        BarcodeElement(data="12345678"), fonts_dir, icons_dir, icon_collections_dir
+    )
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    dark_modules = len(bars.pattern.rstrip("0")) - (
+        len(bars.pattern) - len(bars.pattern.lstrip("0"))
+    )
+    assert bbox[2] - bbox[0] == dark_modules * module
+    y = (bbox[1] + bbox[3]) // 2
+    assert all(run % module == 0 for run in _dark_runs_on_row(img, y))
+
+
+def test_barcode_align_distributes_the_leftover_width(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The symbol is drawn at the widest whole-dot module that fits, so the column has leftover
+    width and `align` (a no-op under the old stretch-to-fit renderer) now positions the symbol."""
+    boxes = {}
+    for align in ("left", "center", "right"):
+        img = _render_barcode(
+            BarcodeElement(data="12345678", align=align), fonts_dir, icons_dir, icon_collections_dir
+        )
+        boxes[align] = _whole_ink_bbox(img)
+    assert boxes["left"] is not None and boxes["center"] is not None and boxes["right"] is not None
+    assert boxes["left"][0] < boxes["center"][0] < boxes["right"][0]
+    assert all(b[2] - b[0] == boxes["left"][2] - boxes["left"][0] for b in boxes.values())
+
+
+def test_barcode_show_value_prints_the_full_code_under_the_bars(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    plain = _render_barcode(
+        BarcodeElement(data="590123412345", symbology="ean13", height=60),
+        fonts_dir,
+        icons_dir,
+        icon_collections_dir,
+    )
+    labelled = _render_barcode(
+        BarcodeElement(data="590123412345", symbology="ean13", height=60, show_value=True),
+        fonts_dir,
+        icons_dir,
+        icon_collections_dir,
+    )
+    assert labelled.height > plain.height
+    # Bars occupy exactly the top `height` rows after the pad; the text is ink below them.
+    bars_bottom = 4 + 60
+    below = labelled.crop((0, bars_bottom, CANVAS_W, labelled.height))
+    assert _has_ink(below)
+
+
+def test_barcode_bad_payload_for_symbology_is_a_clear_render_error(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    from app.render.symbols import SymbolEncodeError
+
+    with pytest.raises(SymbolEncodeError, match="cannot encode 'abc' as ean13"):
+        _render_barcode(
+            BarcodeElement(data="abc", symbology="ean13"),
+            fonts_dir,
+            icons_dir,
+            icon_collections_dir,
+        )
+
+
+def test_barcode_high_res_doubles_bars_exactly(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    args = ({"__data__": "12345678"}, fonts_dir, icons_dir, icon_collections_dir)
+    base = BarcodeElement(data="12345678").render(CANVAS_W, *args)
+    hi = BarcodeElement(data="12345678", scale=2).render(CANVAS_W * 2, *args)
+    b0, b1 = _whole_ink_bbox(base), _whole_ink_bbox(hi)
+    assert b0 is not None and b1 is not None
+    assert (b1[3] - b1[1]) == 2 * (b0[3] - b0[1]) and (b1[2] - b1[0]) == 2 * (b0[2] - b0[0])
+
+
+def test_barcode_itf14_draws_bearer_bars_around_the_symbol(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """The ITF-14 bearer frame is part of the ink: full-width rules above and below the bars and
+    end rules the whole height, each 4 modules thick, so the ink is taller than `height`."""
+    from app.render.symbols import encode_1d
+
+    bars = encode_1d("itf14", "1234567890123")
+    module = (CANVAS_W - 16) // bars.units_wide
+    img = _render_barcode(
+        BarcodeElement(data="1234567890123", symbology="itf14", height=100),
+        fonts_dir,
+        icons_dir,
+        icon_collections_dir,
+    )
+    bbox = _whole_ink_bbox(img)
+    assert bbox is not None
+    assert bbox[3] - bbox[1] == 100 + 2 * 4 * module  # bars plus top and bottom bearer
+    assert bbox[2] - bbox[0] == bars.units_wide * module  # end bearers span the quiet zones too
+    top_rule = img.crop((bbox[0], bbox[1], bbox[2], bbox[1] + 4 * module))
+    assert set(top_rule.getdata()) == {0}  # solid rule across the full width
+    left_rule = img.crop((bbox[0], bbox[1], bbox[0] + 4 * module, bbox[3]))
+    assert set(left_rule.getdata()) == {0}

@@ -342,34 +342,122 @@ unbounded strip.
 
 #### `qr`
 
-A QR code rendered from the `data` attribute.
+A QR code rendered from the `data` attribute, drawn on **whole device dots**: the module size is
+the largest integer number of dots that fits the symbol (with its 4-module quiet zone) inside
+`size`, and the symbol is centred in a `size × size` box. `size` is therefore a *maximum* — a
+25-module symbol at the default `size: 160` draws 4 dots per module, 132 px including the quiet
+zone — and the strip is always `size + 8` px tall. Resampling a symbol to an arbitrary pixel size
+would put module edges between dots and blur them into grey; integer dots are what keep small
+symbols scannable on a thermal head. Raise `size` for a bolder symbol; a `size` smaller than the
+module count draws 1 dot per module and grows the box rather than clipping.
 
 | Attribute | Type | Default |
 |---|---|---|
 | `data` | string (templated) | `""` |
-| `size` | int 1–2000 (px square) | `160` |
+| `size` | int 1–2000 (px square, maximum) | `160` |
 | `align` | `left`/`center`/`right` | `center` |
+| `error_correction` | `L`/`M`/`Q`/`H` | `M` |
+
+`error_correction` is the QR level: `L`, `M`, `Q`, `H` survive roughly 7 %, 15 %, 25 % and 30 %
+of the symbol being damaged or obscured, and each step up adds modules for the same payload (so at
+a fixed `size` the modules get smaller). `M` is the usual choice; use `H` for labels that get
+scuffed, or `L` to squeeze a long payload into fewer modules.
 
 ```yaml
 - {type: qr, data: "{{qr}}", size: 140, align: right}
+- {type: qr, data: "{{url}}", size: 200, error_correction: H}
+```
+
+#### `datamatrix`
+
+A Data Matrix ECC200 rendered from `data`, drawn on whole device dots like `qr` (`size` is the
+maximum side of the box). Denser than a QR for short payloads and readable when tiny, it is the
+industrial and healthcare workhorse: parts, PCBs, medical-device UDI, pharma packs.
+
+| Attribute | Type | Default | Notes |
+|---|---|---|---|
+| `data` | string (templated) | `""` | |
+| `size` | int 1–2000 (px, maximum) | `160` | Square box for `square`; a rectangular symbol's strip is only as tall as the symbol. |
+| `align` | `left`/`center`/`right` | `center` | |
+| `symbol_shape` | `square`/`rectangular`/`auto` | `square` | `rectangular` picks one of the six low, wide ECC200 sizes (good beside text); `auto` takes whichever family needs fewer modules. |
+| `gs1` | bool | `false` | Encode a GS1 payload: a leading FNC1 flags the symbol, and every ASCII 29 (GS) in `data` becomes the separator that ends a variable-length application identifier. GS1 data must be ASCII. |
+
+```yaml
+- {type: datamatrix, data: "{{serial}}", size: 120, align: left}
+- {type: datamatrix, data: "{{serial}}", symbol_shape: rectangular}
+# GS1: (01) GTIN is fixed-length, (10) batch and (21) serial are variable-length. A separator
+# (\u001d, ASCII 29) is needed only after a variable-length AI that is not the last one.
+- {type: datamatrix, data: "01{{gtin}}10{{batch}}\u001d21{{serial}}", gs1: true, size: 200}
+```
+
+#### `aztec`
+
+An Aztec Code rendered from `data`, drawn on whole device dots. Its bull's-eye finder sits in the
+centre and the spec needs **no quiet zone**, so it packs tightest against neighbouring content;
+the code on rail tickets and boarding passes.
+
+| Attribute | Type | Default | Notes |
+|---|---|---|---|
+| `data` | string (templated) | `""` | |
+| `size` | int 1–2000 (px square, maximum) | `160` | |
+| `align` | `left`/`center`/`right` | `center` | |
+| `ecc` | int 5–95 (%) | `23` | Share of the symbol reserved for error correction (23 % is the ISO default). |
+| `symbol_kind` | `auto`/`compact`/`full` | `auto` | `compact` symbols have 1–4 layers, `full` ones 1–32; `auto` picks the smallest that fits. |
+| `layers` | int 1–32 or omitted | omitted | Pins the symbol size. Requires an explicit `symbol_kind`, and `compact` allows at most 4. |
+
+```yaml
+- {type: aztec, data: "{{ticket}}", size: 180}
+- {type: aztec, data: "{{ticket}}", symbol_kind: full, layers: 6, ecc: 35}
+```
+
+#### `pdf417`
+
+A PDF417 stacked linear symbol rendered from `data`, drawn on whole device dots. Wide and
+shallow — the code on shipping manifests, driving licences and boarding passes. `size` is the
+maximum **width**; the strip is only as tall as the symbol, so it fits under a line of text.
+
+| Attribute | Type | Default | Notes |
+|---|---|---|---|
+| `data` | string (templated) | `""` | |
+| `size` | int 1–2000 (px, maximum width) | `600` | A PDF417 is 120+ modules across, so it defaults near the 62 mm tape width; at `160` it would draw 1 dot per module. |
+| `align` | `left`/`center`/`right` | `center` | |
+| `columns` | int 1–30 or omitted | omitted | Data columns; omitted lets the encoder choose. Fewer columns ⇒ a narrower, taller symbol. |
+| `ecl` | int 0–8 or omitted | omitted | Error-correction level; each step doubles the correction codewords. Omitted scales it with the payload. |
+| `row_height` | int 1–10 (modules) | `3` | How tall each codeword row is drawn; 3 is the ISO recommendation, 2 saves tape. |
+
+```yaml
+- {type: pdf417, data: "{{manifest}}"}
+- {type: pdf417, data: "{{manifest}}", size: 500, columns: 4, ecl: 3, row_height: 2}
 ```
 
 #### `barcode`
 
-A 1-D barcode rendered from the `data` attribute. Bars-only by default — the generator's
-human-readable value under the bars is off unless you opt in; add a styled `text` element instead
-if you want the value printed with labelito's own font control.
+A 1-D barcode rendered from the `data` attribute, drawn on **whole device dots**: the module
+(narrow bar) width is the largest integer number of dots for which the symbol, with its 10-module
+quiet zones, fits the column, and the bars are exactly `height` px tall (60 px ≈ 5 mm, the
+practical scanner minimum; 100–150 px for a code that will be scanned from a distance). Any
+leftover column width is distributed by `align`. Bars-only by default; `show_value` prints the
+encoded value (with any computed check digit) under the bars in labelito's own font.
+
+Symbologies come from python-barcode: `code128`, `gs1_128`, `code39`, `ean13`, `ean8`, `ean14`,
+`upca`, `itf`, `codabar`, `isbn13`, `issn`, `jan`, `pzn`, and their aliases — plus `itf14`, the
+GS1 carton code (GTIN-14 as Interleaved 2 of 5 inside a bearer-bar frame), which takes 13 digits
+and computes the check digit, or 14 and verifies it. A payload the symbology cannot hold (letters
+in an EAN, a wrong digit count) fails at render with a clear message, because `data` is templated
+and unknown at load time.
 
 | Attribute | Type | Default |
 |---|---|---|
 | `data` | string (templated) | `""` |
 | `symbology` | string | `code128` |
-| `height` | int 1–10000 (px) | `60` |
+| `height` | int 1–10000 (px, bar height) | `60` |
 | `align` | `left`/`center`/`right` | `center` |
 | `show_value` | bool | `false` |
 
 ```yaml
 - {type: barcode, data: "{{asset_id}}", symbology: code128, height: 70, align: center}
+- {type: barcode, data: "{{gtin}}", symbology: ean13, height: 100, show_value: true}
+- {type: barcode, data: "{{carton}}", symbology: itf14, height: 120, show_value: true}
 ```
 
 #### `image`
@@ -514,8 +602,9 @@ column hints (inert outside a row):
     - {type: icon, name: check, collection: fontawesome, size: 64, width: 80, align: right}
 ```
 
-> Note: the too-narrow-column failure marker (a crossed box drawn when a QR/barcode/image column is
-> too small to render) applies only to a **direct** row child, not to one nested inside a `column`.
+> Note: the too-narrow-column failure marker (a crossed box drawn when a matrix-symbol
+> (`qr`/`datamatrix`/`aztec`/`pdf417`), `barcode` or `image` column is too small to render)
+> applies only to a **direct** row child, not to one nested inside a `column`.
 > Keep data-bearing graphics as direct row children where possible.
 
 #### `column`
@@ -554,7 +643,7 @@ child, its width and vertical placement come from the row (`width`/`weight`/`val
 | Max elements per layout | 64 (counting container children) | Bounds a "thousand tiny elements" allocation. |
 | Max combined declared height | ~40000 px | A label taller than the printer's maximum raster cannot print anyway. |
 | Max single pixel dimension | 10000 px | Bounds any one element's allocation. |
-| Max QR/icon square dimension | 2000 px | Square allocation is quadratic. |
+| Max matrix-symbol (`qr`/`datamatrix`/`aztec`/`pdf417`) / icon square dimension | 2000 px | Square allocation is quadratic. |
 | Max font size | 512 pt | Quadratic with `max_lines`. |
 | Landscape `length` | 20–300 mm | Below 20 mm is under the printer's minimum feed; above 300 mm exceeds the raster-row ceiling in `high_res`. |
 | Max template YAML size | 64 KiB | A real template is tiny. |

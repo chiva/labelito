@@ -283,6 +283,78 @@ def test_oversized_qr_size_raises(tmp_path: Path) -> None:
         load_template(path)
 
 
+@pytest.mark.parametrize("el_type", ["text", "title", "qr", "barcode", "icon", "image", "list"])
+@pytest.mark.parametrize("bad", ["centre", "middle", "Left", "justify"])
+def test_align_typo_is_rejected_on_every_element(tmp_path: Path, el_type: str, bad: str) -> None:
+    """Renderers fall back to left for an unknown `align`, so a typo used to print left-aligned
+    silently. It is a load error now, on every element type that carries the attribute."""
+    extra = {"qr": ", data: x", "barcode": ", data: 12345678", "icon": ", name: snowflake"}.get(
+        el_type, ""
+    )
+    text = ", text: x" if el_type in ("text", "title", "list") else ""
+    path = write_yaml(
+        tmp_path / "align-bad.yaml",
+        f"""\
+        name: align-bad
+        description: bad align
+        label: "62"
+        layout:
+          - {{type: {el_type}{text}{extra}, align: {bad}}}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match=r"'align'"):
+        load_template(path)
+
+
+@pytest.mark.parametrize("good", ["left", "center", "right"])
+def test_align_choices_load(tmp_path: Path, good: str) -> None:
+    path = write_yaml(
+        tmp_path / "align-ok.yaml",
+        f"""\
+        name: align-ok
+        description: valid align
+        label: "62"
+        layout:
+          - {{type: text, text: x, align: {good}}}
+          - {{type: qr, data: x, align: {good}}}
+    """,
+    )
+    assert [el["align"] for el in load_template(path).layout] == [good, good]
+
+
+@pytest.mark.parametrize("level", ["L", "M", "Q", "H"])
+def test_qr_error_correction_choices_load(tmp_path: Path, level: str) -> None:
+    path = write_yaml(
+        tmp_path / "qr-ecl.yaml",
+        f"""\
+        name: qr-ecl
+        description: qr level
+        label: "62"
+        layout:
+          - {{type: qr, data: x, error_correction: {level}}}
+    """,
+    )
+    assert load_template(path).layout[0]["error_correction"] == level
+
+
+@pytest.mark.parametrize("bad", ["X", "m", "high", "1"])
+def test_qr_error_correction_typo_is_rejected(tmp_path: Path, bad: str) -> None:
+    """A level outside L/M/Q/H would raise inside the encoder at render time (a 500); reject it at
+    load like every other enum, and case-sensitively, so `m` is not silently accepted as `M`."""
+    path = write_yaml(
+        tmp_path / "qr-ecl-bad.yaml",
+        f"""\
+        name: qr-ecl-bad
+        description: bad qr level
+        label: "62"
+        layout:
+          - {{type: qr, data: x, error_correction: "{bad}"}}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match="error_correction"):
+        load_template(path)
+
+
 def test_oversized_icon_size_raises(tmp_path: Path) -> None:
     """A `icon.size` of 10000 (above MAX_SQUARE_DIMENSION) is rejected for the same square reason."""
     path = write_yaml(
@@ -2362,3 +2434,96 @@ def test_two_bundled_examples_colliding_is_not_the_users_problem(tmp_path: Path)
     registry.load_all()
 
     assert registry.warnings == []
+
+
+# ── matrix symbol elements: datamatrix / aztec / pdf417 ─────────────────────────
+def test_valid_element_types_match_the_renderer_registry() -> None:
+    from app.loader import VALID_ELEMENT_TYPES
+    from app.render.elements import ELEMENT_REGISTRY
+
+    assert VALID_ELEMENT_TYPES == frozenset(ELEMENT_REGISTRY)
+    assert {"datamatrix", "aztec", "pdf417"} <= VALID_ELEMENT_TYPES
+
+
+def _one_element(tmp_path: Path, element: str) -> Path:
+    return write_yaml(
+        tmp_path / "matrix.yaml",
+        f"""\
+        name: matrix-probe
+        description: probe
+        label: "62"
+        layout:
+          - {{{element}}}
+    """,
+    )
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        "type: datamatrix, data: x",
+        "type: datamatrix, data: x, symbol_shape: rectangular, gs1: true, size: 200",
+        "type: aztec, data: x",
+        "type: aztec, data: x, ecc: 50, symbol_kind: full, layers: 6",
+        "type: aztec, data: x, symbol_kind: compact, layers: 4",
+        "type: pdf417, data: x",
+        "type: pdf417, data: x, columns: 4, ecl: 3, row_height: 2, size: 500",
+    ],
+)
+def test_matrix_elements_with_valid_options_load(tmp_path: Path, element: str) -> None:
+    assert len(load_template(_one_element(tmp_path, element)).layout) == 1
+
+
+@pytest.mark.parametrize(
+    ("element", "match"),
+    [
+        ("type: datamatrix, data: x, symbol_shape: round", "symbol_shape"),
+        ("type: datamatrix, data: x, gs1: yes please", "gs1"),
+        ("type: datamatrix, data: x, size: 5000", "size"),
+        ("type: aztec, data: x, ecc: 4", "ecc"),
+        ("type: aztec, data: x, ecc: 96", "ecc"),
+        ("type: aztec, data: x, symbol_kind: huge", "symbol_kind"),
+        ("type: aztec, data: x, layers: 3", "requires an explicit 'symbol_kind'"),
+        ("type: aztec, data: x, symbol_kind: compact, layers: 5", "at most 4 layers"),
+        ("type: aztec, data: x, symbol_kind: full, layers: 33", "layers"),
+        ("type: aztec, data: x, symbol_kind: full, layers: null", "layers"),
+        ("type: pdf417, data: x, columns: 0", "columns"),
+        ("type: pdf417, data: x, columns: 31", "columns"),
+        ("type: pdf417, data: x, ecl: 9", "ecl"),
+        ("type: pdf417, data: x, row_height: 11", "row_height"),
+        ("type: pdf417, data: x, row_height: 0", "row_height"),
+    ],
+)
+def test_matrix_elements_reject_out_of_range_options(
+    tmp_path: Path, element: str, match: str
+) -> None:
+    """Every knob the encoder would refuse at render is refused at load instead, so a template
+    that loads also prints."""
+    with pytest.raises(TemplateLoadError, match=match):
+        load_template(_one_element(tmp_path, element))
+
+
+def test_barcode_symbology_itf14_loads_and_unknown_lists_it(tmp_path: Path) -> None:
+    ok = write_yaml(
+        tmp_path / "itf14.yaml",
+        """\
+        name: itf14-ok
+        description: carton code
+        label: "62"
+        layout:
+          - {type: barcode, data: "1234567890123", symbology: itf14}
+    """,
+    )
+    assert load_template(ok).layout[0]["symbology"] == "itf14"
+    bad = write_yaml(
+        tmp_path / "bad.yaml",
+        """\
+        name: itf14-bad
+        description: not a symbology
+        label: "62"
+        layout:
+          - {type: barcode, data: x, symbology: code93}
+    """,
+    )
+    with pytest.raises(TemplateLoadError, match=r"unknown barcode 'symbology' 'code93'.*'itf14'"):
+        load_template(bad)

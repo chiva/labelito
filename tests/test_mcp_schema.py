@@ -141,3 +141,14 @@ layout:
     markdown = template_schema_markdown()
     assert 'no "unlimited"' in markdown
     assert "null` for no cap" not in markdown
+
+
+def test_documents_the_barcode_symbologies() -> None:
+    """The symbology list is read from the renderer, so `itf14` and the python-barcode names are
+    all present and a name the renderer does not know is never advertised."""
+    from app.render.symbols import SUPPORTED_SYMBOLOGIES
+
+    markdown = template_schema_markdown()
+    for name in SUPPORTED_SYMBOLOGIES:
+        assert f"`{name}`" in markdown
+    assert "`code93`" not in markdown

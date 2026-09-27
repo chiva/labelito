@@ -13,8 +13,10 @@ import yaml
 
 from app.media import MEDIA_TYPE_CONTINUOUS, required_media_for
 from app.render.elements import (
+    ALIGN_CHOICES,
     COLOR_CHOICES,
     DEFAULT_TEXT_MAX_LINES,
+    ELEMENT_REGISTRY,
     FA_STYLES,
     FONT_SIZES,
     KNOWN_COLLECTIONS,
@@ -31,6 +33,22 @@ from app.render.engine import (
     malformed_placeholders,
     referenced_field_tokens,
     unresolved_tokens,
+)
+from app.render.symbols import (
+    AZTEC_COMPACT_LAYERS_MAX,
+    AZTEC_ECC_MAX,
+    AZTEC_ECC_MIN,
+    AZTEC_KIND_CHOICES,
+    AZTEC_LAYERS_MAX,
+    DATAMATRIX_SHAPE_CHOICES,
+    PDF417_COLUMNS_MAX,
+    PDF417_COLUMNS_MIN,
+    PDF417_ECL_MAX,
+    PDF417_ECL_MIN,
+    PDF417_ROW_HEIGHT_MAX,
+    PDF417_ROW_HEIGHT_MIN,
+    QR_ECL_CHOICES,
+    SUPPORTED_SYMBOLOGIES,
 )
 
 log = logging.getLogger(__name__)
@@ -187,21 +205,9 @@ LANDSCAPE_ROTATIONS = frozenset({90, 270})
 # max_length_px (6000) and the smallest model raster-row ceiling (11811) even in high_res mode.
 MIN_LANDSCAPE_LENGTH_MM = 20
 MAX_LANDSCAPE_LENGTH_MM = 300
-VALID_ELEMENT_TYPES = {
-    "title",
-    "subtitle",
-    "text",
-    "qr",
-    "barcode",
-    "image",
-    "icon",
-    "line",
-    "box",
-    "spacer",
-    "row",
-    "column",
-    "list",
-}
+# Every registered renderer is a valid `type`; deriving the set from the registry means a new
+# element cannot be renderable yet unloadable (or vice versa).
+VALID_ELEMENT_TYPES = frozenset(ELEMENT_REGISTRY)
 # Container elements — the only types that carry a ``children`` list. The layout is a single-level
 # grid: a ``row`` lays children side-by-side and may contain ``column``s; a ``column`` stacks
 # children vertically and may contain only leaf elements. No deeper nesting (row-in-row,
@@ -352,6 +358,20 @@ _ELEMENT_NUMERIC_BOUNDS: dict[str, tuple[tuple[str, int, int], ...]] = {
     # the size x max_items product area-guarded in _validate_element_numerics.
     "list": (("size", 1, MAX_FONT_SIZE), ("max_items", 1, MAX_TEXT_LINES)),
     "qr": (("size", 1, MAX_SQUARE_DIMENSION),),
+    # The other matrix symbols share qr's square-box allocation; their symbology knobs are bounded to
+    # what the encoder accepts so an out-of-range value is a load error, not a render-time 500.
+    "datamatrix": (("size", 1, MAX_SQUARE_DIMENSION),),
+    "aztec": (
+        ("size", 1, MAX_SQUARE_DIMENSION),
+        ("ecc", AZTEC_ECC_MIN, AZTEC_ECC_MAX),
+        ("layers", 1, AZTEC_LAYERS_MAX),
+    ),
+    "pdf417": (
+        ("size", 1, MAX_SQUARE_DIMENSION),
+        ("columns", PDF417_COLUMNS_MIN, PDF417_COLUMNS_MAX),
+        ("ecl", PDF417_ECL_MIN, PDF417_ECL_MAX),
+        ("row_height", PDF417_ROW_HEIGHT_MIN, PDF417_ROW_HEIGHT_MAX),
+    ),
     "barcode": (("height", 1, MAX_ELEMENT_DIMENSION),),
     "image": (("max_height", 1, MAX_ELEMENT_DIMENSION),),
     "icon": (("size", 1, MAX_SQUARE_DIMENSION),),
@@ -532,26 +552,22 @@ def _validate_row_child_sizing(file_name: str, label: str, child: dict[str, Any]
 def _validate_barcode_symbology(file_name: str, label: str, symbology: Any) -> None:
     """Reject an unknown barcode ``symbology`` at load time.
 
-    The renderer calls ``python-barcode``'s ``get_barcode_class(symbology)``, which raises
-    ``BarcodeNotFoundError`` for an unknown name — surfacing as a render-time 500 on /print and
-    /preview. Validating here (by the SAME lookup the renderer uses) turns a typo, or a crafted
-    inline template, into a clean load error / 422, matching how every other render-affecting enum
-    (color, marker, background, …) is validated up front.
+    The renderer encodes through :func:`app.render.symbols.encode_1d`, which raises for a name
+    outside :data:`SUPPORTED_SYMBOLOGIES` — a render-time 500 on /print and /preview. Validating
+    here against the SAME set turns a typo, or a crafted inline template, into a clean load error /
+    422, matching how every other render-affecting enum (color, marker, background, …) is validated
+    up front. The set is python-barcode's registry plus ITF-14, so `itf14` is accepted here exactly
+    when the renderer can draw it.
     """
-    import barcode as python_barcode
-    from barcode.errors import BarcodeNotFoundError
-
     if not isinstance(symbology, str):
         raise TemplateLoadError(
             f"{file_name}: {label} barcode 'symbology' must be a string, got {symbology!r}"
         )
-    try:
-        python_barcode.get_barcode_class(symbology)
-    except BarcodeNotFoundError as exc:
+    if symbology not in SUPPORTED_SYMBOLOGIES:
         raise TemplateLoadError(
             f"{file_name}: {label} unknown barcode 'symbology' {symbology!r}; "
-            f"valid: {sorted(python_barcode.PROVIDED_BARCODES)}"
-        ) from exc
+            f"valid: {sorted(SUPPORTED_SYMBOLOGIES)}"
+        )
 
 
 def _validate_element(
@@ -593,6 +609,11 @@ def _validate_element(
     # ignored value. Only honoured when a print resolves red=true; otherwise the element draws black.
     if "color" in el:
         _require_choice(file_name, label, "color", el["color"], COLOR_CHOICES)
+    # Horizontal alignment: every renderer falls back to left for an unknown value, so a typo
+    # (`align: centre`) used to print left-aligned with no signal. Validate it like `color`, for
+    # every element type — `align` means the same thing wherever it appears.
+    if "align" in el:
+        _require_choice(file_name, label, "align", el["align"], ALIGN_CHOICES)
     # Text-family decorations: `background` (badge/banner fill) and `border`+`border_color` (boxed
     # text). Validate the enums up front like `color`; `border` (a pixel count) is bounded by the
     # numeric guard above. Only meaningful on text/title/subtitle — a stray value elsewhere is a typo.
@@ -614,6 +635,35 @@ def _validate_element(
             raise TemplateLoadError(
                 f"{file_name}: {label} image 'field' must be a non-empty string, got {image_field!r}"
             )
+    if el_type == "qr" and "error_correction" in el:
+        _require_choice(
+            file_name, label, "error_correction", el["error_correction"], QR_ECL_CHOICES
+        )
+    if el_type == "datamatrix":
+        if "symbol_shape" in el:
+            _require_choice(
+                file_name, label, "symbol_shape", el["symbol_shape"], DATAMATRIX_SHAPE_CHOICES
+            )
+        if "gs1" in el:
+            _require_bool(file_name, label, "gs1", el["gs1"])
+    if el_type == "aztec":
+        kind = el.get("symbol_kind", "auto")
+        if "symbol_kind" in el:
+            _require_choice(file_name, label, "symbol_kind", kind, AZTEC_KIND_CHOICES)
+        # The encoder cannot size a symbol without knowing the family, and a compact symbol has at
+        # most 4 layers: both raise at render otherwise (a 500 behind a template that loaded fine).
+        if "layers" in el:
+            if kind == "auto":
+                raise TemplateLoadError(
+                    f"{file_name}: {label} aztec 'layers' requires an explicit 'symbol_kind' of "
+                    f"compact or full (auto lets the encoder choose the size)"
+                )
+            layers = el["layers"]
+            if kind == "compact" and isinstance(layers, int) and layers > AZTEC_COMPACT_LAYERS_MAX:
+                raise TemplateLoadError(
+                    f"{file_name}: {label} aztec compact symbols have at most "
+                    f"{AZTEC_COMPACT_LAYERS_MAX} layers, got {layers}; use symbol_kind: full"
+                )
     if el_type == "barcode" and "symbology" in el:
         _validate_barcode_symbology(file_name, label, el["symbology"])
     if el_type == "box" and "fill" in el:
@@ -699,6 +749,9 @@ _HEIGHT_DEFAULTS: dict[str, int] = {
     "line": 2,  # LineElement.thickness
     "image": 200,  # ImageElement.max_height
     "qr": 160,  # QRElement.size
+    "datamatrix": 160,  # DataMatrixElement.size (a square box; rectangular symbols are shorter)
+    "aztec": 160,  # AztecElement.size
+    "pdf417": 600,  # PDF417Element.size — its WIDTH; the strip is never taller than the symbol
     "icon": 80,  # IconElement.size
     "barcode": 60,  # BarcodeElement.height
 }
@@ -790,11 +843,14 @@ def _estimate_element_height(el: dict[str, Any]) -> int:
         )
 
     if el_type in _HEIGHT_DEFAULTS:
-        # spacer/image/qr/icon/barcode: a single height-driving attribute.
+        # spacer/image/matrix symbols/icon/barcode: a single height-driving attribute.
         attr = {
             "spacer": "size",
             "image": "max_height",
             "qr": "size",
+            "datamatrix": "size",
+            "aztec": "size",
+            "pdf417": "size",
             "icon": "size",
             "barcode": "height",
         }[el_type]

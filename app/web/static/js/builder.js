@@ -59,6 +59,13 @@
     { key: 'valign', label: 'Cell v-align', control: 'select', choices: ['', ...VALIGN], default: '' },
   ];
 
+  // Font-relative text spacing (multiples of the font size), mirroring LINE_HEIGHT_* and
+  // LETTER_SPACING_* in app/render/elements.py. A blank line height keeps the legacy pitch.
+  const TEXT_SPACING = [
+    { key: 'line_height', label: 'Line height (x size)', control: 'number', decimal: true, min: 0.8, max: 2, step: 0.05, placeholder: 'auto' },
+    { key: 'letter_spacing', label: 'Letter spacing (em)', control: 'number', decimal: true, min: -0.1, max: 0.5, step: 0.01, default: 0 },
+  ];
+
   const SCHEMA = {
     title: {
       label: 'Title', badge: 'T', text: 'text',
@@ -67,6 +74,7 @@
         { key: 'align', label: 'Align', control: 'align', choices: ALIGN, default: 'left' },
         { key: 'max_lines', label: 'Max lines', control: 'number', min: 1, max: 200, default: 2 },
         { key: 'bold', label: 'Bold', control: 'toggle', default: true },
+        ...TEXT_SPACING,
         { key: 'background', label: 'Badge fill', control: 'select', choices: BADGE, default: 'none' },
         { key: 'border', label: 'Border (px)', control: 'number', min: 0, max: 10000, default: 0 },
         { key: 'border_color', label: 'Border color', control: 'select', choices: COLORS, default: 'black' },
@@ -79,6 +87,7 @@
         { key: 'align', label: 'Align', control: 'align', choices: ALIGN, default: 'left' },
         { key: 'max_lines', label: 'Max lines', control: 'number', min: 1, max: 200, default: 2 },
         { key: 'bold', label: 'Bold', control: 'toggle', default: false },
+        ...TEXT_SPACING,
         { key: 'background', label: 'Badge fill', control: 'select', choices: BADGE, default: 'none' },
         { key: 'border', label: 'Border (px)', control: 'number', min: 0, max: 10000, default: 0 },
         { key: 'border_color', label: 'Border color', control: 'select', choices: COLORS, default: 'black' },
@@ -91,6 +100,7 @@
         { key: 'size', label: 'Font size (pt)', control: 'number', min: 1, max: 512, default: 32 },
         { key: 'align', label: 'Align', control: 'align', choices: ALIGN, default: 'left' },
         { key: 'bold', label: 'Bold', control: 'toggle', default: false },
+        ...TEXT_SPACING,
         { key: 'max_lines', label: 'Max lines', control: 'number', min: 1, max: 200, default: 10 },
         { key: 'background', label: 'Badge fill', control: 'select', choices: BADGE, default: 'none' },
         { key: 'border', label: 'Border (px)', control: 'number', min: 0, max: 10000, default: 0 },
@@ -106,6 +116,7 @@
         { key: 'size', label: 'Font size (pt)', control: 'number', min: 1, max: 512, default: 32 },
         { key: 'align', label: 'Align', control: 'align', choices: ALIGN, default: 'left' },
         { key: 'bold', label: 'Bold', control: 'toggle', default: false },
+        ...TEXT_SPACING,
         { key: 'max_items', label: 'Max items', control: 'number', min: 1, max: 200, default: 20 },
       ],
     },
@@ -980,6 +991,7 @@
       inp.type = 'number';
       if (attr.min !== undefined) inp.min = String(attr.min);
       if (attr.max !== undefined) inp.max = String(attr.max);
+      if (attr.step !== undefined) inp.step = String(attr.step);
       // Prefill the effective default (e.g. text font size 32) when the attr is unset, so the field
       // shows the value actually in force rather than a blank — the model stays clean (an untouched
       // default is never written to YAML; setAttr still drops it if re-entered).
@@ -1001,8 +1013,11 @@
         // type=number still admits 'e'/'+'/'-'/'.', so validate explicitly: whole non-negative integers
         // only, within [min,max], and within the server's strip-area cap. On any failure, flag the field
         // and DON'T commit — the model keeps its last valid value so the emitted YAML never goes invalid.
-        if (!/^\d+$/.test(raw)) { setFieldError(wrap, inp, 'Enter a whole number.'); return; }
-        const n = parseInt(raw, 10);
+        // A decimal attr (font-relative spacing) takes an optionally signed decimal; everything
+        // else stays whole non-negative integers.
+        const pattern = attr.decimal ? /^-?(?:\d+(?:\.\d*)?|\.\d+)$/ : /^\d+$/;
+        if (!pattern.test(raw)) { setFieldError(wrap, inp, attr.decimal ? 'Enter a number.' : 'Enter a whole number.'); return; }
+        const n = attr.decimal ? parseFloat(raw) : parseInt(raw, 10);
         if (attr.min !== undefined && n < attr.min) { setFieldError(wrap, inp, 'Minimum is ' + attr.min + '.'); return; }
         if (attr.max !== undefined && n > attr.max) { setFieldError(wrap, inp, 'Maximum is ' + attr.max + '.'); return; }
         const perr = productError(el, attr.key, n);

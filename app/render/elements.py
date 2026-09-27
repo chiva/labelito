@@ -4,14 +4,16 @@
 from __future__ import annotations
 
 import base64
+import functools
 import io
 import logging
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, features
 
 from app.render.symbols import (
     AZTEC_ECC_DEFAULT,
@@ -43,6 +45,18 @@ FONT_SIZES = {"title": 60, "subtitle": 40, "text": 32}
 # shipped template while keeping the strip bounded. The loader's strip-area guard assumes this same
 # default for an uncapped text element (loader.DEFAULT_TEXT_MAX_LINES re-exports this value).
 DEFAULT_TEXT_MAX_LINES = 10
+# Text-family spacing, both relative to the font's pixel size so a value reads the same at any size
+# and doubles with it under high_res. `line_height` is the baseline-to-baseline pitch as a multiple
+# of the size; omitted (None) keeps the legacy pitch — the glyph height plus a fixed 8 px gap, about
+# 1.2x at size 32 but 1.44x at 16 and 1.0x at 120 — so an existing label renders byte-identical.
+# The 2.0 ceiling keeps the loader's 2x-per-line height estimate a true upper bound.
+LINE_HEIGHT_MIN = 0.8
+LINE_HEIGHT_MAX = 2.0
+# `letter_spacing` (tracking) adds a uniform gap after every character, in em, on top of the font's
+# own pair kerning; slightly negative tightens a heading.
+LETTER_SPACING_DEFAULT = 0.0
+LETTER_SPACING_MIN = -0.1
+LETTER_SPACING_MAX = 0.5
 ALIGN_DEFAULT = "left"
 # Horizontal alignment vocabulary shared by every element that has an `align`. The renderers treat
 # anything that is not "center"/"right" as left, so without load-time validation a typo such as
@@ -313,6 +327,24 @@ def _warn_font_fallback(key: str, message: str, *args: object) -> None:
         log.warning(message, *args)
 
 
+@functools.cache
+def _text_layout_engine() -> ImageFont.Layout:
+    """The text shaper, chosen explicitly rather than left to Pillow's silent default.
+
+    RAQM (HarfBuzz) applies the font's GPOS pair kerning; BASIC does not, and sets DejaVu about 7%
+    wider (``AVATAR`` is 193.8 px vs 180.5 px at 48 px), which moves wrap points. Pillow picks RAQM
+    only when its library loads, so a host without it would wrap a preview differently from the print
+    with no signal. Prefer RAQM and warn once when it is missing.
+    """
+    if features.check_feature("raqm"):  # type: ignore[no-untyped-call]  # Pillow ships it unannotated
+        return ImageFont.Layout.RAQM
+    log.warning(
+        "Pillow was built without raqm (HarfBuzz): text renders without pair kerning, about 7%% "
+        "wider than a kerned render, so wrapping may differ from the Docker image"
+    )
+    return ImageFont.Layout.BASIC
+
+
 def _load_font(fonts_dir: Path, size: int, bold: bool = False) -> _Font:
     """Load DejaVu (the font the printed label uses) by name, with graceful fallbacks.
 
@@ -325,10 +357,11 @@ def _load_font(fonts_dir: Path, size: int, bold: bool = False) -> _Font:
       4. ``ImageFont.load_default()`` — PIL's ASCII-only bitmap, the final resort.
     """
     name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    engine = _text_layout_engine()
     for directory in (fonts_dir, Path("/usr/share/fonts/truetype/dejavu")):
         path = directory / name
         if path.exists():
-            return ImageFont.truetype(str(path), size)
+            return ImageFont.truetype(str(path), size, layout_engine=engine)
 
     for regular, bold_path in _FALLBACK_FONTS:
         candidate = Path(bold_path if bold else regular)
@@ -339,7 +372,7 @@ def _load_font(fonts_dir: Path, size: int, bold: bool = False) -> _Font:
                 "not match the printed label — run scripts/fetch-fonts.sh for a faithful preview.",
                 candidate.name,
             )
-            return ImageFont.truetype(str(candidate), size)
+            return ImageFont.truetype(str(candidate), size, layout_engine=engine)
 
     _warn_font_fallback(
         "__bitmap__",
@@ -414,8 +447,59 @@ def _rasterize_svg(path: Path, size: int) -> Image.Image:
     return img.point(lambda p: 0 if p < 128 else 255)
 
 
-def _wrap_text(text: str, font: _Font, max_width: int) -> list[str]:
-    """Wrap text to fit within max_width pixels."""
+_ZERO_WIDTH_JOINER = "‍"
+
+
+def _clusters(line: str) -> list[str]:
+    """Split *line* into the units tracking spaces apart: a base character with its combining marks,
+    and emoji ZWJ sequences, stay together so an accent never drifts off its letter."""
+    clusters: list[str] = []
+    for char in line:
+        joins_previous = unicodedata.combining(char) or char == _ZERO_WIDTH_JOINER
+        if clusters and (joins_previous or clusters[-1].endswith(_ZERO_WIDTH_JOINER)):
+            clusters[-1] += char
+        else:
+            clusters.append(char)
+    return clusters
+
+
+def _line_width(font: _Font, line: str, tracking: float) -> float:
+    """Ink width of *line*: the shaped (kerned) bbox plus the tracking between its clusters."""
+    bbox = font.getbbox(line)
+    width: float = bbox[2] - bbox[0]
+    if tracking:
+        width += tracking * max(0, len(_clusters(line)) - 1)
+    return width
+
+
+def _draw_line(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    line: str,
+    font: _Font,
+    fill: int | tuple[int, int, int],
+    tracking: float,
+) -> None:
+    """Draw *line* at *xy*, spreading its clusters by *tracking* px while keeping pair kerning.
+
+    Untracked text is drawn in one call, exactly as before. Tracked text is drawn cluster by cluster:
+    each cluster sits at the advance the shaper gives it after the preceding text — measured WITH the
+    cluster, minus the cluster alone, so the kern between it and its predecessor is kept — plus
+    ``tracking`` per preceding cluster.
+    """
+    if not tracking:
+        draw.text(xy, line, font=font, fill=fill)
+        return
+    x, y = xy
+    prefix = ""
+    for index, cluster in enumerate(_clusters(line)):
+        offset = font.getlength(prefix + cluster) - font.getlength(cluster)
+        draw.text((x + offset + index * tracking, y), cluster, font=font, fill=fill)
+        prefix += cluster
+
+
+def _wrap_text(text: str, font: _Font, max_width: int, tracking: float = 0.0) -> list[str]:
+    """Wrap text to fit within max_width pixels, counting any tracking toward each line's width."""
     lines: list[str] = []
     for paragraph in text.split("\n"):
         words = paragraph.split()
@@ -425,8 +509,7 @@ def _wrap_text(text: str, font: _Font, max_width: int) -> list[str]:
         current = words[0]
         for word in words[1:]:
             test = current + " " + word
-            bbox = font.getbbox(test)
-            if bbox[2] - bbox[0] <= max_width:
+            if _line_width(font, test, tracking) <= max_width:
                 current = test
             else:
                 lines.append(current)
@@ -446,6 +529,10 @@ def _render_text_block(
     mode: str = "L",
     bg: int | tuple[int, int, int] = 255,
     fill: int | tuple[int, int, int] = 0,
+    *,
+    font_px: int = 0,
+    line_height: float | None = None,
+    letter_spacing: float = LETTER_SPACING_DEFAULT,
 ) -> Image.Image:
     """Render wrapped text into a new image of the correct height.
 
@@ -456,34 +543,42 @@ def _render_text_block(
     ``mode``/``bg``/``fill`` carry the two-color canvas mode and ink: in the monochrome
     pipeline they default to the original ``"L"``/255/0 so output is byte-identical; in two-color
     mode the caller passes ``"RGB"`` with a white-tuple background and a red/black ink tuple.
+
+    ``line_height`` and ``letter_spacing`` are multiples of ``font_px`` (the scaled font size). With
+    ``line_height`` None and zero ``letter_spacing`` the block is byte-identical to the legacy layout.
+    An explicit ``line_height`` sets the baseline pitch; the strip is then sized from the last line's
+    glyph box rather than a full pitch, so a pitch tighter than the glyphs never clips the last line.
     """
     line_gap = 8 * scale
     block_pad = 8 * scale
     top_pad = 4 * scale
+    tracking = letter_spacing * font_px
     effective_width = canvas_width - 2 * padding_h
-    lines = _wrap_text(text, font, effective_width)
+    lines = _wrap_text(text, font, effective_width, tracking)
     if max_lines:
         lines = lines[:max_lines]
 
     sample_bbox = font.getbbox("Ay")
-    line_height = (sample_bbox[3] - sample_bbox[1]) + line_gap
-
-    total_height = line_height * len(lines) + block_pad
+    if line_height is None:
+        pitch = (sample_bbox[3] - sample_bbox[1]) + line_gap
+        total_height = pitch * len(lines) + block_pad
+    else:
+        pitch = max(1, round(line_height * font_px))
+        total_height = top_pad + pitch * (len(lines) - 1) + sample_bbox[3] + block_pad
     img = Image.new(mode, (canvas_width, total_height), bg)
     draw = ImageDraw.Draw(img)
 
     y = top_pad
     for line in lines:
-        bbox = font.getbbox(line)
-        text_w = bbox[2] - bbox[0]
+        text_w = round(_line_width(font, line, tracking))
         if align == "center":
             x = (canvas_width - text_w) // 2
         elif align == "right":
             x = canvas_width - text_w - padding_h
         else:
             x = padding_h
-        draw.text((x, y), line, font=font, fill=fill)
-        y += line_height
+        _draw_line(draw, (x, y), line, font, fill, tracking)
+        y += pitch
 
     return img
 
@@ -529,6 +624,8 @@ class TitleElement(ElementBase):
     background: str = TEXT_BACKGROUND_NONE
     border: int = 0
     border_color: str = COLOR_DEFAULT
+    line_height: float | None = None
+    letter_spacing: float = LETTER_SPACING_DEFAULT
 
     def render(
         self,
@@ -541,7 +638,8 @@ class TitleElement(ElementBase):
         text = str(resolved_fields.get("__text__", self.text))
         if not text.strip():
             return self._new_canvas(canvas_width, 0)
-        font = _load_font(fonts_dir, self._px(FONT_SIZES["title"]), self.bold)
+        font_px = self._px(FONT_SIZES["title"])
+        font = _load_font(fonts_dir, font_px, self.bold)
         bg, fill = _block_colors(self)
         img = _render_text_block(
             text,
@@ -554,6 +652,9 @@ class TitleElement(ElementBase):
             self._canvas_mode,
             bg,
             fill,
+            font_px=font_px,
+            line_height=self.line_height,
+            letter_spacing=self.letter_spacing,
         )
         return _apply_border(self, img)
 
@@ -568,6 +669,8 @@ class SubtitleElement(ElementBase):
     background: str = TEXT_BACKGROUND_NONE
     border: int = 0
     border_color: str = COLOR_DEFAULT
+    line_height: float | None = None
+    letter_spacing: float = LETTER_SPACING_DEFAULT
 
     def render(
         self,
@@ -580,7 +683,8 @@ class SubtitleElement(ElementBase):
         text = str(resolved_fields.get("__text__", self.text))
         if not text.strip():
             return self._new_canvas(canvas_width, 0)
-        font = _load_font(fonts_dir, self._px(FONT_SIZES["subtitle"]), self.bold)
+        font_px = self._px(FONT_SIZES["subtitle"])
+        font = _load_font(fonts_dir, font_px, self.bold)
         bg, fill = _block_colors(self)
         img = _render_text_block(
             text,
@@ -593,6 +697,9 @@ class SubtitleElement(ElementBase):
             self._canvas_mode,
             bg,
             fill,
+            font_px=font_px,
+            line_height=self.line_height,
+            letter_spacing=self.letter_spacing,
         )
         return _apply_border(self, img)
 
@@ -611,6 +718,8 @@ class TextElement(ElementBase):
     background: str = TEXT_BACKGROUND_NONE
     border: int = 0
     border_color: str = COLOR_DEFAULT
+    line_height: float | None = None
+    letter_spacing: float = LETTER_SPACING_DEFAULT
 
     def render(
         self,
@@ -623,7 +732,8 @@ class TextElement(ElementBase):
         text = str(resolved_fields.get("__text__", self.text))
         if not text.strip():
             return self._new_canvas(canvas_width, 0)
-        font = _load_font(fonts_dir, self._px(self.size), self.bold)
+        font_px = self._px(self.size)
+        font = _load_font(fonts_dir, font_px, self.bold)
         bg, fill = _block_colors(self)
         img = _render_text_block(
             text,
@@ -636,6 +746,9 @@ class TextElement(ElementBase):
             self._canvas_mode,
             bg,
             fill,
+            font_px=font_px,
+            line_height=self.line_height,
+            letter_spacing=self.letter_spacing,
         )
         return _apply_border(self, img)
 
@@ -1522,6 +1635,8 @@ class ListElement(ElementBase):
     align: str = ALIGN_DEFAULT
     bold: bool = False
     max_items: int = LIST_DEFAULT_MAX_ITEMS
+    line_height: float | None = None
+    letter_spacing: float = LETTER_SPACING_DEFAULT
 
     def _item_lines(self, text: str) -> list[str]:
         """Split *text* into non-blank items (capped at max_items) and prefix each with the marker."""
@@ -1541,7 +1656,9 @@ class ListElement(ElementBase):
         """The marker-prefixed items joined into one block string (one item per line)."""
         return "\n".join(self._item_lines(text))
 
-    def _budgeted_lines(self, items: list[str], font: _Font, effective_width: int) -> list[str]:
+    def _budgeted_lines(
+        self, items: list[str], font: _Font, effective_width: int, tracking: float = 0.0
+    ) -> list[str]:
         """Wrap each item and allocate the ``max_items`` line budget fairly across items.
 
         Passing the joined block to :func:`_render_text_block` with a single ``max_lines`` cap slices
@@ -1551,7 +1668,7 @@ class ListElement(ElementBase):
         total stays bounded by ``max_items`` (the bound the loader's strip-area guard assumes), while
         no item can be omitted entirely.
         """
-        wrapped = [_wrap_text(item, font, effective_width) or [""] for item in items]
+        wrapped = [_wrap_text(item, font, effective_width, tracking) or [""] for item in items]
         kept = [lines[:1] for lines in wrapped]
         remaining = max(0, self.max_items - len(kept))
         for i, lines in enumerate(wrapped):
@@ -1577,8 +1694,11 @@ class ListElement(ElementBase):
             # An empty/blank field (e.g. an omitted optional list) renders nothing — like every
             # empty text-family element — so it adds no strip to the stack and leaves no gap.
             return self._new_canvas(canvas_width, 0)
-        font = _load_font(fonts_dir, self._px(self.size), self.bold)
-        flat = self._budgeted_lines(items, font, canvas_width - 2 * self._px(8))
+        font_px = self._px(self.size)
+        font = _load_font(fonts_dir, font_px, self.bold)
+        flat = self._budgeted_lines(
+            items, font, canvas_width - 2 * self._px(8), self.letter_spacing * font_px
+        )
         return _render_text_block(
             "\n".join(flat),
             font,
@@ -1592,6 +1712,9 @@ class ListElement(ElementBase):
             self._canvas_mode,
             self._bg,
             self._ink,
+            font_px=font_px,
+            line_height=self.line_height,
+            letter_spacing=self.letter_spacing,
         )
 
 

@@ -2527,3 +2527,90 @@ def test_barcode_symbology_itf14_loads_and_unknown_lists_it(tmp_path: Path) -> N
     )
     with pytest.raises(TemplateLoadError, match=r"unknown barcode 'symbology' 'code93'.*'itf14'"):
         load_template(bad)
+
+
+# ── Text spacing: line_height / letter_spacing ───────────────────────────────────
+def _spacing_draft(el_type: str, attrs: str) -> str:
+    return (
+        'name: spacing\ndescription: d\nlabel: "62"\nlayout:\n'
+        f'  - {{type: {el_type}, text: "Hello world", {attrs}}}\n'
+    )
+
+
+@pytest.mark.parametrize("el_type", ["title", "subtitle", "text", "list"])
+@pytest.mark.parametrize(
+    "attrs",
+    [
+        "line_height: 0.8",
+        "line_height: 2",
+        "line_height: 1.25, letter_spacing: 0.05",
+        "letter_spacing: -0.1",
+        "letter_spacing: 0.5",
+    ],
+)
+def test_text_spacing_in_range_loads(el_type: str, attrs: str) -> None:
+    validate_template_from_string(_spacing_draft(el_type, attrs))
+
+
+@pytest.mark.parametrize("el_type", ["title", "subtitle", "text", "list"])
+@pytest.mark.parametrize(
+    ("attrs", "message"),
+    [
+        ("line_height: 0.79", r"'line_height' must be between 0.8 and 2.0, got 0.79"),
+        ("line_height: 2.01", r"'line_height' must be between 0.8 and 2.0"),
+        ("letter_spacing: -0.11", r"'letter_spacing' must be between -0.1 and 0.5"),
+        ("letter_spacing: 0.6", r"'letter_spacing' must be between -0.1 and 0.5"),
+        ('line_height: "1.2"', r"'line_height' must be a number, got '1.2'"),
+        ("letter_spacing: true", r"'letter_spacing' must be a number, got True"),
+        ("line_height: .nan", r"'line_height' must be a number, got nan"),
+        ("letter_spacing: .inf", r"'letter_spacing' must be a number, got inf"),
+        ("line_height: null", r"'line_height' must not be null; omit the key"),
+        ("letter_spacing: null", r"'letter_spacing' must not be null; omit the key"),
+    ],
+)
+def test_text_spacing_out_of_range_or_malformed_is_rejected(
+    el_type: str, attrs: str, message: str
+) -> None:
+    """NaN compares false against every bound, so it needs an explicit rejection; an explicit null
+    would reach the renderer's arithmetic as None."""
+    with pytest.raises(TemplateLoadError, match=message):
+        validate_template_from_string(_spacing_draft(el_type, attrs))
+
+
+def test_text_spacing_is_validated_inside_containers() -> None:
+    draft = (
+        'name: spacing\ndescription: d\nlabel: "62"\nlayout:\n'
+        "  - type: row\n    children:\n"
+        "      - type: column\n        children:\n"
+        '          - {type: text, text: "x", line_height: 3}\n'
+    )
+    with pytest.raises(TemplateLoadError, match=r"children\[0\]\.children\[0\] 'line_height'"):
+        validate_template_from_string(draft)
+
+
+def test_line_height_ceiling_stays_within_the_height_budget_factor() -> None:
+    """The layout budget estimates every text line at 2x its font size; a line_height above that
+    would let a strip outgrow the estimate the allocation guard relies on."""
+    from app.loader import _TEXT_LINE_HEIGHT_FACTOR
+    from app.render.elements import LINE_HEIGHT_MAX
+
+    assert LINE_HEIGHT_MAX <= _TEXT_LINE_HEIGHT_FACTOR
+
+
+def test_builder_text_spacing_bounds_mirror_the_renderer() -> None:
+    """The studio validates spacing client-side against its own copy of the bounds; drift would
+    either reject values the loader accepts or commit ones it 422s."""
+    import re
+
+    from app.render import elements
+
+    builder = (
+        Path(__file__).resolve().parent.parent / "app" / "web" / "static" / "js" / "builder.js"
+    ).read_text(encoding="utf-8")
+    for key, low, high in (
+        ("line_height", elements.LINE_HEIGHT_MIN, elements.LINE_HEIGHT_MAX),
+        ("letter_spacing", elements.LETTER_SPACING_MIN, elements.LETTER_SPACING_MAX),
+    ):
+        match = re.search(rf"key: '{key}'.*?min: (-?[\d.]+), max: (-?[\d.]+)", builder)
+        assert match, f"builder.js has no bounded '{key}' control"
+        assert (float(match.group(1)), float(match.group(2))) == (low, high), key

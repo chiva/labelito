@@ -44,8 +44,11 @@ RUN bash scripts/fetch-icons.sh /icons
 FROM python:3.13-slim-trixie@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
 
 # libcairo2 is the runtime backing cairosvg (icon-collection SVG rasterization).
+# libfribidi0 completes Pillow's raqm text layout: the wheel bundles raqm and HarfBuzz but loads
+# FriBiDi from the system, and without it Pillow silently falls back to BASIC layout — no pair
+# kerning, text ~7% wider than a dev preview, different wrapping. The smoke test asserts raqm.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      fonts-dejavu-core libusb-1.0-0 libcairo2 && rm -rf /var/lib/apt/lists/*
+      fonts-dejavu-core libusb-1.0-0 libcairo2 libfribidi0 && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app /app
 # Bundled collections live OUTSIDE the assets/icons VOLUME so a user's bind-mount can't shadow them.

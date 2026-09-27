@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.0](https://github.com/chiva/labelito/compare/v0.19.0...v1.0.0) (2026-09-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **render:** rotate 90/270 on continuous media now requires `length`; such templates previously loaded and printed distorted.
+
+### Features
+
+* **render:** dot-exact matrix codes (qr, datamatrix, aztec, pdf417) and itf-14 ([#136](https://github.com/chiva/labelito/issues/136)) ([882c8fa](https://github.com/chiva/labelito/commit/882c8fabaf0fdf245b21e0f455c8e48116d3d54d))
+* **render:** font-relative line_height and letter_spacing for text ([#138](https://github.com/chiva/labelito/issues/138)) ([1d16f66](https://github.com/chiva/labelito/commit/1d16f66fd65318285bcd10dc9927d3a5e73e7450))
+* **render:** landscape layouts on continuous media via length ([#135](https://github.com/chiva/labelito/issues/135)) ([cedf386](https://github.com/chiva/labelito/commit/cedf386fd67938276027da47e084c6de92b76b3b))
+* **render:** selectable label fonts with per-character fallback ([#139](https://github.com/chiva/labelito/issues/139)) ([8f705d7](https://github.com/chiva/labelito/commit/8f705d7a28a0978c27c766095a8b265cf0c209a0))
+* **studio:** font picker that previews each font in its own face ([#140](https://github.com/chiva/labelito/issues/140)) ([17a360d](https://github.com/chiva/labelito/commit/17a360dbf61dd6ff6f7e3a97566c9c0d90f32ae5))
+
+
+### Bug Fixes
+
+* **deps:** update non-major dependencies ([#119](https://github.com/chiva/labelito/issues/119)) ([48be507](https://github.com/chiva/labelito/commit/48be507788b14d467c3f96a7d71758675ffb6bee))
+* **studio:** stop the YAML scroll proxy echo from undoing a newer scroll ([#143](https://github.com/chiva/labelito/issues/143)) ([054ecce](https://github.com/chiva/labelito/commit/054ecce0032e6328d775b49faa5c72baa79260a1))
+
 ## [0.19.0](https://github.com/chiva/labelito/compare/v0.18.1...v0.19.0) (2026-09-03)
 
 

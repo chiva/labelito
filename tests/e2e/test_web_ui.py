@@ -2004,21 +2004,37 @@ def test_studio_horizontal_scroll_proxy_shows_and_syncs_for_long_lines(authed_pa
     expect(hscroll).not_to_have_class(re.compile(r"\bhscroll-hidden\b"))
 
     # textarea scroll -> proxy scroll.
-    # fill() leaves the caret at the end of the 500-char line, and the browser scrolls the textarea
-    # to keep it in view (scrollLeft ends near its maximum). Let that reveal land and blur, so a
-    # late caret reveal on a slow runner cannot override the scroll set below.
-    authed_page.wait_for_function(
-        "() => { const t = document.getElementById('yaml'), h = document.getElementById('yaml-hscroll');"
-        " return t.scrollLeft > 0 && h.scrollLeft === t.scrollLeft; }"
-    )
-    authed_page.locator("#yaml").blur()
-
     authed_page.evaluate("() => { document.getElementById('yaml').scrollLeft = 120; }")
     _wait_for_scroll_left(authed_page, "yaml-hscroll", 120)
 
     # proxy scroll -> textarea scroll.
     authed_page.evaluate("() => { document.getElementById('yaml-hscroll').scrollLeft = 40; }")
     _wait_for_scroll_left(authed_page, "yaml", 40)
+
+
+def test_studio_hscroll_mirror_echo_cannot_undo_a_newer_scroll(authed_page: Page) -> None:
+    """Regression: mirroring the textarea onto the proxy queues a proxy 'scroll' event, and scroll
+    events arrive asynchronously. A textarea scroll that lands before that echo (here forced inside
+    the first scroll's own event) used to be overwritten by the echoed stale position, leaving both
+    stuck — the CI flake where a caret reveal to the line end beat the scroll back to 120."""
+    authed_page.goto("/editor")
+    _studio_yaml_mode(authed_page)
+    authed_page.fill("#yaml", "key: " + "x" * 500)
+    authed_page.locator("#yaml").blur()
+    authed_page.evaluate("() => { document.getElementById('yaml').scrollLeft = 0; }")
+    _wait_for_scroll_left(authed_page, "yaml-hscroll", 0)
+
+    authed_page.evaluate(
+        """() => {
+          const t = document.getElementById('yaml');
+          t.addEventListener('scroll', () => { t.scrollLeft = 120; }, {once: true});
+          t.scrollLeft = 3000;
+        }"""
+    )
+    _wait_for_scroll_left(authed_page, "yaml-hscroll", 120)
+    authed_page.wait_for_timeout(300)  # give any stale echo time to land
+    state = authed_page.evaluate(_YAML_SCROLL_STATE)
+    assert (state["textarea"]["scrollLeft"], state["proxy"]["scrollLeft"]) == (120, 120), state
 
 
 def test_studio_horizontal_scroll_proxy_hidden_for_short_drafts(authed_page: Page) -> None:

@@ -1372,14 +1372,21 @@
     const yamlHscroll = document.getElementById('yaml-hscroll');
     const yamlHscrollSpacer = document.getElementById('yaml-hscroll-spacer');
     yamlTextarea.addEventListener('input', syncYamlHighlight);
+    // The last scrollLeft this code wrote to the proxy. Scroll events are delivered asynchronously,
+    // so mirroring the textarea onto the proxy queues a proxy 'scroll' event that can run AFTER a
+    // newer textarea scroll: echoed back unchecked, it copies the stale position over the new one
+    // (e.g. a caret reveal to the line end, then a scroll back to 120, ends stuck at the end).
+    let mirroredToProxy = null;
     yamlTextarea.addEventListener('scroll', () => {
       yamlHl.scrollTop = yamlTextarea.scrollTop;
       yamlHl.scrollLeft = yamlTextarea.scrollLeft;
+      mirroredToProxy = yamlTextarea.scrollLeft;
       yamlHscroll.scrollLeft = yamlTextarea.scrollLeft;
     });
     yamlHscroll.addEventListener('scroll', () => {
-      // Setting scrollLeft to its current value doesn't re-fire that element's own 'scroll' event,
-      // so this can't loop with the textarea listener above even without an extra guard flag.
+      // Our own mirror write echoing back is not user input: ignore it, or it can undo a newer
+      // textarea scroll. Only a proxy position the textarea did not just set is pushed back.
+      if (yamlHscroll.scrollLeft === mirroredToProxy) return;
       yamlTextarea.scrollLeft = yamlHscroll.scrollLeft;
     });
 

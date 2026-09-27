@@ -207,7 +207,8 @@ def encode_datamatrix(
         marks = encoder.get_rect_marks()
     except PyStrichError as exc:
         raise SymbolEncodeError(
-            f"datamatrix: cannot encode {len(data)} characters as a {symbol_shape} symbol: {exc}"
+            f"datamatrix: cannot encode {len(data)} characters with symbol_shape {symbol_shape}: "
+            f"{exc}"
         ) from exc
     return Symbol2D(
         marks=tuple(marks.marks),

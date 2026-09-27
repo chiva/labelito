@@ -139,6 +139,26 @@ def test_encode_datamatrix_rejects_unknown_shape() -> None:
         encode_datamatrix("x", "round")
 
 
+@pytest.mark.parametrize(
+    ("shape", "length"),
+    [
+        ("square", 3200),  # past the 144x144 symbol's 3116 digits
+        ("auto", 3200),
+        ("rectangular", 99),  # the largest rectangular symbol holds 98 digits: a realistic overflow
+    ],
+)
+def test_encode_datamatrix_overflow_names_the_shape(shape: str, length: int) -> None:
+    """A payload the symbol cannot hold surfaces as SymbolEncodeError naming the length and shape,
+    never as pyStrich's own exception type, so the API's "Render error" carries a readable reason."""
+    from app.render.symbols import SymbolEncodeError, encode_datamatrix
+
+    with pytest.raises(
+        SymbolEncodeError,
+        match=rf"cannot encode {length} characters with symbol_shape {shape}: ",
+    ):
+        encode_datamatrix("9" * length, shape)
+
+
 # ── encode_aztec ────────────────────────────────────────────────────────────────
 def test_encode_aztec_compact_symbol_has_no_quiet_zone() -> None:
     from app.render.symbols import AZTEC_QUIET_MODULES, encode_aztec

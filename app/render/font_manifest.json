@@ -22,6 +22,11 @@
       "styles": {
         "regular": {},
         "bold": {}
+      },
+      "license_file": {
+        "file": "LICENSE",
+        "url": "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/version_2_37/LICENSE",
+        "sha256": "7a083b136e64d064794c3419751e5c7dd10d2f64c108fe5ba161eae5e5958a93"
       }
     },
     {
@@ -602,7 +607,8 @@
         "file": "DSEG-LICENSE.txt",
         "url": "https://raw.githubusercontent.com/keshikan/DSEG/v0.46/DSEG-LICENSE.txt",
         "sha256": "c6ee0567859cb7cc8d992149bbd96ad359ef65fb7355f7feae0547555ffacd23"
-      }
+      },
+      "preview_sample": "12:30"
     },
     {
       "key": "dseg14-classic",
@@ -629,7 +635,8 @@
         "file": "DSEG-LICENSE.txt",
         "url": "https://raw.githubusercontent.com/keshikan/DSEG/v0.46/DSEG-LICENSE.txt",
         "sha256": "c6ee0567859cb7cc8d992149bbd96ad359ef65fb7355f7feae0547555ffacd23"
-      }
+      },
+      "preview_sample": "12:30"
     }
   ]
 }

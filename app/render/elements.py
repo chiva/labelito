@@ -350,6 +350,19 @@ def _text_layout_engine() -> ImageFont.Layout:
     return ImageFont.Layout.BASIC
 
 
+DEJAVU_SYSTEM_DIR = Path("/usr/share/fonts/truetype/dejavu")
+
+
+def dejavu_path(fonts_dir: Path, bold: bool = False) -> Path | None:
+    """The DejaVu Sans file the label prints with: the ``fonts_dir`` copy, else the Debian package's
+    (baked into the image). None when neither exists. Also what the studio serves for its preview."""
+    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    for directory in (fonts_dir, DEJAVU_SYSTEM_DIR):
+        if (directory / name).exists():
+            return directory / name
+    return None
+
+
 def _load_font(fonts_dir: Path, size: int, bold: bool = False) -> _Font:
     """Load DejaVu (the font the printed label uses) by name, with graceful fallbacks.
 
@@ -361,12 +374,10 @@ def _load_font(fonts_dir: Path, size: int, bold: bool = False) -> _Font:
          not fetched DejaVu) rendering real text instead of tofu; warned, since it is off-font.
       4. ``ImageFont.load_default()`` — PIL's ASCII-only bitmap, the final resort.
     """
-    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
     engine = _text_layout_engine()
-    for directory in (fonts_dir, Path("/usr/share/fonts/truetype/dejavu")):
-        path = directory / name
-        if path.exists():
-            return ImageFont.truetype(str(path), size, layout_engine=engine)
+    path = dejavu_path(fonts_dir, bold)
+    if path is not None:
+        return ImageFont.truetype(str(path), size, layout_engine=engine)
 
     for regular, bold_path in _FALLBACK_FONTS:
         candidate = Path(bold_path if bold else regular)

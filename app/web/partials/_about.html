@@ -50,6 +50,21 @@
         <dt>License</dt>
         <dd>{{ app_license }}</dd>
       </div>
+      {% if label_fonts %}
+      <div class="about-row">
+        <dt>Label fonts</dt>
+        <dd>
+          <details class="about-fonts">
+            <summary>{{ label_fonts | length }} families, each under its own licence</summary>
+            <ul class="about-font-list">
+              {% for font in label_fonts %}
+              <li>{{ font.name }} · <a href="{{ base_path | default('') }}{{ font.license_path }}" target="_blank" rel="noopener noreferrer">{{ font.license }}</a></li>
+              {% endfor %}
+            </ul>
+          </details>
+        </dd>
+      </div>
+      {% endif %}
     </dl>
   </section>
 

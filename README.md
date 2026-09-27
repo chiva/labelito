@@ -291,6 +291,16 @@ uv run ruff check . && uv run mypy app/                  # lint + strict types
 New here? [docs/development.md](docs/development.md) is the full onboarding guide, and a VS Code /
 Codespaces **dev container** (`.devcontainer/`) provisions everything in one click.
 
+## Third-party fonts
+
+Labels can use 28 font families (see [Fonts](docs/template-format.md#fonts)). DejaVu Sans, the
+default, is installed from Debian's `fonts-dejavu-core` (Bitstream Vera licence). The others are
+fetched at image build time by `scripts/fetch_label_fonts.py` from pinned upstream sources —
+[google/fonts](https://github.com/google/fonts) and [DSEG](https://github.com/keshikan/DSEG) — and
+each file is checked against the SHA-256 in `app/render/font_manifest.json`. They are distributed
+unmodified under the SIL Open Font License 1.1 or the Apache License 2.0, with each family's licence
+in `/app/assets/label-fonts/<key>/LICENSE.txt` in the image.
+
 ## License
 
 [GPL-3.0-or-later](LICENSE). This is required: the service imports `brother_ql` (via

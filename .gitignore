@@ -36,6 +36,9 @@ coverage.xml
 # DejaVu fonts — fetched for local dev (scripts/fetch-fonts.sh); the image installs them via apt
 /fonts/
 
+# Selectable label fonts — fetched into the image at build time (scripts/fetch_label_fonts.py for dev)
+/label-fonts/
+
 # Node deps for the icon collections — installed from the committed pnpm-lock.yaml; never committed
 /node_modules/
 

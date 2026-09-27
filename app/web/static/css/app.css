@@ -1297,6 +1297,23 @@ dialog::backdrop {
   color: var(--blue-light);
 }
 
+.about-fonts summary {
+  cursor: pointer;
+  color: var(--ink2);
+}
+
+.about-font-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 160px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
 [data-theme="light"] .about-row a {
   color: var(--blue-deep);
 }

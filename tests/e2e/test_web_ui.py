@@ -4019,3 +4019,120 @@ def test_studio_visual_builder_edits_font_relative_text_spacing(authed_page: Pag
     expect(yaml).to_have_value(re.compile(r"letter_spacing: -0\.05"))
     spacing.fill("0")  # the default is dropped from the YAML, not written out
     expect(yaml).not_to_have_value(re.compile(r"letter_spacing:"))
+
+
+_REGISTERED_LABEL_FONTS = (
+    "() => [...document.fonts].filter((f) => f.family.startsWith('labelito-'))"
+    ".map((f) => [f.family, f.status])"
+)
+
+
+def _font_picker(scope: Locator) -> tuple[Locator, Locator]:
+    button = scope.get_by_role("button", name=re.compile(r"^Font "))
+    return button, scope.get_by_role("listbox", name="Font")
+
+
+def test_studio_font_picker_previews_each_font_in_its_own_face(authed_page: Page) -> None:
+    """Every option is drawn in its own label font, grouped by style, and the faces load lazily
+    from /label-fonts only as their options scroll into view — opening the picker never pulls all
+    ~12 MB at once. Needs the fetched fonts (CI fetches them for this job)."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    button, listbox = _font_picker(authed_page.locator(".lb-inspector"))
+    expect(button).to_have_text("DejaVu Sans")
+    expect(button).to_have_attribute("aria-expanded", "false")
+
+    button.click()
+    expect(listbox).to_be_visible()
+    expect(button).to_have_attribute("aria-expanded", "true")
+    for group in ("Sans-serif", "Handwritten", "Typewriter", "LCD"):
+        expect(listbox.get_by_role("group", name=group)).to_be_attached()
+    patrick = listbox.get_by_role("option", name=re.compile(r"^Patrick Hand"))
+    expect(patrick.locator(".lb-font-name")).to_have_css(
+        "font-family", re.compile(r"labelito-patrick-hand")
+    )
+    expect(patrick).to_contain_text("no bold")
+    dseg = listbox.get_by_role("option", name=re.compile(r"^DSEG7 Classic"))
+    expect(dseg.locator(".lb-font-sample")).to_have_text("12:30")
+
+    # Lazy: the last families are not registered until scrolled to; then they load for real.
+    registered = dict(authed_page.evaluate(_REGISTERED_LABEL_FONTS))
+    assert "labelito-dseg14-classic" not in registered, registered
+    dseg.scroll_into_view_if_needed()
+    authed_page.wait_for_function(
+        "() => [...document.fonts].some((f) => f.family === 'labelito-dseg14-classic'"
+        " && f.status === 'loaded')"
+    )
+
+
+def test_studio_font_picker_is_keyboard_operable(authed_page: Page) -> None:
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    yaml = authed_page.locator("#yaml")
+    button, listbox = _font_picker(authed_page.locator(".lb-inspector"))
+
+    button.focus()
+    authed_page.keyboard.press("ArrowDown")
+    expect(listbox).to_be_focused()
+    authed_page.keyboard.type("cour")  # type-ahead
+    active = listbox.get_attribute("aria-activedescendant")
+    expect(listbox.locator(f"#{active}")).to_contain_text("Courier Prime")
+    authed_page.keyboard.press("Enter")
+    expect(listbox).to_be_hidden()
+    expect(button).to_be_focused()
+    expect(button).to_have_text("Courier Prime")
+    expect(yaml).to_have_value(re.compile(r"^font: courier-prime$", re.M))
+
+    # Escape closes without changing anything; End jumps to the last family.
+    authed_page.keyboard.press("Enter")
+    authed_page.keyboard.press("End")
+    authed_page.keyboard.press("Escape")
+    expect(listbox).to_be_hidden()
+    expect(button).to_have_text("Courier Prime")
+    authed_page.keyboard.press("ArrowDown")
+    authed_page.keyboard.press("End")
+    authed_page.keyboard.press(" ")
+    expect(yaml).to_have_value(re.compile(r"^font: dseg14-classic$", re.M))
+
+
+def test_studio_element_font_inherits_or_overrides_and_round_trips(authed_page: Page) -> None:
+    """A text block inherits the template font until it picks its own; the canvas block previews
+    the effective font; YAML <-> Visual keeps both levels."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    yaml = authed_page.locator("#yaml")
+    inspector = authed_page.locator(".lb-inspector")
+    template_button, template_list = _font_picker(inspector)
+    template_button.click()
+    template_list.get_by_role("option", name=re.compile(r"^Courier Prime")).click()
+
+    authed_page.locator(".lb-palette").get_by_text("Text", exact=True).click()
+    block = authed_page.locator(".lb-canvas .lb-block").last
+    block.click()
+    content = block.locator(".lb-content")
+    expect(content).to_have_css("font-family", re.compile(r"labelito-courier-prime"))
+
+    button, listbox = _font_picker(inspector)
+    expect(button).to_have_text("(inherit) Courier Prime")
+    button.click()
+    inherit = listbox.get_by_role("option", name=re.compile(r"^\(inherit\)"))
+    expect(inherit).to_contain_text("Courier Prime")
+    listbox.get_by_role("option", name=re.compile(r"^VT323")).click()
+    expect(yaml).to_have_value(re.compile(r"type: text.*font: \"?vt323"))
+    expect(content).to_have_css("font-family", re.compile(r"labelito-vt323"))
+
+    button.click()
+    listbox.get_by_role("option", name=re.compile(r"^\(inherit\)")).click()
+    expect(yaml).not_to_have_value(re.compile(r"vt323"))
+    expect(yaml).to_have_value(re.compile(r"^font: courier-prime$", re.M))
+
+    _studio_yaml_mode(authed_page)
+    authed_page.fill(
+        "#yaml",
+        'name: f\ndescription: d\nlabel: "62"\nfont: inter\nlayout:\n'
+        "  - {type: text, text: hi, font: vt323}\n",
+    )
+    authed_page.get_by_role("button", name="Visual", exact=True).click()
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    expect(yaml).to_have_value(re.compile(r"^font: inter$", re.M))
+    expect(yaml).to_have_value(re.compile(r"font: \"?vt323"))

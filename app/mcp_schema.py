@@ -40,6 +40,7 @@ from app.render.elements import (
     ElementBase,
 )
 from app.render.engine import _FIELD_RE, _TEMPLATED_ATTRS, COMPUTED_TOKENS
+from app.render.fonts import DEFAULT_FONT, FONT_REGISTRY
 from app.render.symbols import SUPPORTED_SYMBOLOGIES
 
 # Element dataclass fields that a template must never set: the engine owns them (see
@@ -121,6 +122,10 @@ def template_schema_markdown() -> str:
     exts = " then ".join(f"`{e}`" for e in ICON_ASSET_EXTS)
     valigns = ", ".join(f"`{v}`" for v in sorted(VALIGN_CHOICES))
     symbologies = ", ".join(f"`{s}`" for s in sorted(SUPPORTED_SYMBOLOGIES))
+    font_rows = "\n".join(
+        f"| `{f.key}` | {f.name} | {f.category} | {'yes' if f.has_bold else 'no'} | {f.license} |"
+        for f in FONT_REGISTRY.values()
+    )
 
     return f"""# labelito template schema
 
@@ -135,6 +140,7 @@ description: What it is   # required
 label: "62"               # required; a label id from get_capabilities (quote it — "62" is a string)
 rotate: 0                 # 0, 90, 180 or 270
 valign: top               # {valigns} — vertical placement on die-cut media with leftover height
+font: {DEFAULT_FONT}         # label-wide font for text elements — see Fonts below
 # length: 100             # mm; ONLY with rotate 90/270 on continuous media — see Landscape below
 aliases: [my label]       # optional; other ways a PERSON SAYS this name, for voice matching
 fields:
@@ -186,6 +192,17 @@ layout:
   - {{type: text, text: "{{{{name}}}}", size: 64, bold: true, max_lines: 1}}
   - {{type: text, text: "{{{{line1}}}}", size: 44, max_lines: 1}}
 ```
+
+## Fonts
+
+`title`, `subtitle`, `text` and `list` take a `font`; the top-level `font` sets it for every one
+that does not. A character the chosen font lacks (an accent in a pixel or seven-segment font) is
+drawn in `{DEFAULT_FONT}` instead, so text is never lost. `bold: true` on a font without a bold
+style draws its regular style.
+
+| key | name | style | bold | license |
+| --- | --- | --- | --- | --- |
+{font_rows}
 
 ## Tokens
 

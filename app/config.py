@@ -122,6 +122,10 @@ class Settings(BaseSettings):
     # from icons_dir so a user bind-mounting their own assets/icons cannot shadow the collections;
     # this path is read-only image content, never a runtime volume.
     icon_collections_dir: Path = Path("assets/icon-collections")
+    # Selectable label fonts (app/render/font_manifest.json), baked into the image at build time by
+    # scripts/fetch_label_fonts.py. Like icon_collections_dir this is read-only image content, never
+    # a runtime volume; a family whose files are missing renders in DejaVu with a warning.
+    label_fonts_dir: Path = Path("label-fonts")
     data_dir: Path = Path("data")
     translations_dir: Path = Path("translations")
     # Bundled translation catalogs, baked outside the translations_dir VOLUME — same rationale as

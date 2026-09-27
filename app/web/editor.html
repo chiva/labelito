@@ -167,6 +167,21 @@
     .lb-field .input.lb-invalid { border-color: var(--red, #d33); box-shadow: 0 0 0 2px color-mix(in srgb, var(--red, #d33) 25%, transparent); }
     .lb-field-error { font-size: 11px; line-height: 1.4; color: var(--red, #d33); }
     .lb-optional-tag { font-weight: 400; color: var(--ink3); text-transform: none; letter-spacing: 0; }
+    /* Font picker: each option is drawn in its own label font (loaded lazily from /label-fonts). */
+    .lb-font-picker { position: relative; }
+    .lb-font-btn { width: 100%; display: flex; align-items: baseline; gap: 6px; text-align: left; cursor: pointer; font-size: 17px; line-height: 1.3; }
+    .lb-font-btn::after { content: ""; margin-left: auto; align-self: center; width: 7px; height: 7px; border-right: 1.5px solid var(--ink3); border-bottom: 1.5px solid var(--ink3); transform: translateY(-2px) rotate(45deg); }
+    .lb-font-inherit { font-family: var(--font-ui); font-size: 12.5px; color: var(--ink3); }
+    .lb-font-btn-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .lb-font-list { position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px); max-height: 320px; overflow-y: auto; margin: 0; padding: 4px; list-style: none; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-pop); }
+    .lb-font-list[hidden] { display: none; }
+    .lb-font-group-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink3); padding: 8px 8px 2px; }
+    .lb-font-option { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; color: var(--ink); }
+    .lb-font-option[aria-selected="true"] { background: color-mix(in srgb, var(--blue) 18%, transparent); }
+    .lb-font-option.lb-active { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .lb-font-name { font-size: 19px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .lb-font-meta { display: flex; align-items: baseline; gap: 6px; flex: none; font-family: var(--font-ui); font-size: 10.5px; color: var(--ink3); }
+    .lb-font-sample { font-size: 17px; color: var(--ink2); }
     .lb-insp-advanced summary { cursor: pointer; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink3); }
     .lb-insp-advanced[open] summary { margin-bottom: 8px; }
     .lb-insp-advanced { display: flex; flex-direction: column; gap: 10px; }
@@ -404,6 +419,8 @@
     // Every label the configured model supports, each with the media it requires (mm) — embedded by
     // the editor route from the same source as the print-page badge and the /print media guard.
     const LABELS = {{ labels | tojson }};
+    const FONTS = {{ fonts | tojson }};
+    const DEFAULT_FONT = {{ default_font | tojson }};
 
     // Which authoring surface the Studio opens in ("visual" | "yaml"), from EDITOR_DEFAULT_MODE. Read
     // by builder.js (a static asset) to decide whether to auto-enter Visual mode on load.

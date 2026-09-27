@@ -105,13 +105,23 @@ from app.models import (
     TemplateSourceResponse,
     UpdateCheckResponse,
 )
+from app.render.elements import dejavu_path
 from app.render.engine import (
     RenderEngine,
     _brother_ql_model_max_rows,
     format_seq,
     image_field_names,
     missing_custom_icons,
+    missing_label_fonts,
     uses_seq,
+)
+from app.render.fonts import (
+    DEFAULT_FONT,
+    FONT_REGISTRY,
+    MANIFEST_VERSION,
+    STYLE_BOLD,
+    STYLE_REGULAR,
+    LabelFont,
 )
 from app.render.i18n import Translator
 from app.transports.base import (
@@ -729,6 +739,7 @@ engine = RenderEngine(
     icons_dir=settings.icons_dir.resolve(),
     icon_collections_dir=settings.icon_collections_dir.resolve(),
     translator=translator,
+    label_fonts_dir=settings.label_fonts_dir.resolve(),
     min_length_px=settings.min_length_px,
     max_length_px=settings.max_length_px,
     # Derive the high_res ENDLESS row ceiling from the configured model so wide-format printers
@@ -1035,6 +1046,29 @@ def _warn_missing_custom_icons() -> None:
             )
 
 
+def _warn_missing_label_fonts() -> None:
+    """Boot warning: name each template whose label font is not installed in LABEL_FONTS_DIR.
+
+    Such text prints in DejaVu Sans (see ``_load_label_font``), which is correct but not what the
+    author chose — typically a dev host that never ran scripts/fetch_label_fonts.py (the Docker image
+    bundles every family). Best-effort and per-template, like :func:`_warn_missing_custom_icons`.
+    """
+    for tmpl in registry.all():
+        try:
+            missing = missing_label_fonts(tmpl.layout, tmpl.font, settings.label_fonts_dir)
+        except Exception:
+            log.exception("Missing-font scan failed for template %r; skipping", tmpl.name)
+            continue
+        if missing:
+            log.warning(
+                "template %r uses label font(s) %s not installed in %s; that text will print in "
+                "DejaVu Sans (run scripts/fetch_label_fonts.py, or use the Docker image)",
+                tmpl.name,
+                sorted(missing),
+                settings.label_fonts_dir,
+            )
+
+
 def _templates_dir_save_blocker(templates_dir: Path) -> str | None:
     """Return a short reason the save path can't use ``templates_dir``, or None if it can.
 
@@ -1133,6 +1167,7 @@ async def startup() -> None:
     loaded = registry.load_all()
     log.info("Loaded %d templates: %s", len(loaded), loaded)
     _warn_missing_custom_icons()
+    _warn_missing_label_fonts()
     _warn_if_templates_writable_but_readonly()
     langs = translator.load_all()
     if not translator.has(settings.default_language):
@@ -1624,6 +1659,7 @@ def _render_template_preview(
         now=now,
         seq=seq,
         valign=tmpl.valign,
+        font=tmpl.font,
     )
     img = _preview_bw_convert(
         img,
@@ -1876,6 +1912,7 @@ def _execute_print(
             red=effective_red,
             seq=seq,
             valign=tmpl.valign,
+            font=tmpl.font,
         )
 
     # Convert a rendered PNG to QL raster bytes. copies=1 for the sequence path (one printer job per
@@ -1928,6 +1965,7 @@ def _execute_print(
                     high_res=effective_high_res,
                     red=effective_red,
                     valign=tmpl.valign,
+                    font=tmpl.font,
                 ):
                     pass
             else:
@@ -1942,6 +1980,7 @@ def _execute_print(
                     high_res=effective_high_res,
                     red=effective_red,
                     valign=tmpl.valign,
+                    font=tmpl.font,
                 )
         except Exception as exc:
             LABEL_ERRORS.labels(reason="render_error").inc()
@@ -2581,6 +2620,7 @@ def _template_info(t: Template) -> TemplateInfo:
         label=t.label,
         rotate=t.rotate,
         valign=t.valign,
+        font=t.font,
         length=t.length_mm,
         fields=TemplateFieldContract(
             required=t.required_fields,
@@ -3066,6 +3106,9 @@ def _web_ctx(page: str, request: Request) -> dict[str, Any]:
         "api_version": API_VERSION,
         "repo_url": REPO_URL,
         "app_license": APP_LICENSE,
+        # Third-party label fonts and their licences, linked from the About box (OFL-1.1 asks that
+        # the licence accompany the fonts wherever they are distributed).
+        "label_fonts": _ABOUT_LABEL_FONTS,
         # Whether to render the in-browser API-token entry (nav key button + dialog). Only in
         # bearer mode: with HTTP Basic auth the browser sends credentials automatically, and in
         # unauthenticated mode there is nothing to enter — both hide the token UI entirely.
@@ -3178,6 +3221,7 @@ def reload_templates() -> dict[str, Any]:
     """
     loaded = registry.load_all()
     _warn_missing_custom_icons()
+    _warn_missing_label_fonts()
     langs = translator.load_all()
 
     errors = registry.errors + translator.errors
@@ -3458,6 +3502,7 @@ async def parse_template(request: TemplateParseRequest) -> TemplateParseResponse
         label=tmpl.label,
         rotate=tmpl.rotate,
         valign=tmpl.valign,
+        font=tmpl.font,
         length=tmpl.length_mm,
         fields=TemplateFieldContract(
             required=tmpl.required_fields,
@@ -3495,6 +3540,7 @@ async def parse_template_layout(request: TemplateParseRequest) -> TemplateLayout
         label=tmpl.label,
         rotate=tmpl.rotate,
         valign=tmpl.valign,
+        font=tmpl.font,
         length=tmpl.length_mm,
         fields=TemplateFieldContract(
             required=tmpl.required_fields,
@@ -3757,6 +3803,7 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
     # reference to an absent custom asset is flagged now, not only after a restart (the reload/save
     # workflow must not reintroduce the silent blank-icon gap the boot warning closes).
     _warn_missing_custom_icons()
+    _warn_missing_label_fonts()
     # Report the name actually registered after reload (the file's stem == tmpl.name), so the
     # response can never claim a save under a name that was not the one persisted.
     return {
@@ -4125,6 +4172,106 @@ async def favicon() -> FileResponse:
     return FileResponse(_web_dir / "logo.svg", media_type="image/svg+xml")
 
 
+# Label fonts are public, freely-licensed image content (like /static): the studio loads them to
+# show each font in its own typeface. The studio's URLs carry a version that changes whenever the
+# served bytes can (see _label_font_version), so a year-long immutable cache is safe.
+_LABEL_FONT_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
+_LABEL_FONT_STYLES = {STYLE_REGULAR: False, STYLE_BOLD: True}
+
+
+def _label_font_entry(key: str) -> LabelFont:
+    """Resolve *key* through the registry only — a path is never built from request input."""
+    entry = FONT_REGISTRY.get(key)
+    if entry is None:
+        raise HTTPException(404, "Unknown label font")
+    return entry
+
+
+@app.get("/label-fonts/{key}/license", include_in_schema=False)
+async def label_font_license(key: str) -> FileResponse:
+    """A label font's licence text (OFL-1.1, Apache-2.0 or DejaVu's), linked from the About box.
+
+    Every family's licence — the builtin DejaVu's included — is fetched with the label fonts.
+    """
+    path = _label_font_entry(key).license_path(settings.label_fonts_dir)
+    if not path.is_file():
+        raise HTTPException(404, "Licence file not installed")
+    return FileResponse(path, media_type="text/plain; charset=utf-8", headers=_LABEL_FONT_CACHE)
+
+
+@app.get("/label-fonts/{key}/{style}", include_in_schema=False)
+async def label_font_file(key: str, style: str) -> FileResponse:
+    """The TrueType file a label font draws *style* with — the exact bytes the printer path uses."""
+    entry = _label_font_entry(key)
+    if style not in _LABEL_FONT_STYLES:
+        raise HTTPException(404, "Unknown font style")
+    bold = _LABEL_FONT_STYLES[style]
+    if entry.builtin:
+        path = dejavu_path(settings.fonts_dir, bold)
+    else:
+        path = entry.path(settings.label_fonts_dir, bold)
+    if path is None or not path.is_file():
+        raise HTTPException(404, "Font file not installed")
+    return FileResponse(path, media_type="font/ttf", headers=_LABEL_FONT_CACHE)
+
+
+_ABOUT_LABEL_FONTS = [
+    {"name": f.name, "license": f.license, "license_path": f"/label-fonts/{f.key}/license"}
+    for f in FONT_REGISTRY.values()
+]
+
+
+def _label_font_version(entry: LabelFont, style: str) -> str:
+    """Cache-busting version for one served face.
+
+    A fetched family's bytes are pinned by the manifest, so its hash is the version. The builtin
+    DejaVu is not pinned — it is the OS package's (or an operator's FONTS_DIR) file, which an image
+    upgrade or a replaced volume can change under the same URL — so its version also carries that
+    file's size and modification time, and a changed file gets a new URL instead of a year-stale face.
+    """
+    if not entry.builtin:
+        return MANIFEST_VERSION
+    path = dejavu_path(settings.fonts_dir, _LABEL_FONT_STYLES[style])
+    if path is None:
+        return MANIFEST_VERSION
+    stat = path.stat()
+    return f"{MANIFEST_VERSION}-{stat.st_size:x}-{stat.st_mtime_ns:x}"
+
+
+def _studio_fonts() -> list[dict[str, Any]]:
+    """What the studio's font picker needs per family, in manifest order.
+
+    ``weights`` tells the browser which faces exist: a variable font is one file covering a weight
+    range, a static family has a regular (and maybe a bold) file.
+    """
+    fonts: list[dict[str, Any]] = []
+    for entry in FONT_REGISTRY.values():
+        variable = entry.regular is not None and entry.regular.wght is not None
+        faces = [{"style": STYLE_REGULAR, "weight": "100 900" if variable else "400"}]
+        if entry.has_bold and not variable:
+            faces.append({"style": STYLE_BOLD, "weight": "700"})
+        fonts.append(
+            {
+                "key": entry.key,
+                "name": entry.name,
+                "category": entry.category,
+                "has_bold": entry.has_bold,
+                "preview_sample": entry.preview_sample,
+                "faces": [
+                    {
+                        **face,
+                        "path": (
+                            f"/label-fonts/{entry.key}/{face['style']}"
+                            f"?v={_label_font_version(entry, face['style'])}"
+                        ),
+                    }
+                    for face in faces
+                ],
+            }
+        )
+    return fonts
+
+
 @app.get(
     "/editor",
     response_class=HTMLResponse,
@@ -4166,6 +4313,9 @@ async def editor_page(request: Request) -> HTMLResponse:
             # switches between them. Read by builder.js to decide whether to auto-enter Visual on load.
             "editor_default_mode": settings.editor_default_mode,
             "labels": labels,
+            # Selectable label fonts for the builder's font controls, in manifest order.
+            "fonts": _studio_fonts(),
+            "default_font": DEFAULT_FONT,
             # The draft print row mirrors the Print page's options block, so it needs the same
             # context web_ui() injects: server defaults for each nullable-inherit option plus the
             # model capabilities that gate the red checkbox (two_color) and disable the high-res

@@ -37,6 +37,18 @@ COPY scripts/fetch-icons.sh ./scripts/fetch-icons.sh
 RUN bash scripts/fetch-icons.sh /icons
 
 
+# Fetch the selectable label fonts listed in app/render/font_manifest.json into /label-fonts.
+# Every file is pinned (google/fonts commit, DSEG release tag) and SHA-256-verified before use, so
+# the image bakes exactly the reviewed bytes; the running app never downloads a font. The fetcher
+# is standard-library Python, so the stage reuses the runtime base image and needs no project deps.
+# $BUILDPLATFORM: font files are arch-independent, so this never needs to run under QEMU.
+FROM --platform=$BUILDPLATFORM python:3.13-slim-trixie@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285 AS label-fonts
+WORKDIR /build
+COPY app/render/font_manifest.json ./app/render/font_manifest.json
+COPY scripts/fetch_label_fonts.py ./scripts/fetch_label_fonts.py
+RUN python scripts/fetch_label_fonts.py /label-fonts
+
+
 # Pinned to the SAME Debian release (trixie) as the uv builder stage above, and by digest:
 # the venv is built against the builder's glibc, so builder and runtime must not drift apart.
 # A bare `python:3.13-slim` floats to whatever Debian is current, silently diverging from the
@@ -53,6 +65,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app /app
 # Bundled collections live OUTSIDE the assets/icons VOLUME so a user's bind-mount can't shadow them.
 COPY --from=icons /icons /app/assets/icon-collections
+# Label fonts (with each family's LICENSE.txt), likewise outside every VOLUME.
+COPY --from=label-fonts /label-fonts /app/assets/label-fonts
 # Bundled example templates + translation catalogs, copied to paths OUTSIDE the /app/templates and
 # /app/translations VOLUMEs (same anti-shadowing split as the icon collections above). The loader and
 # translator merge these with the user volumes (EXAMPLE_*_DIR below), so a user who bind-mounts an
@@ -94,6 +108,7 @@ ENV PYTHONUNBUFFERED=1 \
     FONTS_DIR=/app/fonts \
     ICONS_DIR=/app/assets/icons \
     ICON_COLLECTIONS_DIR=/app/assets/icon-collections \
+    LABEL_FONTS_DIR=/app/assets/label-fonts \
     DATA_DIR=/app/data
 
 USER app

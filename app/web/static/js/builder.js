@@ -61,7 +61,22 @@
 
   // Font-relative text spacing (multiples of the font size), mirroring LINE_HEIGHT_* and
   // LETTER_SPACING_* in app/render/elements.py. A blank line height keeps the legacy pitch.
+  // Selectable label fonts (key, name, category, has_bold), injected by editor.html from the
+  // server's font manifest. Lexical page globals, so read through typeof guards like LABELS.
+  // eslint-disable-next-line no-undef
+  const FONT_LIST = (typeof FONTS !== 'undefined' && Array.isArray(FONTS)) ? FONTS : [];
+  // eslint-disable-next-line no-undef
+  const FONT_DEFAULT = (typeof DEFAULT_FONT === 'string' && DEFAULT_FONT) ? DEFAULT_FONT : 'dejavu-sans';
+  // An element's font: '' inherits the template-level font.
+  const FONT_ATTR = { key: 'font', label: 'Font', control: 'font', default: '' };
+  const FONT_BY_KEY = new Map(FONT_LIST.map((f) => [f.key, f]));
+  const FONT_CATEGORY_LABELS = {
+    sans: 'Sans-serif', condensed: 'Condensed', serif: 'Serif', monospace: 'Monospace',
+    handwritten: 'Handwritten', modern: 'Modern', retro: 'Retro', typewriter: 'Typewriter', lcd: 'LCD',
+  };
+
   const TEXT_SPACING = [
+    FONT_ATTR,
     { key: 'line_height', label: 'Line height (x size)', control: 'number', decimal: true, min: 0.8, max: 2, step: 0.05, placeholder: 'auto' },
     { key: 'letter_spacing', label: 'Letter spacing (em)', control: 'number', decimal: true, min: -0.1, max: 0.5, step: 0.01, default: 0 },
   ];
@@ -247,7 +262,7 @@
   }
 
   // ── State ───────────────────────────────────────────────────────────────────
-  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', length: null, aliases: [], layout: [] };
+  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', font: FONT_DEFAULT, length: null, aliases: [], layout: [] };
   const fieldOptional = new Set();   // field names the user marked optional (else required)
   let selectedEl = null;             // the selected element OBJECT (survives re-render / DnD)
   let designMode = true;             // true → show {{token}} chips; false → substitute sample values
@@ -395,6 +410,7 @@
     out.push('label: ' + qstr(model.label));
     out.push('rotate: ' + String(model.rotate || 0));
     if (model.valign && model.valign !== 'top') out.push('valign: ' + model.valign);
+    if (model.font && model.font !== FONT_DEFAULT) out.push('font: ' + model.font);
     // Landscape length along continuous tape (mm). Emitted whenever set so the server, not the
     // builder, decides whether it is valid for this label/rotate and says why if it is not.
     if (typeof model.length === 'number' && model.length > 0) out.push('length: ' + model.length);
@@ -515,6 +531,9 @@
     const bold = (typeof el.bold === 'boolean') ? el.bold : PREVIEW_BOLD_DEFAULT[el.type];
     content.style.fontWeight = bold ? '700' : '400';
     content.style.textAlign = (el.align === 'center' || el.align === 'right') ? el.align : 'left';
+    const family = el.font || model.font || FONT_DEFAULT;
+    ensureFontFaces(FONT_BY_KEY.get(family));
+    content.style.fontFamily = fontCss(family);
   }
 
   function renderBlock(el, listKind) {
@@ -971,6 +990,9 @@
       wrap.insertBefore(cb, lab);
       return wrap;
     }
+    if (attr.control === 'font') {
+      return fontPicker(attr.label, cur ?? '', (v) => { setAttr(el, attr, v); }, { inheritFrom: model.font || FONT_DEFAULT });
+    }
     if (attr.control === 'select' || attr.control === 'align') {
       const sel = document.createElement('select');
       sel.className = 'input';
@@ -1119,6 +1141,14 @@
       (v) => { model.rotate = parseInt(v, 10) || 0; commit(); }));
     insp.appendChild(selectSetting('Vertical align', VALIGN, model.valign || 'top',
       (v) => { model.valign = v; commit(); }));
+    // Label-wide font for every text element that does not pick its own.
+    if (FONT_LIST.length) {
+      insp.appendChild(fontPicker('Font', model.font || FONT_DEFAULT, (v) => {
+        model.font = v;
+        commit();
+        renderCanvas();
+      }));
+    }
     insp.appendChild(lengthSetting());
     // Comma-separated: an alias may contain spaces ("comida preparada"), so a space cannot be the
     // separator. Empty entries are dropped rather than sent to the server, which would reject them.
@@ -1184,6 +1214,204 @@
         commit();
       });
     const inp = wrap.querySelector('input');
+    return wrap;
+  }
+  // ── Font picker ─────────────────────────────────────────────────────────────
+  // A button + listbox (WAI-ARIA select-only combobox pattern) whose options are each drawn in their
+  // own label font. Faces register with the FontFace API only when their option scrolls into view,
+  // so opening the picker never pulls every font file at once.
+  const registeredFonts = new Set();
+  function fontFamilyName(key) { return 'labelito-' + key; }
+  function fontCss(key) { return '"' + fontFamilyName(key) + '", var(--font-ui), system-ui, sans-serif'; }
+  function ensureFontFaces(font) {
+    if (!font || registeredFonts.has(font.key) || typeof FontFace === 'undefined' || !document.fonts) return;
+    registeredFonts.add(font.key);
+    for (const face of font.faces) {
+      const url = (typeof window.api === 'function') ? window.api(face.path) : face.path;
+      const fontFace = new FontFace(fontFamilyName(font.key), 'url("' + url + '")', { weight: face.weight, display: 'swap' });
+      document.fonts.add(fontFace);
+      fontFace.load().catch(() => { /* a missing file keeps the UI-font fallback in the stack */ });
+    }
+  }
+  let fontPickerSeq = 0;
+  function fontPicker(label, value, onChange, opts) {
+    const inheritFrom = opts && opts.inheritFrom;
+    const pid = 'lb-font-' + (++fontPickerSeq);
+    const wrap = document.createElement('div');
+    wrap.className = 'lb-field lb-font-picker';
+    const lab = document.createElement('span');
+    lab.className = 'lb-field-label';
+    lab.id = pid + '-label';
+    lab.textContent = label;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'input lb-font-btn';
+    button.id = pid + '-button';
+    button.setAttribute('aria-haspopup', 'listbox');
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('aria-labelledby', pid + '-label ' + pid + '-button');
+
+    const list = document.createElement('ul');
+    list.className = 'lb-font-list';
+    list.id = pid + '-list';
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-labelledby', pid + '-label');
+    list.tabIndex = -1;
+    list.hidden = true;
+    button.setAttribute('aria-controls', list.id);
+
+    const options = [];
+    function addOption(key, parent) {
+      const font = FONT_BY_KEY.get(key || inheritFrom);
+      const li = document.createElement('li');
+      li.className = 'lb-font-option';
+      li.id = pid + '-opt-' + (key || 'inherit');
+      li.setAttribute('role', 'option');
+      li.dataset.value = key;
+      const name = document.createElement('span');
+      name.className = 'lb-font-name';
+      if (key) {
+        name.textContent = font.name;
+        name.style.fontFamily = fontCss(font.key);
+      } else {
+        // Like the button: the marker in the UI font, the inherited family in its own face.
+        const marker = document.createElement('span');
+        marker.className = 'lb-font-inherit';
+        marker.textContent = '(inherit) ';
+        const inherited = document.createElement('span');
+        inherited.textContent = font ? font.name : '';
+        if (font) inherited.style.fontFamily = fontCss(font.key);
+        name.append(marker, inherited);
+      }
+      li.appendChild(name);
+      const meta = document.createElement('span');
+      meta.className = 'lb-font-meta';
+      // A face that cannot legibly spell its name (segment displays) also shows a sample in the
+      // font and its name in the UI font.
+      if (key && font.preview_sample) {
+        const sample = document.createElement('span');
+        sample.className = 'lb-font-sample';
+        sample.textContent = font.preview_sample;
+        sample.style.fontFamily = fontCss(font.key);
+        meta.appendChild(sample);
+        const plain = document.createElement('span');
+        plain.textContent = font.name;
+        meta.appendChild(plain);
+      }
+      if (key && !font.has_bold) meta.append('no bold');
+      if (meta.childNodes.length) li.appendChild(meta);
+      li.addEventListener('mousedown', (e) => e.preventDefault());  // keep focus on the listbox
+      li.addEventListener('click', () => { choose(options.indexOf(li)); });
+      parent.appendChild(li);
+      options.push(li);
+      li._font = font;
+    }
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'inheritFrom')) addOption('', list);
+    const categories = [...new Set(FONT_LIST.map((f) => f.category))];
+    for (const category of categories) {
+      const group = document.createElement('li');
+      group.setAttribute('role', 'group');
+      const heading = document.createElement('div');
+      heading.className = 'lb-font-group-label';
+      heading.id = pid + '-grp-' + category;
+      heading.textContent = FONT_CATEGORY_LABELS[category] || category;
+      group.setAttribute('aria-labelledby', heading.id);
+      const inner = document.createElement('ul');
+      inner.setAttribute('role', 'presentation');
+      inner.style.cssText = 'list-style:none;margin:0;padding:0';
+      group.append(heading, inner);
+      for (const font of FONT_LIST.filter((f) => f.category === category)) addOption(font.key, inner);
+      list.appendChild(group);
+    }
+
+    let selected = Math.max(0, options.findIndex((o) => o.dataset.value === value));
+    let active = selected;
+    function paintButton() {
+      const opt = options[selected];
+      const font = opt._font;
+      // Only the family name is drawn in the font; the inherit marker stays in the UI font.
+      clear(button);
+      if (!opt.dataset.value) {
+        const marker = document.createElement('span');
+        marker.className = 'lb-font-inherit';
+        marker.textContent = '(inherit) ';
+        button.appendChild(marker);
+      }
+      const name = document.createElement('span');
+      name.className = 'lb-font-btn-name';
+      name.textContent = font ? font.name : '';
+      if (font) { ensureFontFaces(font); name.style.fontFamily = fontCss(font.key); }
+      button.appendChild(name);
+      options.forEach((o, i) => o.setAttribute('aria-selected', i === selected ? 'true' : 'false'));
+    }
+    function setActive(i) {
+      active = Math.max(0, Math.min(options.length - 1, i));
+      options.forEach((o, j) => o.classList.toggle('lb-active', j === active));
+      list.setAttribute('aria-activedescendant', options[active].id);
+      options[active].scrollIntoView({ block: 'nearest' });
+    }
+    let observer = null;
+    function open() {
+      if (!list.hidden) return;
+      list.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      if (typeof IntersectionObserver === 'function') {
+        observer = new IntersectionObserver((entries) => {
+          for (const entry of entries) if (entry.isIntersecting) ensureFontFaces(entry.target._font);
+        }, { root: list });
+        options.forEach((o) => observer.observe(o));
+      } else {
+        options.forEach((o) => ensureFontFaces(o._font));
+      }
+      setActive(selected);
+      list.focus();
+      document.addEventListener('mousedown', onOutside, true);
+    }
+    function close(refocus) {
+      if (list.hidden) return;
+      list.hidden = true;
+      button.setAttribute('aria-expanded', 'false');
+      if (observer) { observer.disconnect(); observer = null; }
+      document.removeEventListener('mousedown', onOutside, true);
+      if (refocus) button.focus();
+    }
+    function onOutside(e) { if (!wrap.contains(e.target)) close(false); }
+    function choose(i) {
+      selected = i;
+      paintButton();
+      close(true);
+      onChange(options[i].dataset.value);
+    }
+    let typed = '';
+    let typedAt = 0;
+    function typeAhead(ch) {
+      const now = Date.now();
+      typed = (now - typedAt > 600 ? '' : typed) + ch.toLowerCase();
+      typedAt = now;
+      const n = options.length;
+      for (let step = typed.length === 1 ? 1 : 0; step <= n; step++) {
+        const i = (active + step) % n;
+        if (options[i].querySelector('.lb-font-name').textContent.toLowerCase().startsWith(typed)) { setActive(i); return; }
+      }
+    }
+    button.addEventListener('click', () => { if (list.hidden) open(); else close(true); });
+    button.addEventListener('keydown', (e) => {
+      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) { e.preventDefault(); open(); }
+    });
+    list.addEventListener('keydown', (e) => {
+      const keys = {
+        ArrowDown: () => setActive(active + 1), ArrowUp: () => setActive(active - 1),
+        Home: () => setActive(0), End: () => setActive(options.length - 1),
+        PageDown: () => setActive(active + 8), PageUp: () => setActive(active - 8),
+        Enter: () => choose(active), ' ': () => choose(active), Escape: () => close(true),
+      };
+      if (keys[e.key]) { e.preventDefault(); keys[e.key](); return; }
+      if (e.key === 'Tab') { close(false); return; }
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); typeAhead(e.key); }
+    });
+    paintButton();
+    wrap.append(lab, button, list);
     return wrap;
   }
   function textSetting(label, value, onInput) {
@@ -1268,6 +1496,7 @@
       model.label = data.label || '62';
       model.rotate = data.rotate || 0;
       model.valign = data.valign || 'top';
+      model.font = (typeof data.font === 'string' && data.font) ? data.font : FONT_DEFAULT;
       model.length = (typeof data.length === 'number') ? data.length : null;
       // Carried across the round trip, not just displayed: the builder rebuilds its whole model
       // from this response and re-emits YAML from the model, so a key it does not read is a key it

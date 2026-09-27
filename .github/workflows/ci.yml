@@ -104,11 +104,11 @@ jobs:
           fi
           echo "interpreter is Python $got, as claimed"
       - name: Run tests
-        # `icons` is excluded here: it needs the fetched icon collections (a build artifact absent
-        # from a plain checkout) and runs in the dedicated `icons` job below, not the matrix.
+        # `icons` and `label_fonts` are excluded here: they need fetched build artifacts (icon
+        # collections, label fonts) absent from a plain checkout, and run in their own jobs below.
         # The 85% floor comes from [tool.coverage.report] in pyproject.toml rather than a CLI flag,
         # so a local `uv run pytest --cov` gates exactly like CI does (and matches ha-labelito).
-        run: uv run pytest -m "not hardware and not icons" --cov --cov-report=xml
+        run: uv run pytest -m "not hardware and not icons and not label_fonts" --cov --cov-report=xml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-${{ matrix.python-version }}
@@ -145,6 +145,26 @@ jobs:
       - run: uv sync --group test
       - name: Verify icon collections
         run: uv run pytest -m icons -v
+
+  label-fonts:
+    name: Label fonts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      # The per-character fallback draws in DejaVu, so the render tests need it installed.
+      - name: Install system fonts
+        run: sudo apt-get install -y fonts-dejavu-core
+      # Same pinned, SHA-256-verified fetch the Dockerfile `label-fonts` stage runs (~12 MB).
+      - name: Fetch label fonts
+        run: python3 scripts/fetch_label_fonts.py
+      - run: uv sync --group test
+      - name: Render every label font
+        run: uv run pytest -m label_fonts -v
 
   e2e:
     name: E2E (browser + API)
@@ -233,6 +253,8 @@ jobs:
           # Text is kerned only when Pillow's raqm (HarfBuzz) layout loads; without it the image
           # would print about 7% wider than a dev preview and wrap differently, with just a warning.
           docker exec label-test python -c "from PIL import features; assert features.check_feature('raqm'), 'Pillow raqm (HarfBuzz) layout is unavailable in the image'"
+          # Every label font the manifest lists must be baked in, byte-identical to its pin.
+          docker exec label-test python scripts/fetch_label_fonts.py --verify /app/assets/label-fonts
           # /preview is auth-protected: exercise the production auth path with a Bearer token.
           curl --fail -X POST http://localhost:8765/preview \
             -H "Content-Type: application/json" \

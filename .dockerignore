@@ -23,6 +23,9 @@ node_modules/
 # never from the build context. Without this, a dev's fetched ./fonts would bake into /app/fonts.
 fonts/
 
+# Locally-fetched label fonts — the `label-fonts` build stage fetches and verifies them itself.
+label-fonts/
+
 # Version control / project metadata
 .git/
 .gitignore

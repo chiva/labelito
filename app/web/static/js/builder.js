@@ -857,6 +857,9 @@
   // render/elements.py FONT_SIZES and the SCHEMA defaults so the product check matches when the sibling
   // attr is absent (omitted == default).
   const MAX_TEXT_STRIP_PRODUCT = 4000;
+  // Landscape `length` bounds (mm), mirroring MIN/MAX_LANDSCAPE_LENGTH_MM in app/loader.py.
+  const MIN_LANDSCAPE_LENGTH_MM = 20;
+  const MAX_LANDSCAPE_LENGTH_MM = 300;
   const PRODUCT_CONSTRAINTS = {
     text: { keys: ['size', 'max_lines'], defaults: { size: 32, max_lines: 10 } },
     list: { keys: ['size', 'max_items'], defaults: { size: 32, max_items: 20 } },
@@ -1056,15 +1059,7 @@
       (v) => { model.rotate = parseInt(v, 10) || 0; commit(); }));
     insp.appendChild(selectSetting('Vertical align', VALIGN, model.valign || 'top',
       (v) => { model.valign = v; commit(); }));
-    // Millimetres along a continuous tape for a landscape layout (rotate 90/270 on continuous
-    // media); blank means "not a landscape layout". The server validates the combination.
-    insp.appendChild(textSetting('Length (mm, landscape on continuous tape)',
-      model.length == null ? '' : String(model.length),
-      (v) => {
-        const n = parseFloat(v);
-        model.length = Number.isFinite(n) && n > 0 ? n : null;
-        commit();
-      }));
+    insp.appendChild(lengthSetting());
     // Comma-separated: an alias may contain spaces ("comida preparada"), so a space cannot be the
     // separator. Empty entries are dropped rather than sent to the server, which would reject them.
     insp.appendChild(textSetting('Spoken aliases', (model.aliases || []).join(', '),
@@ -1103,6 +1098,33 @@
         insp.appendChild(row);
       }
     }
+  }
+  // Millimetres along a continuous tape for a landscape layout (rotate 90/270 on continuous media);
+  // blank means "not a landscape layout". The whole input must be a plain decimal within the loader's
+  // bounds — parseFloat would accept the prefix of "100mm" — and an invalid entry is flagged and NOT
+  // committed, so the model keeps its last valid length. The server still validates the combination
+  // with label and rotate.
+  function lengthSetting() {
+    const wrap = textSetting('Length (mm, landscape on continuous tape)',
+      model.length == null ? '' : String(model.length),
+      (v) => {
+        const raw = v.trim();
+        if (raw === '') {
+          setFieldError(wrap, inp, '');
+          model.length = null;
+          commit();
+          return;
+        }
+        if (!/^\d+(\.\d+)?$/.test(raw)) { setFieldError(wrap, inp, 'Enter a number of millimetres.'); return; }
+        const n = parseFloat(raw);
+        if (n < MIN_LANDSCAPE_LENGTH_MM) { setFieldError(wrap, inp, 'Minimum is ' + MIN_LANDSCAPE_LENGTH_MM + ' mm.'); return; }
+        if (n > MAX_LANDSCAPE_LENGTH_MM) { setFieldError(wrap, inp, 'Maximum is ' + MAX_LANDSCAPE_LENGTH_MM + ' mm.'); return; }
+        setFieldError(wrap, inp, '');
+        model.length = n;
+        commit();
+      });
+    const inp = wrap.querySelector('input');
+    return wrap;
   }
   function textSetting(label, value, onInput) {
     const wrap = document.createElement('label');

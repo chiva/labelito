@@ -502,6 +502,41 @@ def test_length_with_upright_rotation_is_rejected(tmp_path: Path, rotate: int) -
         load_template(path)
 
 
+@pytest.mark.parametrize(("label", "rotate"), [("62", 0), ("62", 180), ("62x29", 0), ("62x29", 90)])
+def test_explicit_null_length_off_landscape_loads_as_absent(
+    tmp_path: Path, label: str, rotate: int
+) -> None:
+    """GET /templates and the parse responses report ``length: null`` for every non-landscape
+    template, so a client that round-trips that payload as a draft must not get a 422. Unlike a
+    nulled element numeric, a null length overrides no default: it means exactly what omitting it
+    does."""
+    t = load_template(
+        write_yaml(tmp_path / "null.yaml", _length_yaml(label, rotate, "length: null"))
+    )
+    assert t.length_mm is None
+
+
+def test_builder_length_bounds_mirror_the_loader() -> None:
+    """The studio validates `length` client-side against its own copy of the bounds; if they drift
+    it either rejects lengths the server accepts or commits ones the server 422s."""
+    import re
+
+    from app.loader import MAX_LANDSCAPE_LENGTH_MM, MIN_LANDSCAPE_LENGTH_MM
+
+    builder = (
+        Path(__file__).resolve().parent.parent / "app" / "web" / "static" / "js" / "builder.js"
+    ).read_text(encoding="utf-8")
+    for name, expected in (
+        ("MIN_LANDSCAPE_LENGTH_MM", MIN_LANDSCAPE_LENGTH_MM),
+        ("MAX_LANDSCAPE_LENGTH_MM", MAX_LANDSCAPE_LENGTH_MM),
+    ):
+        match = re.search(rf"const {name} = (\d+);", builder)
+        assert match, f"builder.js no longer declares {name}"
+        assert int(match.group(1)) == expected, (
+            f"builder.js {name}={match.group(1)}, loader={expected}"
+        )
+
+
 def test_text_strip_product_cap_applies_without_max_lines(tmp_path: Path) -> None:
     """A large `text.size` with NO `max_lines` is bounded by the product guard against the
     implicit DEFAULT_TEXT_MAX_LINES, not waved through. size 512 x 10 (default) = 5120 > 4000."""

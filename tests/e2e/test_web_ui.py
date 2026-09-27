@@ -3939,3 +3939,34 @@ def test_studio_visual_builder_validates_font_size(authed_page: Page) -> None:
     )
     expect(ml_err).to_be_visible()
     assert "max_lines: 1" in authed_page.locator("#yaml").input_value()  # kept, not deleted
+
+
+def test_studio_visual_builder_validates_landscape_length(authed_page: Page) -> None:
+    """The template-settings Length field commits only a whole, in-range decimal. parseFloat alone
+    would have committed the numeric prefix of "100mm" and silently cleared the length on "0"; each
+    invalid entry must instead flag the field and keep the last valid length in the YAML."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+
+    field = authed_page.locator(".lb-inspector .lb-field", has_text="Length (mm")
+    length = field.locator("input")
+    err = field.locator(".lb-field-error")
+    yaml = authed_page.locator("#yaml")
+
+    length.fill("100")
+    expect(err).to_have_count(0)
+    expect(yaml).to_have_value(re.compile(r"^length: 100$", re.M))
+
+    for bad in ("100mm", "100.5.6", "0", "19", "301", "-5"):
+        length.fill(bad)
+        expect(err).to_be_visible()
+        expect(length).to_have_class(re.compile(r"\blb-invalid\b"))
+        expect(yaml).to_have_value(re.compile(r"^length: 100$", re.M))
+
+    length.fill("120.5")
+    expect(err).to_have_count(0)
+    expect(yaml).to_have_value(re.compile(r"^length: 120\.5$", re.M))
+
+    length.fill("")
+    expect(err).to_have_count(0)
+    expect(yaml).not_to_have_value(re.compile(r"^length:", re.M))

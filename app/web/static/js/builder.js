@@ -61,7 +61,18 @@
 
   // Font-relative text spacing (multiples of the font size), mirroring LINE_HEIGHT_* and
   // LETTER_SPACING_* in app/render/elements.py. A blank line height keeps the legacy pitch.
+  // Selectable label fonts (key, name, category, has_bold), injected by editor.html from the
+  // server's font manifest. Lexical page globals, so read through typeof guards like LABELS.
+  // eslint-disable-next-line no-undef
+  const FONT_LIST = (typeof FONTS !== 'undefined' && Array.isArray(FONTS)) ? FONTS : [];
+  // eslint-disable-next-line no-undef
+  const FONT_DEFAULT = (typeof DEFAULT_FONT === 'string' && DEFAULT_FONT) ? DEFAULT_FONT : 'dejavu-sans';
+  const FONT_NAMES = Object.fromEntries(FONT_LIST.map((f) => [f.key, f.name + (f.has_bold ? '' : ' (no bold)')]));
+  // An element's font: '' inherits the template-level font.
+  const FONT_ATTR = { key: 'font', label: 'Font', control: 'select', choices: ['', ...FONT_LIST.map((f) => f.key)], labels: FONT_NAMES, default: '' };
+
   const TEXT_SPACING = [
+    FONT_ATTR,
     { key: 'line_height', label: 'Line height (x size)', control: 'number', decimal: true, min: 0.8, max: 2, step: 0.05, placeholder: 'auto' },
     { key: 'letter_spacing', label: 'Letter spacing (em)', control: 'number', decimal: true, min: -0.1, max: 0.5, step: 0.01, default: 0 },
   ];
@@ -247,7 +258,7 @@
   }
 
   // ── State ───────────────────────────────────────────────────────────────────
-  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', length: null, aliases: [], layout: [] };
+  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', font: FONT_DEFAULT, length: null, aliases: [], layout: [] };
   const fieldOptional = new Set();   // field names the user marked optional (else required)
   let selectedEl = null;             // the selected element OBJECT (survives re-render / DnD)
   let designMode = true;             // true → show {{token}} chips; false → substitute sample values
@@ -395,6 +406,7 @@
     out.push('label: ' + qstr(model.label));
     out.push('rotate: ' + String(model.rotate || 0));
     if (model.valign && model.valign !== 'top') out.push('valign: ' + model.valign);
+    if (model.font && model.font !== FONT_DEFAULT) out.push('font: ' + model.font);
     // Landscape length along continuous tape (mm). Emitted whenever set so the server, not the
     // builder, decides whether it is valid for this label/rotate and says why if it is not.
     if (typeof model.length === 'number' && model.length > 0) out.push('length: ' + model.length);
@@ -977,7 +989,7 @@
       for (const choice of attr.choices) {
         const opt = document.createElement('option');
         opt.value = choice;
-        opt.textContent = choice === '' ? '(inherit)' : choice;
+        opt.textContent = choice === '' ? '(inherit)' : ((attr.labels && attr.labels[choice]) || choice);
         sel.appendChild(opt);
       }
       sel.value = (cur ?? attr.default ?? attr.choices[0]);
@@ -1119,6 +1131,11 @@
       (v) => { model.rotate = parseInt(v, 10) || 0; commit(); }));
     insp.appendChild(selectSetting('Vertical align', VALIGN, model.valign || 'top',
       (v) => { model.valign = v; commit(); }));
+    // Label-wide font for every text element that does not pick its own.
+    if (FONT_LIST.length) {
+      insp.appendChild(selectSetting('Font', FONT_LIST.map((f) => f.key), model.font || FONT_DEFAULT,
+        (v) => { model.font = v; commit(); }, FONT_NAMES));
+    }
     insp.appendChild(lengthSetting());
     // Comma-separated: an alias may contain spaces ("comida preparada"), so a space cannot be the
     // separator. Empty entries are dropped rather than sent to the server, which would reject them.
@@ -1200,7 +1217,7 @@
     wrap.append(lab, inp);
     return wrap;
   }
-  function selectSetting(label, choices, value, onChange) {
+  function selectSetting(label, choices, value, onChange, labels) {
     const wrap = document.createElement('label');
     wrap.className = 'lb-field';
     const lab = document.createElement('span');
@@ -1211,7 +1228,7 @@
     for (const c of choices) {
       const opt = document.createElement('option');
       opt.value = c;
-      opt.textContent = c;
+      opt.textContent = (labels && labels[c]) || c;
       sel.appendChild(opt);
     }
     sel.value = value;
@@ -1268,6 +1285,7 @@
       model.label = data.label || '62';
       model.rotate = data.rotate || 0;
       model.valign = data.valign || 'top';
+      model.font = (typeof data.font === 'string' && data.font) ? data.font : FONT_DEFAULT;
       model.length = (typeof data.length === 'number') ? data.length : null;
       // Carried across the round trip, not just displayed: the builder rebuilds its whole model
       // from this response and re-emits YAML from the model, so a key it does not read is a key it

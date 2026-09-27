@@ -39,6 +39,7 @@ from app.render.engine import (
     referenced_field_tokens,
     unresolved_tokens,
 )
+from app.render.fonts import DEFAULT_FONT, FONT_KEYS
 from app.render.symbols import (
     AZTEC_COMPACT_LAYERS_MAX,
     AZTEC_ECC_MAX,
@@ -234,6 +235,7 @@ class Template:
     __slots__ = (
         "aliases",
         "description",
+        "font",
         "is_example",
         "label",
         "layout",
@@ -260,12 +262,16 @@ class Template:
         valign: str = "top",
         aliases: list[str] | None = None,
         length_mm: float | None = None,
+        font: str = DEFAULT_FONT,
     ) -> None:
         self.name = name
         self.description = description
         self.label = label
         self.rotate = rotate
         self.valign = valign
+        # Label-wide font (a key of app/render/font_manifest.json) for every text-family element
+        # that sets no `font` of its own.
+        self.font = font
         # Landscape length along continuous tape (mm); None for die-cut media and upright
         # continuous layouts. See LANDSCAPE_ROTATIONS.
         self.length_mm = length_mm
@@ -663,6 +669,8 @@ def _validate_element(
     # numeric guard above. Only meaningful on text/title/subtitle — a stray value elsewhere is a typo.
     if el_type in TEXT_SPACING_TYPES:
         _validate_text_spacing(file_name, label, el)
+        if "font" in el:
+            _require_choice(file_name, label, "font", el["font"], FONT_KEYS)
     if el_type in TEXT_FAMILY_TYPES:
         if "background" in el:
             _require_choice(
@@ -1105,6 +1113,11 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
     valign = str(raw.get("valign", "top"))
     _require_choice(source_name, "template", "valign", valign, VALIGN_CHOICES)
 
+    # Label-wide font for text-family elements that set none; an unknown key is a load error like any
+    # other vocabulary typo, rather than a silent DejaVu.
+    font = raw.get("font", DEFAULT_FONT)
+    _require_choice(source_name, "template", "font", font, FONT_KEYS)
+
     aliases = _validate_aliases(source_name, name, raw.get("aliases"))
 
     fields_spec = raw.get("fields", {})
@@ -1203,6 +1216,7 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
         valign=valign,
         aliases=aliases,
         length_mm=length_mm,
+        font=str(font),
     )
 
 

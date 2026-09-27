@@ -19,6 +19,7 @@ from app.render.elements import (
     build_element,
     resolve_custom_icon_path,
 )
+from app.render.fonts import FONT_REGISTRY
 from app.render.i18n import Translator
 
 
@@ -239,6 +240,40 @@ def missing_custom_icons(layout: list[dict[str, Any]], icons_dir: Path) -> set[s
     return missing
 
 
+def missing_label_fonts(
+    layout: list[dict[str, Any]], template_font: str, label_fonts_dir: Path
+) -> set[str]:
+    """Label-font keys a template uses (its own ``font`` and every element ``font``) whose files are
+    not installed in *label_fonts_dir*. The builtin DejaVu family is never reported.
+
+    Powers the boot warning for a dev host that never ran ``scripts/fetch_label_fonts.py``: those
+    elements silently print in DejaVu, so naming the template at boot beats discovering it on paper.
+    """
+    used = {template_font}
+
+    def collect(elements: list[dict[str, Any]]) -> None:
+        for el in elements:
+            if not isinstance(el, dict):
+                continue
+            if isinstance(el.get("font"), str):
+                used.add(el["font"])
+            children = el.get("children")
+            if isinstance(children, list):
+                collect(children)
+
+    collect(layout)
+    missing: set[str] = set()
+    for key in used:
+        entry = FONT_REGISTRY.get(key)
+        if entry is None or entry.builtin:
+            continue
+        for bold in (False, True):
+            path = entry.path(label_fonts_dir, bold)
+            if path is not None and not path.is_file():
+                missing.add(key)
+    return missing
+
+
 def unresolved_tokens(layout: list[dict[str, Any]], declared_fields: list[str]) -> list[str]:
     """Return the sorted ``{{token}}`` keys in *layout* that nothing can ever fill.
 
@@ -421,10 +456,14 @@ class RenderEngine:
         min_length_px: int = 200,
         max_length_px: int = 6000,
         max_raster_rows: int = _BROTHER_QL_MAX_RASTER_ROWS,
+        label_fonts_dir: Path | None = None,
     ) -> None:
         self.fonts_dir = fonts_dir
         self.icons_dir = icons_dir
         self.icon_collections_dir = icon_collections_dir
+        # Where the selectable label fonts were fetched (settings.label_fonts_dir). None ⇒ only the
+        # builtin DejaVu family is available; any other `font` renders in DejaVu with a warning.
+        self.label_fonts_dir = label_fonts_dir
         self.translator = translator
         self.min_length_px = min_length_px
         self.max_length_px = max_length_px
@@ -449,6 +488,7 @@ class RenderEngine:
         red: bool = False,
         seq: str = "",
         valign: str = "top",
+        font: str = "",
     ) -> Image.Image:
         # Two-color (red/black) two-layer rendering.
         #
@@ -546,7 +586,16 @@ class RenderEngine:
 
         lang = language or self.translator.default_language
         moment = now if now is not None else datetime.now()
-        elements = [build_element(spec, scale=scale, red_active=red) for spec in layout]
+        elements = [
+            build_element(
+                spec,
+                scale=scale,
+                red_active=red,
+                label_fonts_dir=self.label_fonts_dir,
+                default_font=font,
+            )
+            for spec in layout
+        ]
         resolved = self._resolve_all(elements, fields, lang, moment, seq)
         strips = self._render_elements(elements, resolved, render_width)
         img = self._compose(
@@ -570,6 +619,7 @@ class RenderEngine:
         red: bool = False,
         seq: str = "",
         valign: str = "top",
+        font: str = "",
     ) -> bytes:
         img = self.render(
             layout,
@@ -583,6 +633,7 @@ class RenderEngine:
             red=red,
             seq=seq,
             valign=valign,
+            font=font,
         )
         buf = io.BytesIO()
         img.save(buf, format="PNG")
@@ -605,6 +656,7 @@ class RenderEngine:
         high_res: bool = False,
         red: bool = False,
         valign: str = "top",
+        font: str = "",
     ) -> Iterator[bytes]:
         """Lazily render ``count`` labels, yielding one PNG byte string per item.
 
@@ -638,6 +690,7 @@ class RenderEngine:
                 red=red,
                 seq=seq_str,
                 valign=valign,
+                font=font,
             )
 
     # ── Private helpers ─────────────────────────────────────────────────────────

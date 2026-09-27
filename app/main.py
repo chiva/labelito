@@ -111,8 +111,10 @@ from app.render.engine import (
     format_seq,
     image_field_names,
     missing_custom_icons,
+    missing_label_fonts,
     uses_seq,
 )
+from app.render.fonts import DEFAULT_FONT, FONT_REGISTRY
 from app.render.i18n import Translator
 from app.transports.base import (
     PrinterStatus,
@@ -729,6 +731,7 @@ engine = RenderEngine(
     icons_dir=settings.icons_dir.resolve(),
     icon_collections_dir=settings.icon_collections_dir.resolve(),
     translator=translator,
+    label_fonts_dir=settings.label_fonts_dir.resolve(),
     min_length_px=settings.min_length_px,
     max_length_px=settings.max_length_px,
     # Derive the high_res ENDLESS row ceiling from the configured model so wide-format printers
@@ -1035,6 +1038,29 @@ def _warn_missing_custom_icons() -> None:
             )
 
 
+def _warn_missing_label_fonts() -> None:
+    """Boot warning: name each template whose label font is not installed in LABEL_FONTS_DIR.
+
+    Such text prints in DejaVu Sans (see ``_load_label_font``), which is correct but not what the
+    author chose — typically a dev host that never ran scripts/fetch_label_fonts.py (the Docker image
+    bundles every family). Best-effort and per-template, like :func:`_warn_missing_custom_icons`.
+    """
+    for tmpl in registry.all():
+        try:
+            missing = missing_label_fonts(tmpl.layout, tmpl.font, settings.label_fonts_dir)
+        except Exception:
+            log.exception("Missing-font scan failed for template %r; skipping", tmpl.name)
+            continue
+        if missing:
+            log.warning(
+                "template %r uses label font(s) %s not installed in %s; that text will print in "
+                "DejaVu Sans (run scripts/fetch_label_fonts.py, or use the Docker image)",
+                tmpl.name,
+                sorted(missing),
+                settings.label_fonts_dir,
+            )
+
+
 def _templates_dir_save_blocker(templates_dir: Path) -> str | None:
     """Return a short reason the save path can't use ``templates_dir``, or None if it can.
 
@@ -1133,6 +1159,7 @@ async def startup() -> None:
     loaded = registry.load_all()
     log.info("Loaded %d templates: %s", len(loaded), loaded)
     _warn_missing_custom_icons()
+    _warn_missing_label_fonts()
     _warn_if_templates_writable_but_readonly()
     langs = translator.load_all()
     if not translator.has(settings.default_language):
@@ -1624,6 +1651,7 @@ def _render_template_preview(
         now=now,
         seq=seq,
         valign=tmpl.valign,
+        font=tmpl.font,
     )
     img = _preview_bw_convert(
         img,
@@ -1876,6 +1904,7 @@ def _execute_print(
             red=effective_red,
             seq=seq,
             valign=tmpl.valign,
+            font=tmpl.font,
         )
 
     # Convert a rendered PNG to QL raster bytes. copies=1 for the sequence path (one printer job per
@@ -1928,6 +1957,7 @@ def _execute_print(
                     high_res=effective_high_res,
                     red=effective_red,
                     valign=tmpl.valign,
+                    font=tmpl.font,
                 ):
                     pass
             else:
@@ -1942,6 +1972,7 @@ def _execute_print(
                     high_res=effective_high_res,
                     red=effective_red,
                     valign=tmpl.valign,
+                    font=tmpl.font,
                 )
         except Exception as exc:
             LABEL_ERRORS.labels(reason="render_error").inc()
@@ -2581,6 +2612,7 @@ def _template_info(t: Template) -> TemplateInfo:
         label=t.label,
         rotate=t.rotate,
         valign=t.valign,
+        font=t.font,
         length=t.length_mm,
         fields=TemplateFieldContract(
             required=t.required_fields,
@@ -3178,6 +3210,7 @@ def reload_templates() -> dict[str, Any]:
     """
     loaded = registry.load_all()
     _warn_missing_custom_icons()
+    _warn_missing_label_fonts()
     langs = translator.load_all()
 
     errors = registry.errors + translator.errors
@@ -3458,6 +3491,7 @@ async def parse_template(request: TemplateParseRequest) -> TemplateParseResponse
         label=tmpl.label,
         rotate=tmpl.rotate,
         valign=tmpl.valign,
+        font=tmpl.font,
         length=tmpl.length_mm,
         fields=TemplateFieldContract(
             required=tmpl.required_fields,
@@ -3495,6 +3529,7 @@ async def parse_template_layout(request: TemplateParseRequest) -> TemplateLayout
         label=tmpl.label,
         rotate=tmpl.rotate,
         valign=tmpl.valign,
+        font=tmpl.font,
         length=tmpl.length_mm,
         fields=TemplateFieldContract(
             required=tmpl.required_fields,
@@ -3757,6 +3792,7 @@ async def save_template(request: SaveTemplateRequest) -> dict[str, Any]:
     # reference to an absent custom asset is flagged now, not only after a restart (the reload/save
     # workflow must not reintroduce the silent blank-icon gap the boot warning closes).
     _warn_missing_custom_icons()
+    _warn_missing_label_fonts()
     # Report the name actually registered after reload (the file's stem == tmpl.name), so the
     # response can never claim a save under a name that was not the one persisted.
     return {
@@ -4166,6 +4202,12 @@ async def editor_page(request: Request) -> HTMLResponse:
             # switches between them. Read by builder.js to decide whether to auto-enter Visual on load.
             "editor_default_mode": settings.editor_default_mode,
             "labels": labels,
+            # Selectable label fonts for the builder's font controls, in manifest order.
+            "fonts": [
+                {"key": f.key, "name": f.name, "category": f.category, "has_bold": f.has_bold}
+                for f in FONT_REGISTRY.values()
+            ],
+            "default_font": DEFAULT_FONT,
             # The draft print row mirrors the Print page's options block, so it needs the same
             # context web_ui() injects: server defaults for each nullable-inherit option plus the
             # model capabilities that gate the red checkbox (two_color) and disable the high-res

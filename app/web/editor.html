@@ -404,6 +404,8 @@
     // Every label the configured model supports, each with the media it requires (mm) — embedded by
     // the editor route from the same source as the print-page badge and the /print media guard.
     const LABELS = {{ labels | tojson }};
+    const FONTS = {{ fonts | tojson }};
+    const DEFAULT_FONT = {{ default_font | tojson }};
 
     // Which authoring surface the Studio opens in ("visual" | "yaml"), from EDITOR_DEFAULT_MODE. Read
     // by builder.js (a static asset) to decide whether to auto-enter Visual mode on load.

@@ -4173,8 +4173,8 @@ async def favicon() -> FileResponse:
 
 
 # Label fonts are public, freely-licensed image content (like /static): the studio loads them to
-# show each font in its own typeface. URLs carry ?v=<manifest hash>, and the manifest pins every
-# file's bytes, so a year-long immutable cache is safe.
+# show each font in its own typeface. The studio's URLs carry a version that changes whenever the
+# served bytes can (see _label_font_version), so a year-long immutable cache is safe.
 _LABEL_FONT_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
 _LABEL_FONT_STYLES = {STYLE_REGULAR: False, STYLE_BOLD: True}
 
@@ -4221,6 +4221,23 @@ _ABOUT_LABEL_FONTS = [
 ]
 
 
+def _label_font_version(entry: LabelFont, style: str) -> str:
+    """Cache-busting version for one served face.
+
+    A fetched family's bytes are pinned by the manifest, so its hash is the version. The builtin
+    DejaVu is not pinned — it is the OS package's (or an operator's FONTS_DIR) file, which an image
+    upgrade or a replaced volume can change under the same URL — so its version also carries that
+    file's size and modification time, and a changed file gets a new URL instead of a year-stale face.
+    """
+    if not entry.builtin:
+        return MANIFEST_VERSION
+    path = dejavu_path(settings.fonts_dir, _LABEL_FONT_STYLES[style])
+    if path is None:
+        return MANIFEST_VERSION
+    stat = path.stat()
+    return f"{MANIFEST_VERSION}-{stat.st_size:x}-{stat.st_mtime_ns:x}"
+
+
 def _studio_fonts() -> list[dict[str, Any]]:
     """What the studio's font picker needs per family, in manifest order.
 
@@ -4243,7 +4260,10 @@ def _studio_fonts() -> list[dict[str, Any]]:
                 "faces": [
                     {
                         **face,
-                        "path": f"/label-fonts/{entry.key}/{face['style']}?v={MANIFEST_VERSION}",
+                        "path": (
+                            f"/label-fonts/{entry.key}/{face['style']}"
+                            f"?v={_label_font_version(entry, face['style'])}"
+                        ),
                     }
                     for face in faces
                 ],

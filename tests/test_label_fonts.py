@@ -685,6 +685,30 @@ def test_studio_font_data_lists_faces_by_weight() -> None:
     assert fonts_by_key["share-tech-mono"]["preview_sample"] is None
 
 
+def test_builtin_font_url_changes_when_its_unpinned_file_does(font_server: Any) -> None:
+    """DejaVu's bytes come from the OS package or FONTS_DIR, not the manifest, and are served with
+    an immutable cache: its studio URL must change when the file does, or browsers would keep an
+    upgraded or replaced DejaVu face for a year. Pinned families stay on the manifest version."""
+    import app.main as main_mod
+
+    def paths() -> dict[str, str]:
+        dejavu = next(f for f in main_mod._studio_fonts() if f["key"] == DEFAULT_FONT)
+        return {face["style"]: face["path"] for face in dejavu["faces"]}
+
+    regular = main_mod.settings.fonts_dir / "DejaVuSans.ttf"
+    regular.write_bytes(b"dejavu-regular")
+    before = paths()
+    assert before["regular"].startswith(
+        f"/label-fonts/{DEFAULT_FONT}/regular?v={fonts.MANIFEST_VERSION}-"
+    )
+    regular.write_bytes(b"dejavu-regular, upgraded package")
+    after = paths()
+    assert after["regular"] != before["regular"]
+    assert after["bold"] == before["bold"], "an untouched face keeps its URL"
+    inter = next(f for f in main_mod._studio_fonts() if f["key"] == "inter")
+    assert inter["faces"][0]["path"].endswith(f"?v={fonts.MANIFEST_VERSION}")
+
+
 def test_about_box_links_every_label_font_licence(font_server: Any) -> None:
     html = font_server.get("/").text
     assert "28 families, each under its own licence" in html

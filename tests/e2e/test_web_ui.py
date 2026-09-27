@@ -3071,6 +3071,7 @@ def test_preview_placeholder_shown_before_any_successful_preview(authed_page: Pa
 
     expect(authed_page.locator("#preview-placeholder")).to_be_visible()
     expect(authed_page.locator("#preview-img")).to_be_hidden()
+    expect(authed_page.locator("#preview-error")).to_have_text(re.compile(r"\S"))
     assert authed_page.locator("#preview-error").inner_text(), (
         "expected an inline error message too"
     )
@@ -3165,7 +3166,10 @@ def test_preview_error_renders_inline_in_preview_card_not_toast(authed_page: Pag
     with authed_page.expect_response(lambda r: r.url.endswith("/preview")):
         authed_page.click("button.btn-preview")
 
+    # The response event fires before the page has read the 422 body and rendered the message, so
+    # wait for the text (inner_text() does not) — on a slow runner it was read while still empty.
     error = authed_page.locator("#preview-error")
+    expect(error).to_have_text(re.compile(r"\S"))
     error_text = error.inner_text()
     assert error_text, "expected a friendly inline error message"
     assert "forced preview failure" not in error_text, (
@@ -3217,6 +3221,8 @@ def test_preview_error_missing_required_field_shows_friendly_sentence(authed_pag
     with authed_page.expect_response(lambda r: r.url.endswith("/preview")):
         authed_page.click("button.btn-preview")
 
+    # Wait for the rendered message: the response event precedes the page reading the 422 body.
+    expect(authed_page.locator("#preview-error")).to_have_text(re.compile(r"\S"))
     error_text = authed_page.locator("#preview-error").inner_text()
     assert "title" in error_text, f"expected the missing field named in the message: {error_text!r}"
     assert "missing_required" not in error_text, f"must not leak the raw JSON key: {error_text!r}"

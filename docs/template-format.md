@@ -23,6 +23,7 @@ This document is the authoritative reference for every parameter. It is sourced 
 | `rotate` | no | int | Quarter-turn orientation. One of `0`, `90`, `180`, `270` (default `0`); any other value is rejected. For **die-cut** media (both dimensions fixed) a `90`/`270` rotation composes the layout on a **swapped** canvas — author it for the long edge as width, so an address reads landscape along the length — and the driver rotates it back onto the roll's printable size. (A naive `rotate: 90` without this handling would make brother_ql reject the raster with `Bad image dimensions`; the app does the swap for you.) For **continuous** media `180` flips the whole label, while `90`/`270` is a [landscape layout along the tape](#landscape-on-continuous-tape) and **requires `length`**: without it the turned raster would be rescaled to the tape width and distorted, so the loader rejects that combination. |
 | `length` | no | number | Millimetres along a **continuous** tape for a [landscape layout](#landscape-on-continuous-tape). Only valid together with `rotate: 90`/`270` on continuous media (20–300 mm); rejected on die-cut media (the label id already fixes the length) and with `rotate` `0`/`180`. |
 | `valign` | no | string | Vertical placement of the whole composed layout within the label. One of `top` (default), `center`, `bottom`. Only takes effect where the block's axis is fixed and has spare height: **die-cut** media, and a **landscape** continuous layout (the tape width is the fixed axis there). `center`/`bottom` shift the stack down so it does not cling to the top edge. On upright **continuous** media (height grows to fit) and when content overflows it is a no-op. Handy for address labels where a bold name + a couple of lines should sit centred on the long face. |
+| `font` | no | string | Label-wide [font](#fonts) for every `title`, `subtitle`, `text` and `list` that sets none of its own. Default `dejavu-sans`. |
 | `fields` | no | mapping | Declares the [fields](#fields) a caller supplies. Omit it for a fully static label. |
 | `aliases` | no | list | Alternative **spoken** names, for clients that match speech against the catalog. Never a lookup key — printing is always by `name`. See [Aliases (spoken names)](#aliases-spoken-names). |
 
@@ -294,6 +295,60 @@ Unknown attributes on an element are ignored (except `children`, which is allowe
 `background` alone ⇒ a filled banner; `border` alone ⇒ a boxed field; both ⇒ a framed banner. The
 fill/border span the full strip width. See the `shipping-badge` template for a worked example.
 
+### Fonts
+
+`title`, `subtitle`, `text` and `list` take a `font`, one of the keys below; the top-level `font`
+sets it for every element that does not. All fonts ship inside the Docker image — nothing is
+downloaded at print time — and each is free to redistribute (OFL-1.1 or Apache-2.0; DejaVu under
+the Bitstream Vera licence). Each family's licence ships next to its files.
+
+| Key | Name | Style | Bold | Licence |
+|---|---|---|---|---|
+| `dejavu-sans` | DejaVu Sans | sans | yes | Bitstream-Vera |
+| `atkinson-hyperlegible` | Atkinson Hyperlegible | sans | yes | OFL-1.1 |
+| `inter` | Inter | sans | yes | OFL-1.1 |
+| `barlow-condensed` | Barlow Condensed | condensed | yes | OFL-1.1 |
+| `oswald` | Oswald | condensed | yes | OFL-1.1 |
+| `source-serif-4` | Source Serif 4 | serif | yes | OFL-1.1 |
+| `merriweather` | Merriweather | serif | yes | OFL-1.1 |
+| `roboto-slab` | Roboto Slab | serif | yes | Apache-2.0 |
+| `jetbrains-mono` | JetBrains Mono | monospace | yes | OFL-1.1 |
+| `ibm-plex-mono` | IBM Plex Mono | monospace | yes | OFL-1.1 |
+| `space-mono` | Space Mono | monospace | yes | OFL-1.1 |
+| `patrick-hand` | Patrick Hand | handwritten | no (regular is used) | OFL-1.1 |
+| `caveat` | Caveat | handwritten | yes | OFL-1.1 |
+| `kalam` | Kalam | handwritten | yes | OFL-1.1 |
+| `permanent-marker` | Permanent Marker | handwritten | no (regular is used) | Apache-2.0 |
+| `montserrat` | Montserrat | modern | yes | OFL-1.1 |
+| `poppins` | Poppins | modern | yes | OFL-1.1 |
+| `space-grotesk` | Space Grotesk | modern | yes | OFL-1.1 |
+| `press-start-2p` | Press Start 2P | retro | no (regular is used) | OFL-1.1 |
+| `vt323` | VT323 | retro | no (regular is used) | OFL-1.1 |
+| `bungee` | Bungee | retro | no (regular is used) | OFL-1.1 |
+| `silkscreen` | Silkscreen | retro | yes | OFL-1.1 |
+| `courier-prime` | Courier Prime | typewriter | yes | OFL-1.1 |
+| `special-elite` | Special Elite | typewriter | no (regular is used) | Apache-2.0 |
+| `cutive-mono` | Cutive Mono | typewriter | no (regular is used) | OFL-1.1 |
+| `share-tech-mono` | Share Tech Mono | lcd | no (regular is used) | OFL-1.1 |
+| `dseg7-classic` | DSEG7 Classic | lcd | yes | OFL-1.1 |
+| `dseg14-classic` | DSEG14 Classic | lcd | yes | OFL-1.1 |
+
+- **Missing characters fall back to DejaVu Sans**, character by character, so text is never lost:
+  a seven-segment `dseg7-classic` shows digits in its own style and draws an `é` in DejaVu. Only
+  the LCD fonts lean on this for ordinary text; every other family covers Latin-1 (Spanish,
+  French, German accents, `€`, `°`) itself.
+- **`bold: true` on a font without a bold style draws its regular style** (the table says which).
+  `title` is bold by default, so a title in `patrick-hand` simply prints regular.
+- Running from source instead of Docker, fetch the fonts once with
+  `python scripts/fetch_label_fonts.py`; until then those elements render in DejaVu with a warning.
+
+```yaml
+font: courier-prime                                        # the whole label in a typewriter face
+layout:
+  - {type: title, text: "{{name}}", font: permanent-marker}  # except this heading
+  - {type: text, text: "{{temp}}", font: dseg7-classic, size: 64}
+```
+
 ### Text spacing (line height and letter spacing)
 
 `title`, `subtitle`, `text` and `list` accept two optional spacing controls. Both are **relative to
@@ -331,6 +386,7 @@ not drawn.
 | `max_lines` | int 1–200 | `2` | |
 | `bold` | bool | `true` (title) / `false` (subtitle) | |
 | `background`, `border`, `border_color` | — | — | See [Badge & boxed text](#badge--boxed-text-text-family-decorations). |
+| `font` | key | template `font` | See [Fonts](#fonts). |
 | `line_height`, `letter_spacing` | — | — | See [Text spacing](#text-spacing-line-height-and-letter-spacing). |
 
 ```yaml
@@ -353,6 +409,7 @@ blank strip.
 | `bold` | bool | `false` | |
 | `max_lines` | int 1–200 | `10` | |
 | `background`, `border`, `border_color` | — | — | See [Badge & boxed text](#badge--boxed-text-text-family-decorations). |
+| `font` | key | template `font` | See [Fonts](#fonts). |
 | `line_height`, `letter_spacing` | — | — | See [Text spacing](#text-spacing-line-height-and-letter-spacing). |
 
 `size × max_lines` is additionally bounded (≤ 4000) so a large font and many lines cannot compose an
@@ -547,6 +604,7 @@ fields.
 | `align` | `left`/`center`/`right` | `left` |
 | `bold` | bool | `false` |
 | `max_items` | int 1–200 | `20` |
+| `font` | see [Fonts](#fonts) | template `font` |
 | `line_height`, `letter_spacing` | see [Text spacing](#text-spacing-line-height-and-letter-spacing) | *auto* / `0` |
 
 Blank items are dropped; the list is capped at `max_items`. `size × max_items` is bounded (≤ 4000)

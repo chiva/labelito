@@ -349,6 +349,9 @@ class TemplateParseResponse(BaseModel):
     label: str
     rotate: int
     valign: str = "top"
+    # Label-wide font (a key of the label-font manifest) for text elements that set none; returned
+    # so the studio round-trips it.
+    font: str = "dejavu-sans"
     # Landscape length along continuous tape, in millimetres; None unless the template turns a
     # continuous label by 90/270. Returned for the same round-trip reason as `aliases` below.
     length: float | None = None
@@ -440,6 +443,9 @@ class TemplateInfo(BaseModel):
     label: str
     rotate: int
     valign: str = "top"
+    # Label-wide font (a key of the label-font manifest) for text elements that set none; returned
+    # so the studio round-trips it.
+    font: str = "dejavu-sans"
     # Landscape length along continuous tape (mm) when the template turns a continuous label by
     # 90/270; None for die-cut media and upright continuous layouts.
     length: float | None = None

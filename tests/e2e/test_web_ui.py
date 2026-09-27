@@ -4011,3 +4011,43 @@ def test_studio_visual_builder_edits_font_relative_text_spacing(authed_page: Pag
     expect(yaml).to_have_value(re.compile(r"letter_spacing: -0\.05"))
     spacing.fill("0")  # the default is dropped from the YAML, not written out
     expect(yaml).not_to_have_value(re.compile(r"letter_spacing:"))
+
+
+def test_studio_font_controls_write_template_and_element_fonts(authed_page: Page) -> None:
+    """The template settings pick the label-wide `font`; a text block picks its own or inherits.
+    Both show family names, not keys, and round-trip through the YAML."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    yaml = authed_page.locator("#yaml")
+
+    inspector = authed_page.locator(".lb-inspector")
+    template_font = inspector.get_by_role("combobox", name="Font", exact=True)
+    expect(template_font).to_have_value("dejavu-sans")
+    expect(template_font.locator("option[value='patrick-hand']")).to_have_text(
+        "Patrick Hand (no bold)"
+    )
+    template_font.select_option("courier-prime")
+    expect(yaml).to_have_value(re.compile(r"^font: courier-prime$", re.M))
+
+    authed_page.locator(".lb-palette").get_by_text("Text", exact=True).click()
+    authed_page.locator(".lb-canvas .lb-block").last.click()
+    element_font = inspector.get_by_role("combobox", name="Font", exact=True)
+    expect(element_font).to_have_value("")
+    expect(element_font.locator("option[value='']")).to_have_text("(inherit)")
+    element_font.select_option("dseg7-classic")
+    expect(yaml).to_have_value(re.compile(r"type: text.*font: \"?dseg7-classic"))
+    element_font.select_option("")
+    expect(yaml).not_to_have_value(re.compile(r"dseg7-classic"))
+    expect(yaml).to_have_value(re.compile(r"^font: courier-prime$", re.M))
+
+    # YAML -> Visual keeps both fonts (the parse response carries `font`, elements keep theirs).
+    _studio_yaml_mode(authed_page)
+    authed_page.fill(
+        "#yaml",
+        'name: f\ndescription: d\nlabel: "62"\nfont: inter\nlayout:\n'
+        "  - {type: text, text: hi, font: vt323}\n",
+    )
+    authed_page.get_by_role("button", name="Visual", exact=True).click()
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    expect(yaml).to_have_value(re.compile(r"^font: inter$", re.M))
+    expect(yaml).to_have_value(re.compile(r"font: \"?vt323"))

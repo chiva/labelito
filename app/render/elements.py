@@ -15,6 +15,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont, features
 
+from app.render.fonts import DEFAULT_FONT, FONT_REGISTRY
 from app.render.symbols import (
     AZTEC_ECC_DEFAULT,
     AZTEC_KIND_DEFAULT,
@@ -217,6 +218,10 @@ class ElementBase:
     # RGB canvas. Threaded uniformly (incl. row children) so a whole label is one coherent mode.
     color: str = COLOR_DEFAULT
     _red_active: bool = False
+    # Label fonts, engine-controlled like `_red_active`: where the fetched families live, and the
+    # template-level `font` a text-family element uses when it sets none of its own.
+    _label_fonts_dir: Path | None = None
+    _default_font: str = ""
 
     def _px(self, value: int) -> int:
         """Scale a pixel dimension by the element's coordinate-system scale factor."""
@@ -382,6 +387,68 @@ def _load_font(fonts_dir: Path, size: int, bold: bool = False) -> _Font:
     return ImageFont.load_default()
 
 
+@functools.cache
+def _glyph_coverage(path: str) -> frozenset[int]:
+    """Codepoints a label font file maps (its best cmap); read once per file."""
+    from fontTools.ttLib import TTFont
+
+    with TTFont(path, lazy=True) as font:
+        return frozenset(font.getBestCmap() or {})
+
+
+@functools.cache
+def _variation_axes(path: str) -> tuple[tuple[str, float], ...]:
+    """(axis tag, default) per variation axis, in the order Pillow's set_variation_by_axes expects."""
+    from fontTools.ttLib import TTFont
+
+    with TTFont(path, lazy=True) as font:
+        if "fvar" not in font:
+            return ()
+        return tuple((axis.axisTag, float(axis.defaultValue)) for axis in font["fvar"].axes)
+
+
+def _load_label_font(
+    fonts_dir: Path, label_fonts_dir: Path | None, family: str, size: int, bold: bool
+) -> tuple[_Font, _GlyphFallback | None]:
+    """Load *family* for text, with the DejaVu fallback for glyphs it lacks.
+
+    The builtin family (and an unknown key, which the loader already rejects) is exactly
+    :func:`_load_font` with no fallback, so default output is unchanged. A family whose file is not
+    installed renders in DejaVu with a one-time warning rather than failing the print. A variable
+    font gets its ``wght`` axis set explicitly — several default to Thin or Light — with every other
+    axis left at its default. ``bold`` on a family without a bold style draws its regular style.
+    """
+    entry = FONT_REGISTRY.get(family)
+    if entry is None or entry.builtin:
+        return _load_font(fonts_dir, size, bold), None
+    path = entry.path(label_fonts_dir, bold) if label_fonts_dir is not None else None
+    if path is None or not path.is_file():
+        _warn_font_fallback(
+            f"label-font:{family}",
+            "Label font %r is not installed (expected %s); rendering it in DejaVu Sans. Run "
+            "scripts/fetch_label_fonts.py, or use the Docker image, which bundles it.",
+            family,
+            path,
+        )
+        return _load_font(fonts_dir, size, bold), None
+    font = ImageFont.truetype(str(path), size, layout_engine=_text_layout_engine())
+    style = entry.style(bold)
+    axes = _variation_axes(str(path))
+    if axes and style is not None and style.wght is not None:
+        font.set_variation_by_axes(  # type: ignore[no-untyped-call]  # Pillow ships it unannotated
+            [float(style.wght) if tag == "wght" else default for tag, default in axes]
+        )
+    return font, _GlyphFallback(_load_font(fonts_dir, size, bold), _glyph_coverage(str(path)))
+
+
+def _element_text_font(
+    el: ElementBase, fonts_dir: Path, font_px: int, bold: bool
+) -> tuple[_Font, _GlyphFallback | None]:
+    """The font a text-family element draws with: its own ``font``, else the template default."""
+    family = getattr(el, "font", "") or el._default_font or DEFAULT_FONT
+    return _load_label_font(fonts_dir, el._label_fonts_dir, family, font_px, bold)
+
+
 def _safe_icon_name(name: str) -> str | None:
     """Return *name* if it is a single safe path component, else None.
 
@@ -463,8 +530,51 @@ def _clusters(line: str) -> list[str]:
     return clusters
 
 
-def _line_width(font: _Font, line: str, tracking: float) -> float:
-    """Ink width of *line*: the shaped (kerned) bbox plus the tracking between its clusters."""
+@dataclass(frozen=True)
+class _GlyphFallback:
+    """DejaVu at the same size and weight, for the clusters a chosen label font has no glyph for.
+
+    ``coverage`` is the set of codepoints the PRIMARY font maps (its cmap). A cluster is drawn in the
+    primary font only when every codepoint in it is covered, so an accent never lands on a base
+    letter from a different font. None of this exists for the builtin DejaVu family, whose text keeps
+    the single-font path byte for byte.
+    """
+
+    font: _Font
+    coverage: frozenset[int]
+
+
+def _runs(line: str, font: _Font, fallback: _GlyphFallback) -> list[tuple[_Font, list[str]]]:
+    """Split *line* into consecutive (font, clusters) runs. Whitespace stays in the current run, so a
+    space the primary font lacks never starts a fallback run of its own."""
+    runs: list[tuple[_Font, list[str]]] = []
+    for cluster in _clusters(line):
+        if cluster.isspace() and runs:
+            use = runs[-1][0]
+        elif all(ord(char) in fallback.coverage for char in cluster):
+            use = font
+        else:
+            use = fallback.font
+        if runs and runs[-1][0] is use:
+            runs[-1][1].append(cluster)
+        else:
+            runs.append((use, [cluster]))
+    return runs
+
+
+def _line_width(
+    font: _Font, line: str, tracking: float, fallback: _GlyphFallback | None = None
+) -> float:
+    """Ink width of *line*: the shaped (kerned) bbox plus the tracking between its clusters.
+
+    With a *fallback* the line may mix fonts, so the width is the sum of each run's advance (kerning
+    is kept inside a run, not across a font switch) plus the tracking.
+    """
+    if fallback is not None:
+        runs = _runs(line, font, fallback)
+        clusters = sum(len(run) for _font, run in runs)
+        advance = sum(run_font.getlength("".join(run)) for run_font, run in runs)
+        return advance + tracking * max(0, clusters - 1)
     bbox = font.getbbox(line)
     width: float = bbox[2] - bbox[0]
     if tracking:
@@ -479,6 +589,7 @@ def _draw_line(
     font: _Font,
     fill: int | tuple[int, int, int],
     tracking: float,
+    fallback: _GlyphFallback | None = None,
 ) -> None:
     """Draw *line* at *xy*, spreading its clusters by *tracking* px while keeping pair kerning.
 
@@ -486,7 +597,13 @@ def _draw_line(
     each cluster sits at the advance the shaper gives it after the preceding text — measured WITH the
     cluster, minus the cluster alone, so the kern between it and its predecessor is kept — plus
     ``tracking`` per preceding cluster.
+
+    With a *fallback*, *xy*'s y is the BASELINE: runs in different fonts are drawn with the ``ls``
+    anchor so their baselines line up, each run starting where the previous run's advance ended.
     """
+    if fallback is not None:
+        _draw_runs(draw, xy, _runs(line, font, fallback), fill, tracking)
+        return
     if not tracking:
         draw.text(xy, line, font=font, fill=fill)
         return
@@ -498,7 +615,38 @@ def _draw_line(
         prefix += cluster
 
 
-def _wrap_text(text: str, font: _Font, max_width: int, tracking: float = 0.0) -> list[str]:
+def _draw_runs(
+    draw: ImageDraw.ImageDraw,
+    baseline_xy: tuple[int, int],
+    runs: list[tuple[_Font, list[str]]],
+    fill: int | tuple[int, int, int],
+    tracking: float,
+) -> None:
+    x, baseline = baseline_xy
+    advance = 0.0
+    index = 0
+    for run_font, run in runs:
+        text = "".join(run)
+        if not tracking:
+            draw.text((x + advance, baseline), text, font=run_font, fill=fill, anchor="ls")
+        else:
+            prefix = ""
+            for cluster in run:
+                offset = run_font.getlength(prefix + cluster) - run_font.getlength(cluster)
+                position = x + advance + offset + index * tracking
+                draw.text((position, baseline), cluster, font=run_font, fill=fill, anchor="ls")
+                prefix += cluster
+                index += 1
+        advance += run_font.getlength(text)
+
+
+def _wrap_text(
+    text: str,
+    font: _Font,
+    max_width: int,
+    tracking: float = 0.0,
+    fallback: _GlyphFallback | None = None,
+) -> list[str]:
     """Wrap text to fit within max_width pixels, counting any tracking toward each line's width."""
     lines: list[str] = []
     for paragraph in text.split("\n"):
@@ -509,7 +657,7 @@ def _wrap_text(text: str, font: _Font, max_width: int, tracking: float = 0.0) ->
         current = words[0]
         for word in words[1:]:
             test = current + " " + word
-            if _line_width(font, test, tracking) <= max_width:
+            if _line_width(font, test, tracking, fallback) <= max_width:
                 current = test
             else:
                 lines.append(current)
@@ -533,6 +681,7 @@ def _render_text_block(
     font_px: int = 0,
     line_height: float | None = None,
     letter_spacing: float = LETTER_SPACING_DEFAULT,
+    fallback: _GlyphFallback | None = None,
 ) -> Image.Image:
     """Render wrapped text into a new image of the correct height.
 
@@ -548,15 +697,39 @@ def _render_text_block(
     ``line_height`` None and zero ``letter_spacing`` the block is byte-identical to the legacy layout.
     An explicit ``line_height`` sets the baseline pitch; the strip is then sized from the last line's
     glyph box rather than a full pitch, so a pitch tighter than the glyphs never clips the last line.
+
+    A *fallback* (any label font other than the builtin DejaVu) switches to font-metric layout: the
+    glyph box is the taller ascent plus the deeper descent of the two fonts, so a DejaVu accent inside
+    a short pixel font is never clipped and a font without ``A``/``y`` (DSEG) still measures right,
+    and every line is drawn on a shared baseline.
     """
     line_gap = 8 * scale
     block_pad = 8 * scale
     top_pad = 4 * scale
     tracking = letter_spacing * font_px
     effective_width = canvas_width - 2 * padding_h
-    lines = _wrap_text(text, font, effective_width, tracking)
+    lines = _wrap_text(text, font, effective_width, tracking, fallback)
     if max_lines:
         lines = lines[:max_lines]
+
+    if fallback is not None:
+        return _render_mixed_font_lines(
+            lines,
+            font,
+            fallback,
+            canvas_width,
+            align,
+            padding_h,
+            mode,
+            bg,
+            fill,
+            pitch_ratio=line_height,
+            font_px=font_px,
+            tracking=tracking,
+            line_gap=line_gap,
+            top_pad=top_pad,
+            block_pad=block_pad,
+        )
 
     sample_bbox = font.getbbox("Ay")
     if line_height is None:
@@ -580,6 +753,57 @@ def _render_text_block(
         _draw_line(draw, (x, y), line, font, fill, tracking)
         y += pitch
 
+    return img
+
+
+def _metrics(font: _Font) -> tuple[int, int]:
+    """(ascent, descent) of a TrueType font; the bitmap last-resort font reports its glyph box."""
+    if isinstance(font, ImageFont.FreeTypeFont):
+        return font.getmetrics()
+    box = font.getbbox("Ay")  # type: ignore[no-untyped-call]  # bitmap ImageFont is unannotated
+    return int(box[3]), 0
+
+
+def _render_mixed_font_lines(
+    lines: list[str],
+    font: _Font,
+    fallback: _GlyphFallback,
+    canvas_width: int,
+    align: str,
+    padding_h: int,
+    mode: str,
+    bg: int | tuple[int, int, int],
+    fill: int | tuple[int, int, int],
+    *,
+    pitch_ratio: float | None,
+    font_px: int,
+    tracking: float,
+    line_gap: int,
+    top_pad: int,
+    block_pad: int,
+) -> Image.Image:
+    (primary_ascent, primary_descent), (fallback_ascent, fallback_descent) = (
+        _metrics(font),
+        _metrics(fallback.font),
+    )
+    ascent = max(primary_ascent, fallback_ascent)
+    descent = max(primary_descent, fallback_descent)
+    glyph_height = ascent + descent
+    pitch = glyph_height + line_gap if pitch_ratio is None else max(1, round(pitch_ratio * font_px))
+    total_height = top_pad + pitch * max(0, len(lines) - 1) + glyph_height + block_pad
+    img = Image.new(mode, (canvas_width, total_height), bg)
+    draw = ImageDraw.Draw(img)
+    baseline = top_pad + ascent
+    for line in lines:
+        text_w = round(_line_width(font, line, tracking, fallback))
+        if align == "center":
+            x = (canvas_width - text_w) // 2
+        elif align == "right":
+            x = canvas_width - text_w - padding_h
+        else:
+            x = padding_h
+        _draw_line(draw, (x, baseline), line, font, fill, tracking, fallback)
+        baseline += pitch
     return img
 
 
@@ -626,6 +850,7 @@ class TitleElement(ElementBase):
     border_color: str = COLOR_DEFAULT
     line_height: float | None = None
     letter_spacing: float = LETTER_SPACING_DEFAULT
+    font: str = ""  # a key of app/render/font_manifest.json; "" ⇒ the template default
 
     def render(
         self,
@@ -639,7 +864,7 @@ class TitleElement(ElementBase):
         if not text.strip():
             return self._new_canvas(canvas_width, 0)
         font_px = self._px(FONT_SIZES["title"])
-        font = _load_font(fonts_dir, font_px, self.bold)
+        font, fallback = _element_text_font(self, fonts_dir, font_px, self.bold)
         bg, fill = _block_colors(self)
         img = _render_text_block(
             text,
@@ -655,6 +880,7 @@ class TitleElement(ElementBase):
             font_px=font_px,
             line_height=self.line_height,
             letter_spacing=self.letter_spacing,
+            fallback=fallback,
         )
         return _apply_border(self, img)
 
@@ -671,6 +897,7 @@ class SubtitleElement(ElementBase):
     border_color: str = COLOR_DEFAULT
     line_height: float | None = None
     letter_spacing: float = LETTER_SPACING_DEFAULT
+    font: str = ""  # a key of app/render/font_manifest.json; "" ⇒ the template default
 
     def render(
         self,
@@ -684,7 +911,7 @@ class SubtitleElement(ElementBase):
         if not text.strip():
             return self._new_canvas(canvas_width, 0)
         font_px = self._px(FONT_SIZES["subtitle"])
-        font = _load_font(fonts_dir, font_px, self.bold)
+        font, fallback = _element_text_font(self, fonts_dir, font_px, self.bold)
         bg, fill = _block_colors(self)
         img = _render_text_block(
             text,
@@ -700,6 +927,7 @@ class SubtitleElement(ElementBase):
             font_px=font_px,
             line_height=self.line_height,
             letter_spacing=self.letter_spacing,
+            fallback=fallback,
         )
         return _apply_border(self, img)
 
@@ -720,6 +948,7 @@ class TextElement(ElementBase):
     border_color: str = COLOR_DEFAULT
     line_height: float | None = None
     letter_spacing: float = LETTER_SPACING_DEFAULT
+    font: str = ""  # a key of app/render/font_manifest.json; "" ⇒ the template default
 
     def render(
         self,
@@ -733,7 +962,7 @@ class TextElement(ElementBase):
         if not text.strip():
             return self._new_canvas(canvas_width, 0)
         font_px = self._px(self.size)
-        font = _load_font(fonts_dir, font_px, self.bold)
+        font, fallback = _element_text_font(self, fonts_dir, font_px, self.bold)
         bg, fill = _block_colors(self)
         img = _render_text_block(
             text,
@@ -749,6 +978,7 @@ class TextElement(ElementBase):
             font_px=font_px,
             line_height=self.line_height,
             letter_spacing=self.letter_spacing,
+            fallback=fallback,
         )
         return _apply_border(self, img)
 
@@ -1637,6 +1867,7 @@ class ListElement(ElementBase):
     max_items: int = LIST_DEFAULT_MAX_ITEMS
     line_height: float | None = None
     letter_spacing: float = LETTER_SPACING_DEFAULT
+    font: str = ""  # a key of app/render/font_manifest.json; "" ⇒ the template default
 
     def _item_lines(self, text: str) -> list[str]:
         """Split *text* into non-blank items (capped at max_items) and prefix each with the marker."""
@@ -1657,7 +1888,12 @@ class ListElement(ElementBase):
         return "\n".join(self._item_lines(text))
 
     def _budgeted_lines(
-        self, items: list[str], font: _Font, effective_width: int, tracking: float = 0.0
+        self,
+        items: list[str],
+        font: _Font,
+        effective_width: int,
+        tracking: float = 0.0,
+        fallback: _GlyphFallback | None = None,
     ) -> list[str]:
         """Wrap each item and allocate the ``max_items`` line budget fairly across items.
 
@@ -1668,7 +1904,9 @@ class ListElement(ElementBase):
         total stays bounded by ``max_items`` (the bound the loader's strip-area guard assumes), while
         no item can be omitted entirely.
         """
-        wrapped = [_wrap_text(item, font, effective_width, tracking) or [""] for item in items]
+        wrapped = [
+            _wrap_text(item, font, effective_width, tracking, fallback) or [""] for item in items
+        ]
         kept = [lines[:1] for lines in wrapped]
         remaining = max(0, self.max_items - len(kept))
         for i, lines in enumerate(wrapped):
@@ -1695,9 +1933,9 @@ class ListElement(ElementBase):
             # empty text-family element — so it adds no strip to the stack and leaves no gap.
             return self._new_canvas(canvas_width, 0)
         font_px = self._px(self.size)
-        font = _load_font(fonts_dir, font_px, self.bold)
+        font, fallback = _element_text_font(self, fonts_dir, font_px, self.bold)
         flat = self._budgeted_lines(
-            items, font, canvas_width - 2 * self._px(8), self.letter_spacing * font_px
+            items, font, canvas_width - 2 * self._px(8), self.letter_spacing * font_px, fallback
         )
         return _render_text_block(
             "\n".join(flat),
@@ -1715,6 +1953,7 @@ class ListElement(ElementBase):
             font_px=font_px,
             line_height=self.line_height,
             letter_spacing=self.letter_spacing,
+            fallback=fallback,
         )
 
 
@@ -1739,7 +1978,14 @@ ELEMENT_REGISTRY: dict[str, type[ElementBase]] = {
 }
 
 
-def build_element(spec: dict[str, Any], scale: int = 1, red_active: bool = False) -> ElementBase:
+def build_element(
+    spec: dict[str, Any],
+    scale: int = 1,
+    red_active: bool = False,
+    *,
+    label_fonts_dir: Path | None = None,
+    default_font: str = "",
+) -> ElementBase:
     """Instantiate an element from a template spec dict.
 
     ``scale`` (default 1) is the linear scale factor of the whole label coordinate system: 1 at
@@ -1772,6 +2018,8 @@ def build_element(spec: dict[str, Any], scale: int = 1, red_active: bool = False
     # A template must never override the scale factor or the engine-controlled red flag.
     filtered.pop("scale", None)
     filtered.pop("_red_active", None)
+    filtered.pop("_label_fonts_dir", None)
+    filtered.pop("_default_font", None)
     # Expand the CSS-style `padding` shorthand + any longhand overrides into the four concrete side
     # fields, so every element carries resolved padding_{top,right,bottom,left} regardless of the form
     # the author used. (`padding` itself is not a dataclass field, so the filter above already drops it.)
@@ -1784,10 +2032,18 @@ def build_element(spec: dict[str, Any], scale: int = 1, red_active: bool = False
     # scale AND the same two-color mode so children share the container's canvas mode/ink semantics.
     if isinstance(filtered.get("children"), list):
         filtered["children"] = [
-            build_element(c, scale=scale, red_active=red_active)
+            build_element(
+                c,
+                scale=scale,
+                red_active=red_active,
+                label_fonts_dir=label_fonts_dir,
+                default_font=default_font,
+            )
             for c in filtered["children"]
             if isinstance(c, dict)
         ]
     el = cls(**filtered)
     el._red_active = red_active
+    el._label_fonts_dir = label_fonts_dir
+    el._default_font = default_font
     return el

@@ -45,6 +45,9 @@ dependencies = [
     # which fetches an IdP's JWKS, caches signing keys by kid, and refetches on an unknown kid
     # (key rotation). The [crypto] extra pulls in `cryptography` for RS256/ES256 verification.
     "PyJWT[crypto]==2.13.0",
+    # Reads each label font's character map so a glyph the chosen font lacks falls back to DejaVu per
+    # character instead of printing a missing-glyph box (Pillow exposes no cmap). MIT.
+    "fonttools==4.64.0",
 ]
 
 [project.urls]
@@ -65,7 +68,8 @@ e2e = ["pytest-playwright==0.9.0"]
 # fonttools outlines the Inter wordmark to paths; uharfbuzz shapes the word (applying Inter's
 # kerning so the outlines match the browser-rendered wordmark); brotli lets fonttools read the
 # .woff2 source. cairosvg (the rasterizer) is already a core runtime dependency above.
-brand-assets = ["fonttools==4.64.0", "uharfbuzz==0.56.1", "brotli==1.2.0"]
+# fontTools itself is a runtime dependency (above).
+brand-assets = ["uharfbuzz==0.56.1", "brotli==1.2.0"]
 dev = [
     "pre-commit==4.6.2",
     {include-group = "test"},
@@ -102,6 +106,7 @@ markers = [
     "e2e: end-to-end tests driving a real server + browser; opt-in via --e2e (needs playwright)",
     "slow: slow tests",
     "icons: verifies bundled icon collections produced by scripts/fetch-icons.sh (fetch first)",
+    "label_fonts: renders the label fonts fetched by scripts/fetch_label_fonts.py (fetch first)",
 ]
 filterwarnings = ["error", "ignore::DeprecationWarning"]
 

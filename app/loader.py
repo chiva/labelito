@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from app.media import required_media_for
+from app.media import MEDIA_TYPE_CONTINUOUS, required_media_for
 from app.render.elements import (
     COLOR_CHOICES,
     DEFAULT_TEXT_MAX_LINES,
@@ -176,6 +176,17 @@ MAX_LAYOUT_ELEMENTS = 64
 MAX_TOTAL_STRIP_HEIGHT = 40000
 
 VALID_ROTATIONS = {0, 90, 180, 270}
+# A quarter turn on CONTINUOUS media is a landscape layout along the tape: the layout is composed
+# with the tape's printable width as its fixed HEIGHT and a fixed ``length`` (mm) as its width, then
+# turned so the raster is tape-width wide and ``length`` long. Without a declared length there is no
+# width to compose against — the layout would be composed at the tape width and brother_ql would
+# rescale the turned raster to fit the tape, distorting it silently — so the loader requires one.
+LANDSCAPE_ROTATIONS = frozenset({90, 270})
+# Bounds for that length. 20 mm (236 dots at 300 dpi) clears the default min_length_px (200) and the
+# QL feed minimum (150 dots); 300 mm (3543 dots, 7086 at 600 dpi) stays under both the default
+# max_length_px (6000) and the smallest model raster-row ceiling (11811) even in high_res mode.
+MIN_LANDSCAPE_LENGTH_MM = 20
+MAX_LANDSCAPE_LENGTH_MM = 300
 VALID_ELEMENT_TYPES = {
     "title",
     "subtitle",
@@ -215,6 +226,7 @@ class Template:
         "is_example",
         "label",
         "layout",
+        "length_mm",
         "name",
         "optional_fields",
         "required_fields",
@@ -236,12 +248,16 @@ class Template:
         is_example: bool = False,
         valign: str = "top",
         aliases: list[str] | None = None,
+        length_mm: float | None = None,
     ) -> None:
         self.name = name
         self.description = description
         self.label = label
         self.rotate = rotate
         self.valign = valign
+        # Landscape length along continuous tape (mm); None for die-cut media and upright
+        # continuous layouts. See LANDSCAPE_ROTATIONS.
+        self.length_mm = length_mm
         self.required_fields = required_fields
         self.optional_fields = optional_fields
         self.layout = layout
@@ -958,7 +974,7 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
     # compare against (no second media table to drift), and its ValueError already names the bad id
     # and lists every valid identifier.
     try:
-        required_media_for(label)
+        media = required_media_for(label)
     except ValueError as exc:
         raise TemplateLoadError(f"{source_name}: {exc}") from exc
 
@@ -977,6 +993,7 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
         raise TemplateLoadError(
             f"{source_name}: 'rotate' must be one of {sorted(VALID_ROTATIONS)}, got {rotate}"
         )
+    length_mm = _validate_length(source_name, label, media.media_type, rotate, raw.get("length"))
 
     # Top-level vertical placement of the whole composed block within a fixed die-cut canvas.
     # Defaults to "top" (the historical top-anchored stack); "center"/"bottom" only take effect on
@@ -1082,7 +1099,52 @@ def build_template_from_mapping(raw: Any, source_name: str, source_path: Path) -
         source_path=source_path,
         valign=valign,
         aliases=aliases,
+        length_mm=length_mm,
     )
+
+
+def _validate_length(
+    source_name: str, label: str, media_type: str, rotate: int, raw_length: Any
+) -> float | None:
+    """Validate the optional top-level ``length`` (mm) against the media and rotation.
+
+    ``length`` exists for one purpose: a landscape layout on CONTINUOUS tape (``rotate`` 90/270),
+    where it fixes the compose width the layout runs along. It is therefore rejected on die-cut media
+    (whose length the label id already fixes) and with an upright rotation (where the tape length is
+    elastic). Conversely a quarter turn on continuous tape WITHOUT a length is rejected too: composed
+    at the tape width and turned, that raster no longer matches the tape and brother_ql rescales it
+    to fit — a distorted print behind a correct-looking preview, with no error anywhere.
+    """
+    is_landscape = media_type == MEDIA_TYPE_CONTINUOUS and rotate in LANDSCAPE_ROTATIONS
+    if raw_length is None:
+        if is_landscape:
+            raise TemplateLoadError(
+                f"{source_name}: rotate {rotate} on continuous label {label!r} requires 'length' "
+                f"(mm): without a fixed length the layout is composed at the tape width and the "
+                f"turned raster is rescaled to fit the tape, distorting the print; add "
+                f"'length: <mm>' for a landscape layout along the tape, or use rotate 0 or 180"
+            )
+        return None
+    if isinstance(raw_length, bool) or not isinstance(raw_length, int | float):
+        raise TemplateLoadError(
+            f"{source_name}: 'length' must be a number of millimetres, got {raw_length!r}"
+        )
+    if media_type != MEDIA_TYPE_CONTINUOUS:
+        raise TemplateLoadError(
+            f"{source_name}: 'length' applies only to continuous media; die-cut label {label!r} "
+            f"already has a fixed length"
+        )
+    if rotate not in LANDSCAPE_ROTATIONS:
+        raise TemplateLoadError(
+            f"{source_name}: 'length' requires rotate {sorted(LANDSCAPE_ROTATIONS)} (a landscape "
+            f"layout along the tape); an upright continuous label grows to fit its content"
+        )
+    if not MIN_LANDSCAPE_LENGTH_MM <= raw_length <= MAX_LANDSCAPE_LENGTH_MM:
+        raise TemplateLoadError(
+            f"{source_name}: 'length' must be between {MIN_LANDSCAPE_LENGTH_MM} and "
+            f"{MAX_LANDSCAPE_LENGTH_MM} mm, got {raw_length}"
+        )
+    return float(raw_length)
 
 
 def load_template(path: Path) -> Template:

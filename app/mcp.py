@@ -445,8 +445,9 @@ def build_mcp_server() -> MCPServer:
             """Validate a draft template body and return its auto-detected field contract.
 
             The cheap half of preview_ephemeral_label: same validation, no rendering. Returns the
-            name, description, label, rotate, valign, the required/optional fields the loader
-            inferred from the layout's `{{tokens}}`, and whether the draft uses `{{seq}}`.
+            name, description, label, rotate, valign, length (landscape mm on continuous tape, else
+            null), the required/optional fields the loader inferred from the layout's `{{tokens}}`,
+            and whether the draft uses `{{seq}}`.
 
             Use it to check a draft's shape while writing it — computed tokens ({{date}}, {{now}},
             {{seq}}) and [[translations]] are correctly excluded from the contract, so the fields it

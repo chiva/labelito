@@ -114,6 +114,50 @@ def test_subtitle_nonempty_renders(
     assert img.height > 0
 
 
+def test_title_empty_returns_zero_height(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    el = TitleElement(text="")
+    img = el.render(CANVAS_W, {"__text__": ""}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.height == 0
+
+
+def test_text_empty_returns_zero_height(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    el = TextElement(text="")
+    img = el.render(CANVAS_W, {"__text__": ""}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.height == 0
+
+
+@pytest.mark.parametrize("cls", [TitleElement, SubtitleElement, TextElement])
+@pytest.mark.parametrize("blank", ["", "   ", "\n", " \t\n "])
+def test_text_family_whitespace_only_returns_zero_height(
+    cls: type[ElementBase],
+    blank: str,
+    fonts_dir: Path,
+    icons_dir: Path,
+    icon_collections_dir: Path,
+) -> None:
+    """Whitespace-only values collapse exactly like empty ones: an optional field a print omits
+    (or supplies as spaces) must not reserve a blank line in any text-family element."""
+    el = cls(text=blank)
+    img = el.render(CANVAS_W, {"__text__": blank}, fonts_dir, icons_dir, icon_collections_dir)
+    assert img.height == 0
+
+
+def test_text_family_decorations_not_drawn_when_empty(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A banner or boxed field with no text is not drawn either — the decoration follows the
+    text, so an omitted optional field cannot leave a stray black bar or empty frame."""
+    banner = TitleElement(text="", background="black")
+    boxed = TextElement(text="", border=4)
+    for el in (banner, boxed):
+        img = el.render(CANVAS_W, {"__text__": ""}, fonts_dir, icons_dir, icon_collections_dir)
+        assert img.height == 0
+
+
 def test_text_element_custom_size(
     fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
 ) -> None:
@@ -1155,6 +1199,51 @@ def test_column_drops_empty_optional_child(
     )
     assert empty.height == title_only.height  # the blank subtitle contributed nothing
     assert full.height > empty.height
+
+
+def test_column_drops_empty_optional_text_child(
+    fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """A blank `text` child collapses like a blank subtitle: title-only height, no gap."""
+    col = ColumnElement(children=[TitleElement(text="A"), TextElement(text="")])
+    img = col.render(
+        300,
+        {"__children__": [{"__text__": "A"}, {"__text__": ""}]},
+        fonts_dir,
+        icons_dir,
+        icon_collections_dir,
+    )
+    title_only = TitleElement(text="A").render(
+        300, {"__text__": "A"}, fonts_dir, icons_dir, icon_collections_dir
+    )
+    assert img.height == title_only.height
+
+
+def test_engine_omitted_optional_text_line_shifts_following_lines_up(
+    engine: RenderEngine, fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path
+) -> None:
+    """End to end: leaving an optional `{{field}}` empty removes exactly that line's strip, so
+    the lines below move up by its height instead of leaving a blank band — the contract an
+    address label with optional lines relies on."""
+    layout = [
+        {"type": "title", "text": "{{a}}"},
+        {"type": "text", "text": "{{b}}"},
+        {"type": "text", "text": "{{c}}"},
+    ]
+    canvas_w, canvas_h = CANVAS_W, 271  # fixed die-cut height so the block is top-anchored
+    full = engine.render(layout, {"a": "A", "b": "B", "c": "C"}, canvas_w, canvas_h)
+    without_b = engine.render(layout, {"a": "A", "b": "", "c": "C"}, canvas_w, canvas_h)
+    missing_b = engine.render(layout, {"a": "A", "c": "C"}, canvas_w, canvas_h)
+    text_strip_h = (
+        TextElement(text="B")
+        .render(canvas_w, {"__text__": "B"}, fonts_dir, icons_dir, icon_collections_dir)
+        .height
+    )
+    full_top, full_bottom = _black_span(full)
+    top, bottom = _black_span(without_b)
+    assert top == full_top  # the title did not move
+    assert bottom == full_bottom - text_strip_h  # the last line moved up by exactly one strip
+    assert ImageChops.difference(without_b, missing_b).getbbox() is None  # "" == omitted
 
 
 def test_column_spacing_adds_gap(

@@ -349,6 +349,9 @@ class TemplateParseResponse(BaseModel):
     label: str
     rotate: int
     valign: str = "top"
+    # Landscape length along continuous tape, in millimetres; None unless the template turns a
+    # continuous label by 90/270. Returned for the same round-trip reason as `aliases` below.
+    length: float | None = None
     fields: TemplateFieldContract
     # True when the draft layout uses the {{seq}} auto-numbering token. The studio reveals its
     # sequence controls (and sends a `sequence` on /preview/draft) so a {{seq}} draft previews its
@@ -424,6 +427,7 @@ class TemplateInfo(BaseModel):
                     "label": "62",
                     "rotate": 0,
                     "valign": "top",
+                    "length": None,
                     "fields": {"required": ["title"], "optional": ["subtitle"]},
                     "media": {"width_mm": 62.0, "media_type": "continuous"},
                 }
@@ -436,6 +440,9 @@ class TemplateInfo(BaseModel):
     label: str
     rotate: int
     valign: str = "top"
+    # Landscape length along continuous tape (mm) when the template turns a continuous label by
+    # 90/270; None for die-cut media and upright continuous layouts.
+    length: float | None = None
     fields: TemplateFieldContract
     # The media this template's label requires. None when the label is not a known brother_ql label
     # (the template still lists and prints; it just carries no compatibility badge).

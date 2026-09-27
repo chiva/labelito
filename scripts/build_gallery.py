@@ -147,6 +147,15 @@ SAMPLES: dict[str, dict[str, Any]] = {
         "line2": "Arlington, VA",
         "line3": "USA",
     },
+    "shipping-62": {
+        "name": "Margaret Hamilton",
+        "address1": "Apollo Guidance Way 1969",
+        "address2": "Building 4, Suite 11",
+        "zip": "02139",
+        "city": "Cambridge",
+        "region": "Massachusetts",
+        "country": "United States",
+    },
     # image is populated at build time (needs the base64 payload); see _fields_for.
     "image": {"title": "Company logo"},
 }
@@ -177,11 +186,14 @@ def _fields_for(tmpl: Template) -> dict[str, Any]:
     return fields
 
 
-def _size_label(label_id: str) -> str:
-    """A human-readable media descriptor, e.g. ``62 mm · continuous`` or ``62 x 29 mm · die-cut``."""
-    media = required_media_for(label_id)
+def _size_label(tmpl: Template) -> str:
+    """A human-readable media descriptor, e.g. ``62 mm · continuous``, ``62 x 29 mm · die-cut`` or
+    ``62 mm · continuous · 100 mm landscape`` for a template with a declared ``length``."""
+    media = required_media_for(tmpl.label)
     width = f"{media.width_mm:g}"
     if media.media_type == MEDIA_TYPE_CONTINUOUS:
+        if tmpl.length_mm is not None:
+            return f"{width} mm · continuous · {tmpl.length_mm:g} mm landscape"
         return f"{width} mm · continuous"
     return f"{width} x {media.length_mm:g} mm · die-cut"
 
@@ -221,7 +233,7 @@ def _entry(
         "name": tmpl.name,
         "description": tmpl.description or "",
         "label": tmpl.label,
-        "size": _size_label(tmpl.label),
+        "size": _size_label(tmpl),
         "is_example": tmpl.is_example,
         "required": list(tmpl.required_fields),
         "optional": list(tmpl.optional_fields),

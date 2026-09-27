@@ -107,7 +107,7 @@ def sample_template_yaml(templates_dir: Path) -> Path:
         name: test-simple
         description: Test template
         label: "62"
-        rotate: 90
+        rotate: 0
         fields:
           required: [title]
           optional: [subtitle]
@@ -220,13 +220,15 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     """)
     )
 
-    # A rotate: 90 continuous template (rotation regression test)
+    # A landscape continuous template: rotate 90 + a declared length along the tape (rotation
+    # regression test — the engine turns the raster, the driver must receive rotate 0).
     (templates_d / "rotated.yaml").write_text(
         textwrap.dedent("""\
         name: rotated
         description: Rotated continuous template
         label: "62"
         rotate: 90
+        length: 100
         fields:
           required: [title]
           optional: []

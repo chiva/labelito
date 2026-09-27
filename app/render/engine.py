@@ -502,10 +502,14 @@ class RenderEngine:
         #     height stays doubled (the doubled rows print the unchanged physical length at 600 dpi
         #     feed). Length clamps are inert for die-cut (exact canvas height).
         #
-        # Rotation: the driver rotates (rotate != 0 is forwarded to convert()); the engine itself
-        # does NOT apply PIL rotation when high_res is active (rotate=0 in _execute_print always).
-        # For preview (where PIL rotation IS applied here), high_res is never set, so the rotate
-        # branch and the high_res branch never interact.
+        # Rotation: for die-cut and upright media the driver rotates (rotate != 0 is forwarded to
+        # convert()) and _execute_print passes rotate=0 here. For a LANDSCAPE continuous layout
+        # (template ``length`` + rotate 90/270) the print path instead passes the template's rotate
+        # HERE and rotate=0 to the driver: the layout is composed on a (length x tape-width) canvas
+        # and the quarter turn below yields a tape-width-wide raster brother_ql accepts as is —
+        # handing it the turn would make it rescale the raster to the tape. A quarter turn is a
+        # lossless transpose that preserves the mode, so it composes with high_res (both axes
+        # already doubled) and with red (RGB canvas) without special cases.
         if high_res:
             scale = 2
             render_width = canvas_width * scale

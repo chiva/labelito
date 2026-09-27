@@ -1714,8 +1714,8 @@ def test_reprint_replays_resolved_options(client: TestClient) -> None:
         main_mod.settings.default_dither = monkeypatch_default
 
 
-# ── Rotation applied once, by the driver, on a printable-width raster ─────────────
-def test_print_sends_printable_width_raster_and_driver_rotates(client: TestClient) -> None:
+# ── Landscape continuous: the engine turns the raster once, the driver receives rotate 0 ─────
+def test_print_landscape_sends_prerotated_raster_and_driver_rotate_0(client: TestClient) -> None:
     import app.main as main_mod
 
     resp = client.post(
@@ -1725,11 +1725,43 @@ def test_print_sends_printable_width_raster_and_driver_rotates(client: TestClien
 
     args, _ = main_mod._driver.render_payload.call_args
     png_bytes, opts = args
-    # The print raster is rendered UNrotated at the roll printable width; the driver rotates it
-    # (brother_ql needs the printable width to rasterize continuous labels correctly).
-    assert opts["rotate"] == 90, "driver applies the template rotation"
+    # A `length` template is composed on a (length x tape width) canvas and turned by the engine, so
+    # the raster is already tape-width wide and `length` long. The driver must NOT rotate it again:
+    # brother_ql rescales any turned endless raster whose width differs from the tape.
+    assert opts["rotate"] == 0, "the engine already turned a landscape continuous raster"
     img = Image.open(io.BytesIO(png_bytes))
-    assert img.width == 696, "raster handed to driver is at printable width, not pre-rotated"
+    assert img.size == (696, 1181), "tape-width wide, 100 mm (1181 dots) long"
+
+
+def test_preview_draft_continuous_rotate_90_without_length_is_422(client: TestClient) -> None:
+    """The distorting path — a quarter turn on continuous media with no declared length — is
+    rejected at validation with a message naming the fix, not rendered and rescaled."""
+    yaml = (
+        'name: draft-no-length\ndescription: d\nlabel: "62"\nrotate: 90\nfields:\n'
+        "  required: [title]\n  optional: []\nlayout:\n"
+        '  - {type: title, text: "{{title}}"}\n'
+    )
+    resp = client.post("/preview/draft", json={"yaml": yaml, "fields": {"title": "Hello"}})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["msg"] == "Invalid template YAML"
+    assert "requires 'length'" in detail["error"]
+
+
+def test_templates_listing_and_parse_carry_length(client: TestClient) -> None:
+    """`length` rides along in GET /templates and /templates/parse (None for upright templates), so
+    the studio can round-trip a landscape template instead of silently dropping the key."""
+    listing = {t["name"]: t for t in client.get("/templates").json()}
+    assert listing["rotated"]["length"] == 100.0
+    assert listing["simple"]["length"] is None
+    yaml = (
+        'name: parsed\ndescription: d\nlabel: "62"\nrotate: 270\nlength: 80.5\nfields:\n'
+        "  required: [title]\n  optional: []\nlayout:\n"
+        '  - {type: title, text: "{{title}}"}\n'
+    )
+    resp = client.post("/templates/parse", json={"yaml": yaml})
+    assert resp.status_code == 200
+    assert resp.json()["length"] == 80.5
 
 
 # ── Print history is status-aware: failed jobs are recorded but not reprintable ───
@@ -5384,9 +5416,10 @@ def test_preview_draft_out_of_range_rotate_is_422(client: TestClient) -> None:
 
 
 def test_preview_draft_in_bounds_square_font_rotate_still_200(client: TestClient) -> None:
-    """Real values under the tightened caps still render (qr 600, text size 48 max_lines 4, rotate 90)."""
+    """Real values under the tightened caps still render (qr 600, text size 48 max_lines 4, rotate 90
+    with a landscape length)."""
     yaml = (
-        'name: draft-ok\ndescription: d\nlabel: "62"\nrotate: 90\nfields:\n'
+        'name: draft-ok\ndescription: d\nlabel: "62"\nrotate: 90\nlength: 100\nfields:\n'
         "  required: [title]\n  optional: []\nlayout:\n"
         '  - {type: title, text: "{{title}}"}\n'
         "  - {type: text, text: hi, size: 48, max_lines: 4}\n"

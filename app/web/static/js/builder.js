@@ -197,7 +197,7 @@
   }
 
   // ── State ───────────────────────────────────────────────────────────────────
-  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', aliases: [], layout: [] };
+  const model = { name: 'my-label', description: 'A new label', label: '62', rotate: 0, valign: 'top', length: null, aliases: [], layout: [] };
   const fieldOptional = new Set();   // field names the user marked optional (else required)
   let selectedEl = null;             // the selected element OBJECT (survives re-render / DnD)
   let designMode = true;             // true → show {{token}} chips; false → substitute sample values
@@ -342,6 +342,9 @@
     out.push('label: ' + qstr(model.label));
     out.push('rotate: ' + String(model.rotate || 0));
     if (model.valign && model.valign !== 'top') out.push('valign: ' + model.valign);
+    // Landscape length along continuous tape (mm). Emitted whenever set so the server, not the
+    // builder, decides whether it is valid for this label/rotate and says why if it is not.
+    if (typeof model.length === 'number' && model.length > 0) out.push('length: ' + model.length);
     // Quoted for the same reason field names are: YAML 1.1 reads the bare words no/yes/on/off/
     // true/false and null/~ as booleans and nulls, and bare digits as numbers — and an alias is
     // exactly the kind of short common word that collides ("no", "off"). The server rejects a
@@ -854,6 +857,9 @@
   // render/elements.py FONT_SIZES and the SCHEMA defaults so the product check matches when the sibling
   // attr is absent (omitted == default).
   const MAX_TEXT_STRIP_PRODUCT = 4000;
+  // Landscape `length` bounds (mm), mirroring MIN/MAX_LANDSCAPE_LENGTH_MM in app/loader.py.
+  const MIN_LANDSCAPE_LENGTH_MM = 20;
+  const MAX_LANDSCAPE_LENGTH_MM = 300;
   const PRODUCT_CONSTRAINTS = {
     text: { keys: ['size', 'max_lines'], defaults: { size: 32, max_lines: 10 } },
     list: { keys: ['size', 'max_items'], defaults: { size: 32, max_items: 20 } },
@@ -1053,6 +1059,7 @@
       (v) => { model.rotate = parseInt(v, 10) || 0; commit(); }));
     insp.appendChild(selectSetting('Vertical align', VALIGN, model.valign || 'top',
       (v) => { model.valign = v; commit(); }));
+    insp.appendChild(lengthSetting());
     // Comma-separated: an alias may contain spaces ("comida preparada"), so a space cannot be the
     // separator. Empty entries are dropped rather than sent to the server, which would reject them.
     insp.appendChild(textSetting('Spoken aliases', (model.aliases || []).join(', '),
@@ -1091,6 +1098,33 @@
         insp.appendChild(row);
       }
     }
+  }
+  // Millimetres along a continuous tape for a landscape layout (rotate 90/270 on continuous media);
+  // blank means "not a landscape layout". The whole input must be a plain decimal within the loader's
+  // bounds — parseFloat would accept the prefix of "100mm" — and an invalid entry is flagged and NOT
+  // committed, so the model keeps its last valid length. The server still validates the combination
+  // with label and rotate.
+  function lengthSetting() {
+    const wrap = textSetting('Length (mm, landscape on continuous tape)',
+      model.length == null ? '' : String(model.length),
+      (v) => {
+        const raw = v.trim();
+        if (raw === '') {
+          setFieldError(wrap, inp, '');
+          model.length = null;
+          commit();
+          return;
+        }
+        if (!/^\d+(\.\d+)?$/.test(raw)) { setFieldError(wrap, inp, 'Enter a number of millimetres.'); return; }
+        const n = parseFloat(raw);
+        if (n < MIN_LANDSCAPE_LENGTH_MM) { setFieldError(wrap, inp, 'Minimum is ' + MIN_LANDSCAPE_LENGTH_MM + ' mm.'); return; }
+        if (n > MAX_LANDSCAPE_LENGTH_MM) { setFieldError(wrap, inp, 'Maximum is ' + MAX_LANDSCAPE_LENGTH_MM + ' mm.'); return; }
+        setFieldError(wrap, inp, '');
+        model.length = n;
+        commit();
+      });
+    const inp = wrap.querySelector('input');
+    return wrap;
   }
   function textSetting(label, value, onInput) {
     const wrap = document.createElement('label');
@@ -1174,6 +1208,7 @@
       model.label = data.label || '62';
       model.rotate = data.rotate || 0;
       model.valign = data.valign || 'top';
+      model.length = (typeof data.length === 'number') ? data.length : null;
       // Carried across the round trip, not just displayed: the builder rebuilds its whole model
       // from this response and re-emits YAML from the model, so a key it does not read is a key it
       // silently DELETES from a template somebody opened, edited and saved.

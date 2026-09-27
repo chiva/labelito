@@ -133,6 +133,7 @@ description: What it is   # required
 label: "62"               # required; a label id from get_capabilities (quote it — "62" is a string)
 rotate: 0                 # 0, 90, 180 or 270
 valign: top               # {valigns} — vertical placement on die-cut media with leftover height
+# length: 100             # mm; ONLY with rotate 90/270 on continuous media — see Landscape below
 aliases: [my label]       # optional; other ways a PERSON SAYS this name, for voice matching
 fields:
   required: [title]       # values a print MUST supply
@@ -159,6 +160,30 @@ stored NFC-normalized, so it does not matter whether an accent was typed precomp
 combining mark. And so is an entry YAML already turned into something else: `aliases: [no]` is the
 boolean `False` in YAML 1.1, so quote any alias that is a bare
 `yes`/`no`/`on`/`off`/`true`/`false`/`null`/`~` or looks numeric.
+
+## Landscape on continuous tape
+
+A quarter turn (`rotate: 90` or `270`) on CONTINUOUS media needs a top-level `length` in
+millimetres: the layout is composed with `length` as its width and the tape's printable width as a
+FIXED height, then turned so it prints along the tape. Lines run along the label's long side —
+the natural shape for an address — and `valign` places the block within the tape width. `length`
+is rejected on die-cut media and with `rotate` 0/180; a 90/270 turn on continuous media WITHOUT it
+is rejected too (the turned raster would be rescaled to the tape and distorted).
+
+```yaml
+name: address-landscape
+description: Address along a 100 mm strip of 62 mm tape
+label: "62"
+rotate: 90
+length: 100
+valign: center
+fields:
+  required: [name]
+  optional: [line1]
+layout:
+  - {{type: text, text: "{{{{name}}}}", size: 64, bold: true, max_lines: 1}}
+  - {{type: text, text: "{{{{line1}}}}", size: 44, max_lines: 1}}
+```
 
 ## Tokens
 
@@ -225,7 +250,13 @@ the element is a child of a `row`, and inert elsewhere.
   short one.
 * **A tape is only as wide as its label.** Continuous media grows downward for free, so extra
   lines cost nothing; horizontal overflow is what gets cut. Check widths against
-  `get_capabilities`.
+  `get_capabilities`. A LANDSCAPE layout (`length` + `rotate` 90/270) inverts this: the tape width
+  becomes the fixed axis, so a block taller than it is clipped exactly as on die-cut media, while
+  the `length` axis is what text wraps against.
 * **Unknown element keys are ignored silently**, so a typo'd field name is a no-op rather than an
   error. If a property seems to do nothing, check its spelling against the table above.
+* **Empty text collapses.** A `title`, `subtitle`, `text` or `list` whose resolved value is empty
+  or whitespace-only renders nothing and reserves no height, so an optional field a print omits
+  leaves no gap. A banner (`background`) or box (`border`) with no text is therefore not drawn
+  either; use a `box` or `spacer` for a fixed-height decoration.
 """

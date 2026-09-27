@@ -515,6 +515,8 @@ class TitleElement(ElementBase):
         icon_collections_dir: Path,
     ) -> Image.Image:
         text = str(resolved_fields.get("__text__", self.text))
+        if not text.strip():
+            return self._new_canvas(canvas_width, 0)
         font = _load_font(fonts_dir, self._px(FONT_SIZES["title"]), self.bold)
         bg, fill = _block_colors(self)
         img = _render_text_block(
@@ -595,6 +597,8 @@ class TextElement(ElementBase):
         icon_collections_dir: Path,
     ) -> Image.Image:
         text = str(resolved_fields.get("__text__", self.text))
+        if not text.strip():
+            return self._new_canvas(canvas_width, 0)
         font = _load_font(fonts_dir, self._px(self.size), self.bold)
         bg, fill = _block_colors(self)
         img = _render_text_block(
@@ -1416,8 +1420,8 @@ class ListElement(ElementBase):
         text = str(resolved_fields.get("__text__", self.text))
         items = self._item_lines(text)
         if not items:
-            # An empty/blank field (e.g. an omitted optional list) renders nothing — like an empty
-            # text element — so it adds no strip to the stack and leaves no gap.
+            # An empty/blank field (e.g. an omitted optional list) renders nothing — like every
+            # empty text-family element — so it adds no strip to the stack and leaves no gap.
             return self._new_canvas(canvas_width, 0)
         font = _load_font(fonts_dir, self._px(self.size), self.bold)
         flat = self._budgeted_lines(items, font, canvas_width - 2 * self._px(8))

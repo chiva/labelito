@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import unicodedata
 from pathlib import Path
@@ -20,6 +21,10 @@ from app.render.elements import (
     FA_STYLES,
     FONT_SIZES,
     KNOWN_COLLECTIONS,
+    LETTER_SPACING_MAX,
+    LETTER_SPACING_MIN,
+    LINE_HEIGHT_MAX,
+    LINE_HEIGHT_MIN,
     LIST_DEFAULT_MAX_ITEMS,
     LIST_MARKER_CHOICES,
     TEXT_BACKGROUND_CHOICES,
@@ -340,6 +345,45 @@ def _require_int(
         raise TemplateLoadError(f"{file_name}: {label} '{key}' must be <= {maximum}, got {value}")
 
 
+def _require_ratio(
+    file_name: str, label: str, key: str, value: Any, *, minimum: float, maximum: float
+) -> None:
+    """Reject a font-relative spacing control that is not a finite number in ``[minimum, maximum]``.
+
+    Like :func:`_require_int` but fractional: ``line_height: 1.25`` is the point. YAML's ``.nan``
+    and ``.inf`` are floats too, and NaN compares false against every bound, so it is rejected
+    explicitly rather than slipping through to ``round()`` at render time.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise TemplateLoadError(f"{file_name}: {label} '{key}' must be a number, got {value!r}")
+    if not minimum <= value <= maximum:
+        raise TemplateLoadError(
+            f"{file_name}: {label} '{key}' must be between {minimum} and {maximum}, got {value}"
+        )
+
+
+# Font-relative spacing on the text family and `list` (key, minimum, maximum), in multiples of the
+# font size. An explicit null is rejected like every render-affecting numeric: `letter_spacing: null`
+# would reach the renderer as None and crash its arithmetic.
+_TEXT_SPACING_BOUNDS: tuple[tuple[str, float, float], ...] = (
+    ("line_height", LINE_HEIGHT_MIN, LINE_HEIGHT_MAX),
+    ("letter_spacing", LETTER_SPACING_MIN, LETTER_SPACING_MAX),
+)
+TEXT_SPACING_TYPES = frozenset({"title", "subtitle", "text", "list"})
+
+
+def _validate_text_spacing(file_name: str, label: str, el: dict[str, Any]) -> None:
+    for key, minimum, maximum in _TEXT_SPACING_BOUNDS:
+        if key not in el:
+            continue
+        if el[key] is None:
+            raise TemplateLoadError(
+                f"{file_name}: {label} '{key}' must not be null; omit the key to use the default "
+                f"or give a number between {minimum} and {maximum}"
+            )
+        _require_ratio(file_name, label, key, el[key], minimum=minimum, maximum=maximum)
+
+
 # Per-element render-affecting numeric attributes: (key, minimum, maximum). Every value here feeds a
 # pixel dimension (or a wrapped-line count) a renderer multiplies/allocates, so each is type-checked
 # (int, not "32") and bounded so a tiny YAML cannot drive an unbounded allocation. Cosmetic enums
@@ -617,6 +661,8 @@ def _validate_element(
     # Text-family decorations: `background` (badge/banner fill) and `border`+`border_color` (boxed
     # text). Validate the enums up front like `color`; `border` (a pixel count) is bounded by the
     # numeric guard above. Only meaningful on text/title/subtitle — a stray value elsewhere is a typo.
+    if el_type in TEXT_SPACING_TYPES:
+        _validate_text_spacing(file_name, label, el)
     if el_type in TEXT_FAMILY_TYPES:
         if "background" in el:
             _require_choice(
@@ -756,7 +802,8 @@ _HEIGHT_DEFAULTS: dict[str, int] = {
     "barcode": 60,  # BarcodeElement.height
 }
 # Text line height is ≈1.3xfont size (an 8 px line gap atop the glyph height); round up to 2x so the
-# per-element estimate is a comfortable upper bound on the rendered text strip.
+# per-element estimate is a comfortable upper bound on the rendered text strip. An explicit
+# `line_height` is capped at LINE_HEIGHT_MAX == this factor, so the bound holds for it too.
 _TEXT_LINE_HEIGHT_FACTOR = 2
 # Default wrapped-line counts for title/subtitle (TitleElement/SubtitleElement.max_lines == 2).
 _TITLE_DEFAULT_MAX_LINES = 2

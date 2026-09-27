@@ -230,6 +230,9 @@ jobs:
             labelito:ci
           sleep 5
           curl --fail http://localhost:8765/health
+          # Text is kerned only when Pillow's raqm (HarfBuzz) layout loads; without it the image
+          # would print about 7% wider than a dev preview and wrap differently, with just a warning.
+          docker exec label-test python -c "from PIL import features; assert features.check_feature('raqm'), 'Pillow raqm (HarfBuzz) layout is unavailable in the image'"
           # /preview is auth-protected: exercise the production auth path with a Bearer token.
           curl --fail -X POST http://localhost:8765/preview \
             -H "Content-Type: application/json" \

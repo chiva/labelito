@@ -294,6 +294,27 @@ Unknown attributes on an element are ignored (except `children`, which is allowe
 `background` alone ⇒ a filled banner; `border` alone ⇒ a boxed field; both ⇒ a framed banner. The
 fill/border span the full strip width. See the `shipping-badge` template for a worked example.
 
+### Text spacing (line height and letter spacing)
+
+`title`, `subtitle`, `text` and `list` accept two optional spacing controls. Both are **relative to
+the font size**, so a value reads the same at any `size` and doubles with the rest of the label
+under `high_res`.
+
+| Attribute | Type | Default | Effect |
+|---|---|---|---|
+| `line_height` | number 0.8–2.0 (× size) | *auto* | Baseline-to-baseline distance between wrapped lines, as a multiple of the font size: `1.0` sets lines solid, `1.5` is airy. Omitted ⇒ the legacy spacing (the glyph height plus a fixed 8 px gap), which is about `1.2` at size 32 but `1.44` at 16 and `1.0` at 120, so existing templates render unchanged. Below about `0.95` descenders of one line can touch the capitals of the next. |
+| `letter_spacing` | number −0.1–0.5 (em) | `0` | Tracking: a uniform gap added after every character, as a fraction of the font size (`0.1` at size 40 adds 4 px). Negative tightens a heading. The spacing counts toward wrapping, so a tracked line still wraps inside the strip. |
+
+Kerning — the per-pair adjustment that tucks the `V` under the `A` in `AVATAR` — is not a template
+setting: it comes from the font and is always applied, and `letter_spacing` is added on top of it.
+Tracking places each character separately, which suits Latin and similar scripts; scripts whose
+letters join (e.g. Arabic) should leave `letter_spacing` at `0`.
+
+```yaml
+- {type: title, text: "{{name}}", letter_spacing: 0.08, line_height: 1.05}   # tracked, tight heading
+- {type: text, text: "{{notes}}", size: 26, line_height: 1.5}                 # airy body text
+```
+
 ### Element types
 
 #### `title` / `subtitle`
@@ -310,6 +331,7 @@ not drawn.
 | `max_lines` | int 1–200 | `2` | |
 | `bold` | bool | `true` (title) / `false` (subtitle) | |
 | `background`, `border`, `border_color` | — | — | See [Badge & boxed text](#badge--boxed-text-text-family-decorations). |
+| `line_height`, `letter_spacing` | — | — | See [Text spacing](#text-spacing-line-height-and-letter-spacing). |
 
 ```yaml
 - {type: title, text: "{{title}}", max_lines: 2, align: center}
@@ -331,6 +353,7 @@ blank strip.
 | `bold` | bool | `false` | |
 | `max_lines` | int 1–200 | `10` | |
 | `background`, `border`, `border_color` | — | — | See [Badge & boxed text](#badge--boxed-text-text-family-decorations). |
+| `line_height`, `letter_spacing` | — | — | See [Text spacing](#text-spacing-line-height-and-letter-spacing). |
 
 `size × max_lines` is additionally bounded (≤ 4000) so a large font and many lines cannot compose an
 unbounded strip.
@@ -524,6 +547,7 @@ fields.
 | `align` | `left`/`center`/`right` | `left` |
 | `bold` | bool | `false` |
 | `max_items` | int 1–200 | `20` |
+| `line_height`, `letter_spacing` | see [Text spacing](#text-spacing-line-height-and-letter-spacing) | *auto* / `0` |
 
 Blank items are dropped; the list is capped at `max_items`. `size × max_items` is bounded (≤ 4000)
 like `text`. A single item that wraps has no hanging indent (the marker sits on its first line only).
@@ -645,6 +669,8 @@ child, its width and vertical placement come from the row (`width`/`weight`/`val
 | Max single pixel dimension | 10000 px | Bounds any one element's allocation. |
 | Max matrix-symbol (`qr`/`datamatrix`/`aztec`/`pdf417`) / icon square dimension | 2000 px | Square allocation is quadratic. |
 | Max font size | 512 pt | Quadratic with `max_lines`. |
+| `line_height` | 0.8–2.0 × size | Above 2.0 a strip would outgrow the per-line height the layout budget assumes. |
+| `letter_spacing` | −0.1–0.5 em | Tighter overlaps glyphs; wider no longer reads as a word. |
 | Landscape `length` | 20–300 mm | Below 20 mm is under the printer's minimum feed; above 300 mm exceeds the raster-row ceiling in `high_res`. |
 | Max template YAML size | 64 KiB | A real template is tiny. |
 

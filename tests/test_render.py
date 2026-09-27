@@ -1497,6 +1497,188 @@ def test_box_fill_is_solid(fonts_dir: Path, icons_dir: Path, icon_collections_di
     assert o.load()[150, 15] == 255  # center hollow
 
 
+# ── Text spacing: line_height / letter_spacing (font-relative) ───────────────────
+_THREE_LINES = "first line\nsecond line\nthird line"
+
+
+def _ink_box(img: Image.Image) -> tuple[int, int, int, int]:
+    box = ImageChops.invert(img.convert("L")).getbbox()
+    assert box is not None, "strip has no ink"
+    return box
+
+
+def _text_strip(dirs: tuple[Path, Path, Path], text: str, **attrs: Any) -> Image.Image:
+    el = TextElement(text=text, **attrs)
+    return el.render(CANVAS_W, {"__text__": text}, *dirs)
+
+
+@pytest.fixture
+def dirs(fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path) -> tuple[Path, Path, Path]:
+    return fonts_dir, icons_dir, icon_collections_dir
+
+
+def test_line_height_sets_the_baseline_pitch_in_font_multiples(
+    dirs: tuple[Path, Path, Path],
+) -> None:
+    """Three lines at size 40: each step of `line_height` moves the two later lines by
+    round(step x 40) px, so the strip grows by exactly twice the pitch difference."""
+    tight = _text_strip(dirs, _THREE_LINES, size=40, line_height=1.0)
+    loose = _text_strip(dirs, _THREE_LINES, size=40, line_height=1.75)
+    assert loose.height - tight.height == 2 * (round(1.75 * 40) - round(1.0 * 40))
+
+
+def test_line_height_is_relative_so_it_scales_with_size(dirs: tuple[Path, Path, Path]) -> None:
+    """The same ratio gives the same proportional spacing at any size — unlike the legacy fixed
+    8 px gap, which is 1.44x at size 16 but 1.0x at 120."""
+    for size in (16, 60):
+        one = _text_strip(dirs, "a\nb", size=size, line_height=1.5)
+        two = _text_strip(dirs, "a\nb\nc", size=size, line_height=1.5)
+        assert two.height - one.height == round(1.5 * size)
+
+
+def test_tight_line_height_never_clips_the_last_line(dirs: tuple[Path, Path, Path]) -> None:
+    """At the 0.8 floor the pitch is shorter than the glyphs; the strip is sized from the last
+    line's glyph box, so its descenders still end above the bottom padding."""
+    img = _text_strip(dirs, "gypsy\njumpy\nquay", size=48, line_height=0.8)
+    assert _ink_box(img)[3] <= img.height - 8
+
+
+def test_line_height_doubles_exactly_under_high_res(dirs: tuple[Path, Path, Path]) -> None:
+    lo = build_element({"type": "text", "text": _THREE_LINES, "line_height": 1.5}, scale=1)
+    hi = build_element({"type": "text", "text": _THREE_LINES, "line_height": 1.5}, scale=2)
+    lo_one = build_element({"type": "text", "text": "x", "line_height": 1.5}, scale=1)
+    hi_one = build_element({"type": "text", "text": "x", "line_height": 1.5}, scale=2)
+    fields = {"__text__": _THREE_LINES}
+
+    def pitch_sum(el: ElementBase, one: ElementBase, width: int) -> int:
+        return (
+            el.render(width, fields, *dirs).height
+            - one.render(width, {"__text__": "x"}, *dirs).height
+        )
+
+    assert pitch_sum(hi, hi_one, 2 * CANVAS_W) == 2 * pitch_sum(lo, lo_one, CANVAS_W)
+
+
+def test_letter_spacing_widens_a_line_by_tracking_between_clusters(
+    dirs: tuple[Path, Path, Path],
+) -> None:
+    """0.25 em at size 40 is 10 px after each of the 7 gaps in "LABELITO"."""
+    plain = _ink_box(_text_strip(dirs, "LABELITO", size=40))
+    tracked = _ink_box(_text_strip(dirs, "LABELITO", size=40, letter_spacing=0.25))
+    growth = (tracked[2] - tracked[0]) - (plain[2] - plain[0])
+    assert abs(growth - 7 * 10) <= 1, f"tracked line grew {growth} px, expected ~70"
+
+
+def test_negative_letter_spacing_tightens(dirs: tuple[Path, Path, Path]) -> None:
+    plain = _ink_box(_text_strip(dirs, "LABELITO", size=40))
+    tight = _ink_box(_text_strip(dirs, "LABELITO", size=40, letter_spacing=-0.1))
+    assert (tight[2] - tight[0]) < (plain[2] - plain[0])
+
+
+def test_letter_spacing_counts_toward_wrapping(dirs: tuple[Path, Path, Path]) -> None:
+    """A line that fits untracked must wrap once tracking pushes it past the width; otherwise it
+    would be drawn off the right edge."""
+    text = "Quarterly inventory"
+    font = _load_font(dirs[0], 48)
+    width = int(font.getbbox(text)[2] - font.getbbox(text)[0]) + 4
+    assert _wrap_text(text, font, width) == [text]
+    assert _wrap_text(text, font, width, tracking=0.3 * 48) == ["Quarterly", "inventory"]
+
+
+def test_right_aligned_tracked_line_stays_inside_the_canvas(dirs: tuple[Path, Path, Path]) -> None:
+    img = _text_strip(dirs, "LABELITO", size=40, letter_spacing=0.5, align="right")
+    assert _ink_box(img)[2] <= img.width - 8
+
+
+def test_clusters_keep_combining_marks_and_zwj_sequences_together() -> None:
+    from app.render.elements import _clusters
+
+    assert _clusters("Café") == ["C", "a", "f", "é"]
+    family = "\U0001f468‍\U0001f469‍\U0001f467"
+    assert _clusters(f"a{family}b") == ["a", family, "b"]
+
+
+def test_tracked_drawing_keeps_pair_kerning(fonts_dir: Path) -> None:
+    """Each cluster is placed at the shaper's advance for the text before it measured WITH the
+    cluster, so the kern between neighbours survives tracking."""
+    from app.render.elements import _draw_line
+
+    font = _load_font(fonts_dir, 48)
+    calls: list[tuple[float, str]] = []
+
+    class _Recorder:
+        def text(self, xy: tuple[float, float], text: str, **_kw: Any) -> None:
+            calls.append((xy[0], text))
+
+    _draw_line(_Recorder(), (10, 0), "AV", font, 0, tracking=5.0)  # type: ignore[arg-type]
+    kerned_offset = font.getlength("AV") - font.getlength("V")
+    assert calls == [(10.0, "A"), (10 + kerned_offset + 5.0, "V")]
+    from PIL import ImageFont
+
+    if getattr(font, "layout_engine", None) == ImageFont.Layout.RAQM:
+        assert kerned_offset < font.getlength("A"), "AV is a kerned pair; the offset must show it"
+
+
+def test_untracked_line_is_drawn_in_one_call(fonts_dir: Path) -> None:
+    from app.render.elements import _draw_line
+
+    font = _load_font(fonts_dir, 32)
+    calls: list[str] = []
+
+    class _Recorder:
+        def text(self, _xy: tuple[int, int], text: str, **_kw: Any) -> None:
+            calls.append(text)
+
+    _draw_line(_Recorder(), (0, 0), "Hello world", font, 0, tracking=0.0)  # type: ignore[arg-type]
+    assert calls == ["Hello world"]
+
+
+@pytest.mark.parametrize("el_type", ["title", "subtitle", "text", "list"])
+def test_spacing_keys_reach_every_text_family_element(
+    el_type: str, dirs: tuple[Path, Path, Path]
+) -> None:
+    el = build_element(
+        {"type": el_type, "text": "one\ntwo", "line_height": 1.9, "letter_spacing": 0.2}
+    )
+    assert (el.line_height, el.letter_spacing) == (1.9, 0.2)  # type: ignore[attr-defined]
+    plain = build_element({"type": el_type, "text": "one\ntwo"})
+    fields = {"__text__": "one\ntwo"}
+    assert (
+        el.render(CANVAS_W, fields, *dirs).tobytes()
+        != plain.render(CANVAS_W, fields, *dirs).tobytes()
+    )
+
+
+def test_tracked_list_item_wraps_without_losing_later_items(dirs: tuple[Path, Path, Path]) -> None:
+    """`list` budgets lines per item before rendering; that pre-wrap must count tracking too, or
+    the block would re-split a line and push the last item past max_items."""
+    items = "Quarterly inventory count\nnuts\nbolts"
+    el = ListElement(text=items, size=48, letter_spacing=0.3, max_items=4)
+    flat = el._budgeted_lines(el._item_lines(items), _load_font(dirs[0], 48), 500, 0.3 * 48)
+    assert len(flat) == 4 and flat[-1].endswith("bolts")
+
+
+def test_layout_engine_prefers_raqm_and_warns_once_without_it(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from PIL import ImageFont, features
+
+    from app.render import elements
+
+    elements._text_layout_engine.cache_clear()
+    try:
+        if features.check_feature("raqm"):
+            assert elements._text_layout_engine() is ImageFont.Layout.RAQM
+        elements._text_layout_engine.cache_clear()
+        monkeypatch.setattr(elements.features, "check_feature", lambda _name: False)
+        with caplog.at_level("WARNING", logger=elements.log.name):
+            assert elements._text_layout_engine() is ImageFont.Layout.BASIC
+            assert elements._text_layout_engine() is ImageFont.Layout.BASIC
+        assert sum("without raqm" in r.getMessage() for r in caplog.records) == 1
+    finally:
+        elements._text_layout_engine.cache_clear()
+
+
 # ── List element ─────────────────────────────────────────────────────────────────
 def test_list_renders_bulleted_items(
     fonts_dir: Path, icons_dir: Path, icon_collections_dir: Path

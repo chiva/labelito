@@ -3970,3 +3970,40 @@ def test_studio_visual_builder_validates_landscape_length(authed_page: Page) -> 
     length.fill("")
     expect(err).to_have_count(0)
     expect(yaml).not_to_have_value(re.compile(r"^length:", re.M))
+
+
+def test_studio_visual_builder_edits_font_relative_text_spacing(authed_page: Page) -> None:
+    """Line height and letter spacing are decimal controls: a fraction or a slightly negative
+    tracking commits, while an out-of-range or malformed value is flagged and never reaches the
+    YAML — so the studio cannot emit spacing the loader would 422."""
+    authed_page.goto("/editor")
+    expect(authed_page.locator("#lb-root")).to_be_visible()
+    authed_page.locator(".lb-palette").get_by_text("Text", exact=True).click()
+    authed_page.locator(".lb-canvas .lb-block").last.click()
+
+    yaml = authed_page.locator("#yaml")
+    line_field = authed_page.locator(".lb-inspector .lb-field", has_text="Line height")
+    line = line_field.locator("input")
+    expect(line).to_have_value("")
+    expect(line).to_have_attribute("placeholder", "auto")
+
+    line.fill("1.35")
+    expect(line_field.locator(".lb-field-error")).to_have_count(0)
+    expect(yaml).to_have_value(re.compile(r"line_height: 1\.35"))
+    for bad in ("2.5", "0.5", "2.01"):
+        line.fill(bad)
+        expect(line_field.locator(".lb-field-error")).to_be_visible()
+        expect(yaml).to_have_value(re.compile(r"line_height: 1\.35"))
+    line.fill("")
+    expect(yaml).not_to_have_value(re.compile(r"line_height:"))
+
+    spacing_field = authed_page.locator(".lb-inspector .lb-field", has_text="Letter spacing")
+    spacing = spacing_field.locator("input")
+    spacing.fill("-0.05")
+    expect(spacing_field.locator(".lb-field-error")).to_have_count(0)
+    expect(yaml).to_have_value(re.compile(r"letter_spacing: -0\.05"))
+    spacing.fill("0.6")
+    expect(spacing_field.locator(".lb-field-error")).to_be_visible()
+    expect(yaml).to_have_value(re.compile(r"letter_spacing: -0\.05"))
+    spacing.fill("0")  # the default is dropped from the YAML, not written out
+    expect(yaml).not_to_have_value(re.compile(r"letter_spacing:"))

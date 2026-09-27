@@ -102,9 +102,16 @@ def fetch(dest: Path, manifest: dict) -> int:
             target.write_bytes(_resolve(entry, cache))
             print(f"  ✓ {relative}")
         previous = Path(work) / "previous"
-        if dest.exists():
+        had_previous = dest.exists()
+        if had_previous:
             dest.rename(previous)
-        stage.rename(dest)
+        try:
+            stage.rename(dest)
+        except OSError:
+            # Put the installed tree back before the temp dir (holding it) is cleaned up.
+            if had_previous:
+                previous.rename(dest)
+            raise
     total = sum((dest / relative).stat().st_size for relative, _ in planned)
     print(f"→ {len(planned)} files, {total / 1_000_000:.1f} MB in {dest}")
     return EXIT_OK

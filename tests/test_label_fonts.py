@@ -218,6 +218,31 @@ def test_fetcher_refuses_a_tampered_download_and_keeps_the_previous_tree(tmp_pat
     assert (dest / "plain" / "Plain-Regular.ttf").read_bytes() == b"regular-bytes"
 
 
+def test_fetcher_restores_the_previous_tree_when_the_final_swap_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every download verified, but moving the staged tree into place fails: the installed tree
+    was already moved aside into the temp dir, so it must be put back before that dir is cleaned
+    up, or a failed rerun would delete a working install."""
+    fetcher = _fetcher()
+    manifest = _mini_manifest(tmp_path)
+    dest = tmp_path / "out"
+    fetcher.fetch(dest, manifest)
+    real_rename = Path.rename
+
+    def failing_rename(self: Path, target: Any) -> Path:
+        if self.name == "out" and Path(target) == dest:
+            raise OSError("disk full")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", failing_rename)
+    with pytest.raises(OSError, match="disk full"):
+        fetcher.fetch(dest, manifest)
+    monkeypatch.undo()
+    assert (dest / "plain" / "Plain-Regular.ttf").read_bytes() == b"regular-bytes"
+    assert fetcher.verify(dest, manifest) == fetcher.EXIT_OK
+
+
 def test_fetcher_verify_reports_missing_and_modified_files(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

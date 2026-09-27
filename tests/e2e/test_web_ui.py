@@ -16,7 +16,7 @@ from harness import DEFAULT_API_TOKEN, web_token_init_script
 
 pytest.importorskip("playwright.sync_api")
 
-from playwright.sync_api import Browser, Locator, Page, expect
+from playwright.sync_api import Browser, Locator, Page, Response, expect
 
 from app.config import settings
 
@@ -182,9 +182,17 @@ def test_seq_template_previews_first_item_without_error(authed_page: Page) -> No
     _select_template(authed_page, SEQ_TEMPLATE)
     _fill_all_fields(authed_page)
 
-    with authed_page.expect_response(
-        lambda r: r.url.endswith("/preview") and r.request.method == "POST"
-    ) as resp_info:
+    # Picking the template previews at once (required fields still empty → 422), and every field
+    # input has its own 600 ms debounced preview, so on a slow runner an earlier, partially-filled
+    # preview can still be in flight when the button is clicked. Wait for the response to a request
+    # that actually carried the filled fields, not whichever /preview answers first.
+    def filled_preview(r: Response) -> bool:
+        if not (r.url.endswith("/preview") and r.request.method == "POST"):
+            return False
+        fields = _json.loads(r.request.post_data or "{}").get("fields") or {}
+        return bool(fields) and all(v == "E2E test" for v in fields.values())
+
+    with authed_page.expect_response(filled_preview) as resp_info:
         authed_page.click("button.btn-preview")
 
     response = resp_info.value

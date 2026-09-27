@@ -1015,7 +1015,7 @@
         // and DON'T commit — the model keeps its last valid value so the emitted YAML never goes invalid.
         // A decimal attr (font-relative spacing) takes an optionally signed decimal; everything
         // else stays whole non-negative integers.
-        const pattern = attr.decimal ? /^-?\d+(\.\d+)?$/ : /^\d+$/;
+        const pattern = attr.decimal ? /^-?(?:\d+(?:\.\d*)?|\.\d+)$/ : /^\d+$/;
         if (!pattern.test(raw)) { setFieldError(wrap, inp, attr.decimal ? 'Enter a number.' : 'Enter a whole number.'); return; }
         const n = attr.decimal ? parseFloat(raw) : parseInt(raw, 10);
         if (attr.min !== undefined && n < attr.min) { setFieldError(wrap, inp, 'Minimum is ' + attr.min + '.'); return; }

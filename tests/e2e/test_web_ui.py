@@ -3999,7 +3999,11 @@ def test_studio_visual_builder_edits_font_relative_text_spacing(authed_page: Pag
 
     spacing_field = authed_page.locator(".lb-inspector .lb-field", has_text="Letter spacing")
     spacing = spacing_field.locator("input")
-    spacing.fill("-0.05")
+    # A number input can hand over decimals without a leading digit; the loader accepts them too.
+    spacing.fill(".25")
+    expect(spacing_field.locator(".lb-field-error")).to_have_count(0)
+    expect(yaml).to_have_value(re.compile(r"letter_spacing: 0\.25"))
+    spacing.fill("-.05")
     expect(spacing_field.locator(".lb-field-error")).to_have_count(0)
     expect(yaml).to_have_value(re.compile(r"letter_spacing: -0\.05"))
     spacing.fill("0.6")

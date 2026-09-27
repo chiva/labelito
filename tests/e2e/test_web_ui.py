@@ -2021,8 +2021,18 @@ def test_studio_hscroll_mirror_echo_cannot_undo_a_newer_scroll(authed_page: Page
     _studio_yaml_mode(authed_page)
     authed_page.fill("#yaml", "key: " + "x" * 500)
     authed_page.locator("#yaml").blur()
+    # Scroll events are dispatched once per rendering frame, so two frames flush every pending one
+    # (the caret reveal from fill(), the reset below, and their proxy echoes). Without this a still
+    # queued event could consume the one-time listener before the scroll to 3000.
+    flush_scroll_events = (
+        "async () => { for (let i = 0; i < 2; i++)"
+        " await new Promise((done) => requestAnimationFrame(() => done())); }"
+    )
+    authed_page.evaluate(flush_scroll_events)
     authed_page.evaluate("() => { document.getElementById('yaml').scrollLeft = 0; }")
-    _wait_for_scroll_left(authed_page, "yaml-hscroll", 0)
+    authed_page.evaluate(flush_scroll_events)
+    settled = authed_page.evaluate(_YAML_SCROLL_STATE)
+    assert (settled["textarea"]["scrollLeft"], settled["proxy"]["scrollLeft"]) == (0, 0), settled
 
     authed_page.evaluate(
         """() => {

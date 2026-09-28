@@ -42,7 +42,7 @@ RUN bash scripts/fetch-icons.sh /icons
 # the image bakes exactly the reviewed bytes; the running app never downloads a font. The fetcher
 # is standard-library Python, so the stage reuses the runtime base image and needs no project deps.
 # $BUILDPLATFORM: font files are arch-independent, so this never needs to run under QEMU.
-FROM --platform=$BUILDPLATFORM python:3.13-slim-trixie@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285 AS label-fonts
+FROM --platform=$BUILDPLATFORM python:3.13-slim-trixie@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b AS label-fonts
 WORKDIR /build
 COPY app/render/font_manifest.json ./app/render/font_manifest.json
 COPY scripts/fetch_label_fonts.py ./scripts/fetch_label_fonts.py
@@ -53,7 +53,7 @@ RUN python scripts/fetch_label_fonts.py /label-fonts
 # the venv is built against the builder's glibc, so builder and runtime must not drift apart.
 # A bare `python:3.13-slim` floats to whatever Debian is current, silently diverging from the
 # builder on the next Debian release. Renovate's dockerfile manager bumps both tag and digest.
-FROM python:3.13-slim-trixie@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+FROM python:3.13-slim-trixie@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
 
 # libcairo2 is the runtime backing cairosvg (icon-collection SVG rasterization).
 # libfribidi0 completes Pillow's raqm text layout: the wheel bundles raqm and HarfBuzz but loads

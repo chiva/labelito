@@ -20,8 +20,8 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "fastapi==0.141.1",
-    "uvicorn[standard]==0.53.0",
+    "fastapi==0.142.2",
+    "uvicorn[standard]==0.54.0",
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
     "Pillow==12.3.0",
@@ -40,14 +40,14 @@ dependencies = [
     # moved every transport setting off the constructor, so 1.x cannot run it. No ceiling — every
     # other dependency here is declared the same way, and a ceiling is the wrong tool for keeping a
     # major out of a lock refresh (see renovate.json: rangeStrategy "pin" is what does that).
-    "mcp==2.2.0",
+    "mcp==2.3.0",
     # OAuth 2.0 Resource Server (OIDC) validation for the /mcp endpoint. PyJWT ships PyJWKClient,
     # which fetches an IdP's JWKS, caches signing keys by kid, and refetches on an unknown kid
     # (key rotation). The [crypto] extra pulls in `cryptography` for RS256/ES256 verification.
-    "PyJWT[crypto]==2.15.0",
+    "PyJWT[crypto]==2.15.1",
     # Reads each label font's character map so a glyph the chosen font lacks falls back to DejaVu per
     # character instead of printing a missing-glyph box (Pillow exposes no cmap). MIT.
-    "fonttools==4.66.0",
+    "fonttools==4.66.1",
 ]
 
 [project.urls]
@@ -57,8 +57,8 @@ Issues = "https://github.com/chiva/labelito/issues"
 [dependency-groups]
 # httpx2 is the backend starlette.testclient is built for (TestClient does `import httpx2 as httpx`).
 test = ["pytest==9.1.1", "pytest-cov==7.1.0", "pytest-asyncio==1.4.0", "httpx2==2.13.1"]
-lint = ["ruff==0.16.8"]
-typing = ["mypy==2.3.1", "types-PyYAML==6.0.12.20260906", "types-Pillow==10.2.0.20240822"]
+lint = ["ruff==0.16.10"]
+typing = ["mypy==2.4.0", "types-PyYAML==6.0.12.20260906", "types-Pillow==10.2.0.20240822"]
 license = ["pip-licenses==5.5.5"]
 # End-to-end harness: drives a real uvicorn process with a real browser. Opt-in (the e2e suite is
 # deselected by default via `-m "not e2e"`), and needs a one-time `uv run playwright install
@@ -69,7 +69,7 @@ e2e = ["pytest-playwright==0.9.0"]
 # kerning so the outlines match the browser-rendered wordmark); brotli lets fonttools read the
 # .woff2 source. cairosvg (the rasterizer) is already a core runtime dependency above.
 # fontTools itself is a runtime dependency (above).
-brand-assets = ["uharfbuzz==0.56.2", "brotli==1.2.0"]
+brand-assets = ["uharfbuzz==0.56.3", "brotli==1.2.0"]
 dev = [
     "pre-commit==4.6.2",
     {include-group = "test"},

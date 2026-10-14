@@ -1,6 +1,6 @@
 # Dev container image. Base matches production (python:3.13 on Debian trixie — same
 # glibc, same Python), full variant so common build tooling and headers are present.
-FROM python:3.13-trixie@sha256:82c46c08c991d3d3ff10476ac5e386c2c28f27bbd3985a02c5e39fe99ab272eb
+FROM python:3.13-trixie@sha256:98daa3227dee3c38b8ee9e020e3785ec4274b1affd854c9f40ead46b6fb31f55
 
 ARG YQ_VERSION=v4.48.1
 ARG NODE_MAJOR=24

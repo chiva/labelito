@@ -24,7 +24,7 @@ dependencies = [
     "uvicorn[standard]==0.53.0",
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
-    "Pillow==12.3.0",
+    "Pillow==13.0.0",
     "cairosvg==2.9.1",
     "python-barcode[images]==0.16.1",
     # Pure-Python 2D symbologies (QR, DataMatrix, Aztec, PDF417) and ITF-14. Every encoder exposes

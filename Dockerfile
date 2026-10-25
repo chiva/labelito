@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 # Renovate's dockerfile manager bumps the tag and digest together.
 # $BUILDPLATFORM keeps this stage on the build host's native arch in multi-arch builds: its SVG
 # output is arch-independent, and running pnpm under QEMU would multiply the build time for nothing.
-FROM --platform=$BUILDPLATFORM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS icons
+FROM --platform=$BUILDPLATFORM node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS icons
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

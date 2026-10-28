@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1](https://github.com/chiva/labelito/compare/v1.0.0...v1.0.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **deps:** update dependency pillow to v13 ([#151](https://github.com/chiva/labelito/issues/151)) ([32a0cfc](https://github.com/chiva/labelito/commit/32a0cfcb4e88c6f824135077b06ce25916e4dc76))
+* **deps:** update icon collections ([#147](https://github.com/chiva/labelito/issues/147)) ([1f7624e](https://github.com/chiva/labelito/commit/1f7624e5bf9ce6d4e054496fc25e7c2cf41e59af))
+
 ## [1.0.0](https://github.com/chiva/labelito/compare/v0.19.0...v1.0.0) (2026-09-27)
 
 

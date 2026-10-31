@@ -26,6 +26,20 @@ services:
       - ./assets/icons:/app/assets/icons:ro
       - ./fonts:/app/fonts:ro
       - ./data:/app/data
+    # Auth — no default secret is shipped; the service refuses to start unless ONE of these is in
+    # .env beside this file:
+    #   API_TOKEN=<your-secret>                      bearer token (e.g. `openssl rand -hex 16`), OR
+    #   WEB_AUTH_USER=… and WEB_AUTH_PASSWORD=…      browser login wall (HTTP Basic — protects the
+    #                                                whole UI without a reverse proxy), OR
+    #   ALLOW_UNAUTHENTICATED=true                   trusted-intranet open mode.
+    # Secrets come ONLY from env_file, which reads .env literally. They are deliberately not
+    # interpolated as ${API_TOKEN} under `environment:` — compose interpolation prefers a variable
+    # exported in your shell over .env, so an unrelated API_TOKEN in the shell would silently
+    # replace yours. A missing .env makes `docker compose up` fail fast.
+    # Over plain HTTP both credentials travel in the clear — the bearer API_TOKEN (Authorization
+    # header) and the Basic WEB_AUTH_* pair alike — so front with TLS or a reverse proxy off a
+    # trusted LAN. ALLOW_UNAUTHENTICATED sends no credential, so this caveat doesn't apply to it.
+    env_file: .env
     environment:
       MODEL: QL-810W
       # Transport is inferred from the PRINTER_URI scheme: tcp:// → network, usb:// → usb.
@@ -58,14 +72,6 @@ services:
       # OIDC_ISSUER: "https://idp.example.com/realms/labelito"   # exact token `iss`
       # OIDC_AUDIENCE: "https://labelito.example.com/mcp"        # your IdP mints /mcp tokens for this
       # OIDC_REQUIRED_SCOPES: "labelito.print"                   # optional; space-separated
-      # Auth — no default secret is shipped; the service refuses to start unless ONE is set:
-      #   put API_TOKEN=<your-secret> in a .env file beside this compose file (auto-loaded), OR
-      #   comment the line below and set WEB_AUTH_USER/WEB_AUTH_PASSWORD for a browser login wall
-      #     (HTTP Basic — protects the whole UI without a reverse proxy), OR
-      #   comment the line below and uncomment ALLOW_UNAUTHENTICATED for trusted-intranet open mode.
-      # Over plain HTTP both credentials travel in the clear — the bearer API_TOKEN (Authorization
-      # header) and the Basic WEB_AUTH_* pair alike — so front with TLS or a reverse proxy off a
-      # trusted LAN. ALLOW_UNAUTHENTICATED sends no credential, so this caveat doesn't apply to it.
       # Behind a TLS-terminating reverse proxy (Traefik, nginx, Caddy…), trust ITS source IP so
       # redirects/URLs stay https. Set this to the address labelito sees the proxy connect from —
       # its container subnet, or the bridge gateway. Do NOT trust a range that a direct client can
@@ -73,11 +79,6 @@ services:
       # through the proxy on a shared network, else forwarded headers become spoofable.
       # See docs/reverse-proxy.md.
       # FORWARDED_ALLOW_IPS: "<proxy-subnet-or-ip>"   # e.g. 172.18.0.0/16
-      # `${VAR:?msg}` makes `docker compose up` fail fast if API_TOKEN is unset or empty.
-      API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set WEB_AUTH_USER/PASSWORD or ALLOW_UNAUTHENTICATED=true}
-      # WEB_AUTH_USER: me            # optional HTTP Basic auth (set both)
-      # WEB_AUTH_PASSWORD: ${WEB_AUTH_PASSWORD:-}
-      # ALLOW_UNAUTHENTICATED: "true"  # run open (trusted intranet / behind an auth proxy only)
     # /readyz is dependency-aware (templates, transport, history store; 503 when not serving) and
     # unauthenticated. It deliberately excludes printer reachability — see app/main.py's readyz.
     healthcheck:

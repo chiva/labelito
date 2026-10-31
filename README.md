@@ -69,19 +69,15 @@ services:
       - ./templates:/app/templates:ro     # YOUR label templates (override slot; examples ship baked-in)
       - ./assets/icons:/app/assets/icons:ro
       - ./data:/app/data                  # print history (persistent bind mount)
+    # Auth lives in .env, read literally: API_TOKEN, or WEB_AUTH_USER + WEB_AUTH_PASSWORD (browser
+    # login wall, no reverse proxy needed), or ALLOW_UNAUTHENTICATED=true for a trusted LAN. The
+    # service refuses to start without one. Not interpolated as ${API_TOKEN}: compose would let an
+    # API_TOKEN exported in your shell override .env. See docs/configuration.md.
+    env_file: .env
     environment:
       MODEL: QL-810W
       PRINTER_URI: tcp://192.168.1.100:9100   # transport inferred from the scheme (tcp/usb/file)
       HISTORY_MODE: file                       # durable reprint/dedup on ./data
-      # No default secret ships — `docker compose up` fails fast (the `${VAR:?msg}` interpolation)
-      # unless API_TOKEN is set, e.g. in a .env file beside the compose file (auto-loaded).
-      # Alternatives (comment out API_TOKEN, then pick one): WEB_AUTH_USER/WEB_AUTH_PASSWORD for a
-      # browser login wall (HTTP Basic — protects the whole UI, no reverse proxy needed), or
-      # ALLOW_UNAUTHENTICATED for a trusted LAN / behind an auth proxy. See docs/configuration.md.
-      API_TOKEN: ${API_TOKEN:?Set API_TOKEN in .env, or comment this and set WEB_AUTH_USER/PASSWORD or ALLOW_UNAUTHENTICATED=true}
-      # WEB_AUTH_USER: me
-      # WEB_AUTH_PASSWORD: ${WEB_AUTH_PASSWORD:-}
-      # ALLOW_UNAUTHENTICATED: "true"  # run open (trusted intranet only)
     healthcheck:  # dependency-aware readiness; printer reachability deliberately excluded
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/readyz')"]
       interval: 30s
@@ -98,8 +94,8 @@ git clone https://github.com/chiva/labelito && cd labelito
 cp docker-compose.yml docker-compose.override.yml
 # edit MODEL / PRINTER_URI in the override, then:
 
-# Required: compose refuses to start without a token. To run open on a trusted LAN instead,
-# comment out API_TOKEN in the compose file and uncomment ALLOW_UNAUTHENTICATED (see above).
+# Required: compose refuses to start without .env, and labelito without a credential in it. To run
+# open on a trusted LAN instead, put ALLOW_UNAUTHENTICATED=true in .env (see above).
 echo "API_TOKEN=$(openssl rand -hex 16)" > .env
 docker compose up -d
 

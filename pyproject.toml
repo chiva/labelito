@@ -120,3 +120,11 @@ omit = ["app/transports/usb.py"]
 [tool.coverage.report]
 fail_under = 85
 show_missing = true
+
+[tool.uv]
+# Relative exclude-newer durations need uv 0.9.17+; older uv would misread the lock.
+required-version = ">=0.9.17"
+# Supply-chain cooldown: resolve only files uploaded at least 2 days ago. Renovate waits 3 days
+# (minimumReleaseAge), so every version it proposes is already visible here, and the spare day
+# covers wheels uploaded after a release's first file. Lock-file maintenance relies on this.
+exclude-newer = "2 days"

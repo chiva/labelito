@@ -171,7 +171,7 @@ importers:
         version: 7.3.1
       '@material-symbols/svg-400':
         specifier: ^0.48.0
-        version: 0.48.1
+        version: 0.48.2
       '@primer/octicons':
         specifier: ^19.15.1
         version: 19.42.0
@@ -182,8 +182,8 @@ packages:
     resolution: {integrity: sha512-wmglKKPDIkgV3aWlZzWECCPoGIkYCulzBwxG9+w7rc5BGapZ6cPMpoPOT8k36J0Ni7PPX6c/rsoMWfS4d1MUMg==}
     engines: {node: '>=6'}
 
-  '@material-symbols/svg-400@0.48.1':
-    resolution: {integrity: sha512-l3zCJuHOtBdha7C3fZ/OXjt6N0pP+a7+TUtYJeWOLbsOh2hDn8weIPgj1a9hwvF7aI1U5lwuxi0to7JysAiBvg==}
+  '@material-symbols/svg-400@0.48.2':
+    resolution: {integrity: sha512-JJXRvRoHhMbrSFQIkiUwjFkCnurH0Yg+cGMCn9xS0PRtLXovIAQCz7NltNn/teQ9VRYmbzZB75Uw6Hx0umu5Bg==}
 
   '@primer/octicons@19.42.0':
     resolution: {integrity: sha512-MEcHxVxNHu1I2Ndk5Mcwp7tfBiDk/EpytDJgKOfE2ldqIczWucVrZNeNU4wtEN5mnNudZ0YL5G0spax3bSMT4w==}
@@ -196,7 +196,7 @@ snapshots:
 
   '@fortawesome/fontawesome-free@7.3.1': {}
 
-  '@material-symbols/svg-400@0.48.1': {}
+  '@material-symbols/svg-400@0.48.2': {}
 
   '@primer/octicons@19.42.0':
     dependencies:

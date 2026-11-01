@@ -2,13 +2,16 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>chiva/renovate-config",
-    "local>chiva/renovate-config:python-app"
+    "local>chiva/renovate-config:python-app",
+    "customManagers:dockerfileVersions",
+    "customManagers:githubActionsVersions"
   ],
   "enabledManagers": [
     "pep621",
     "github-actions",
     "dockerfile",
-    "npm"
+    "npm",
+    "custom.regex"
   ],
   "packageRules": [
     {

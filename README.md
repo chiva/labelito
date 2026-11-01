@@ -69,11 +69,14 @@ services:
       - ./templates:/app/templates:ro     # YOUR label templates (override slot; examples ship baked-in)
       - ./assets/icons:/app/assets/icons:ro
       - ./data:/app/data                  # print history (persistent bind mount)
-    # Auth lives in .env, read literally: API_TOKEN, or WEB_AUTH_USER + WEB_AUTH_PASSWORD (browser
-    # login wall, no reverse proxy needed), or ALLOW_UNAUTHENTICATED=true for a trusted LAN. The
-    # service refuses to start without one. Not interpolated as ${API_TOKEN}: compose would let an
-    # API_TOKEN exported in your shell override .env. See docs/configuration.md.
-    env_file: .env
+    # Auth lives in .env: API_TOKEN, or WEB_AUTH_USER + WEB_AUTH_PASSWORD (browser login wall, no
+    # reverse proxy needed), or ALLOW_UNAUTHENTICATED=true for a trusted LAN. The service refuses to
+    # start without one. Not interpolated as ${API_TOKEN}: compose would let an API_TOKEN exported
+    # in your shell override .env. `format: raw` keeps `$` literal; write values unquoted.
+    # See docs/configuration.md.
+    env_file:
+      - path: .env
+        format: raw
     environment:
       MODEL: QL-810W
       PRINTER_URI: tcp://192.168.1.100:9100   # transport inferred from the scheme (tcp/usb/file)
@@ -93,10 +96,14 @@ git clone https://github.com/chiva/labelito && cd labelito
 # Keep machine-specific overrides out of the tracked compose file:
 cp docker-compose.yml docker-compose.override.yml
 # edit MODEL / PRINTER_URI in the override, then:
+# (An override copied before auth moved to .env still sets environment.API_TOKEN, which beats
+# .env and lets your shell override it again: delete its auth entries, keep MODEL / PRINTER_URI.)
 
-# Required: compose refuses to start without .env, and labelito without a credential in it. To run
-# open on a trusted LAN instead, put ALLOW_UNAUTHENTICATED=true in .env (see above).
-echo "API_TOKEN=$(openssl rand -hex 16)" > .env
+# Required: compose refuses to start without .env, and labelito without a credential in it.
+# Run ONE of these (values are read literally, so leave them unquoted):
+echo "API_TOKEN=$(openssl rand -hex 16)" > .env                  # bearer token
+# printf 'WEB_AUTH_USER=admin\nWEB_AUTH_PASSWORD=%s\n' "$(openssl rand -hex 16)" > .env  # login wall
+# echo "ALLOW_UNAUTHENTICATED=true" > .env                        # open mode, trusted LAN only
 docker compose up -d
 
 open http://localhost:8765          # web UI (or just visit it in a browser)

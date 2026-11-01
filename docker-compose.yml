@@ -32,14 +32,18 @@ services:
     #   WEB_AUTH_USER=… and WEB_AUTH_PASSWORD=…      browser login wall (HTTP Basic — protects the
     #                                                whole UI without a reverse proxy), OR
     #   ALLOW_UNAUTHENTICATED=true                   trusted-intranet open mode.
-    # Secrets come ONLY from env_file, which reads .env literally. They are deliberately not
-    # interpolated as ${API_TOKEN} under `environment:` — compose interpolation prefers a variable
-    # exported in your shell over .env, so an unrelated API_TOKEN in the shell would silently
-    # replace yours. A missing .env makes `docker compose up` fail fast.
+    # Secrets come ONLY from env_file. They are deliberately not interpolated as ${API_TOKEN} under
+    # `environment:` — compose interpolation prefers a variable exported in your shell over .env, so
+    # an unrelated API_TOKEN in the shell would silently replace yours. `format: raw` reads .env
+    # literally: a `$` in a password stays a `$` (the default format would interpolate it), and
+    # quotes are NOT stripped, so write values unquoted. A missing .env makes `docker compose up`
+    # fail fast.
     # Over plain HTTP both credentials travel in the clear — the bearer API_TOKEN (Authorization
     # header) and the Basic WEB_AUTH_* pair alike — so front with TLS or a reverse proxy off a
     # trusted LAN. ALLOW_UNAUTHENTICATED sends no credential, so this caveat doesn't apply to it.
-    env_file: .env
+    env_file:
+      - path: .env
+        format: raw
     environment:
       MODEL: QL-810W
       # Transport is inferred from the PRINTER_URI scheme: tcp:// → network, usb:// → usb.

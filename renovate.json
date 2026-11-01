@@ -1,50 +1,27 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices"],
-  "enabledManagers": ["pep621", "github-actions", "dockerfile", "npm"],
-  "lockFileMaintenance": {
-    "enabled": true,
-    "schedule": ["before 4am on monday"]
-  },
-  "minimumReleaseAge": "3 days",
+  "extends": [
+    "local>chiva/renovate-config",
+    "local>chiva/renovate-config:python-app"
+  ],
+  "enabledManagers": [
+    "pep621",
+    "github-actions",
+    "dockerfile",
+    "npm"
+  ],
   "packageRules": [
     {
-      "description": "Pin Python dependencies to exact versions in pyproject.toml. A bare '>=' leaves Renovate no constraint to update, so it never classifies the update at all: no minor, no major, no PR. The new version arrives only through the Monday lock-file-maintenance PR, whatever its major version is — which is how mcp 2.x (FastMCP renamed to MCPServer, every transport setting moved off the constructor) landed inside a lock refresh and took five CI checks down. Pinning gives the pep621 manager the same property the github-actions and dockerfile managers already have, where the version IS written in the file and a major therefore gets its own attributable PR. PIN rather than BUMP, learned the hard way: with a '>=' floor Renovate rewrites the constraint and then calls uv, and uv resolves to the NEWEST matching release — which may be younger than minimumReleaseAge and therefore one Renovate deliberately excluded. That mismatch is not recoverable and fails the whole PR with 'Artifact update problem' (seen on #119: uv resolved fonttools 4.64.0 while Renovate was updating to 4.63.0). An exact pin leaves uv no freedom, so the resolved version is always the one Renovate chose. Safe to churn pyproject.toml weekly: labelito ships as a Docker image and is not published to PyPI, so these constraints are a build input rather than a contract with downstream consumers, and the declared version stops being fiction — it becomes the version actually tested.",
-      "matchManagers": ["pep621"],
-      "rangeStrategy": "pin"
-    },
-    {
-      "description": "Never touch project.requires-python. It is not a dependency, it is this project's support policy, and it is already stated three times over: the test matrix runs 3.13 and 3.14, and both Dockerfile stages are held at 3.13 by the 'python runtime' rule below (allowedVersions '<3.14', because 3.14 is not mature enough yet). The pep621 rule above applies to requires-python too, and on #119 that raised it to '>=3.14.7' — contradicting that policy, breaking the image build ('exec /app/.venv/bin/uvicorn: no such file or directory', since the venv no longer matched the 3.13 runtime stage) and silently turning the 'Tests (Python 3.13)' leg into a 3.14.7 run that still reported green. Dropping Python 3.13 support is a deliberate decision that moves the matrix and both base images at once; it is not a dependency bump. Renovate extracts this field with depType 'requires-python' (lib/modules/manager/pep621/extract.ts), which is what this rule matches.",
-      "matchDepTypes": ["requires-python"],
-      "enabled": false
-    },
-    {
-      "description": "Group all non-major bumps into one PR.",
-      "matchUpdateTypes": ["minor", "patch"],
-      "groupName": "non-major dependencies"
-    },
-    {
-      "description": "Icon collections: kept in their own group (separate from the shared non-major PR) so a fetch-icons.sh CI failure is attributable to a single PR.",
-      "matchManagers": ["npm"],
+      "description": "Icon collections in their own PR, so a fetch-icons.sh failure is attributable.",
+      "matchManagers": [
+        "npm"
+      ],
       "matchPackageNames": [
         "@fortawesome/fontawesome-free",
         "@material-symbols/svg-400",
         "@primer/octicons"
       ],
       "groupName": "icon collections"
-    },
-    {
-      "description": "Python runtime: the builder stage (ghcr.io/astral-sh/uv) creates the venv under lib/pythonX.Y and the runtime stage (python) copies it in, so both images MUST stay on the same Python minor version. Group them into one PR (overriding the non-major group) so a version bump lands as a single, coherent, attributable change and the two stages can never drift. PINNED to <3.14 for now: 3.14 is not mature enough yet and we gain nothing from the bump. To adopt 3.14 later, raise allowedVersions to <3.15 and all image references across both Dockerfiles move together in one grouped PR.",
-      "matchManagers": ["dockerfile"],
-      "matchPackageNames": ["python", "ghcr.io/astral-sh/uv"],
-      "groupName": "python runtime",
-      "allowedVersions": "<3.14"
-    },
-    {
-      "description": "Teach Renovate to read the Python version out of the uv image's compound tag (e.g. python3.14-trixie-slim) so it tracks minor bumps in step with the python image and never leaves the builder stranded a minor behind. Pinned to the trixie-slim compatibility flavor via the named capture group.",
-      "matchManagers": ["dockerfile"],
-      "matchPackageNames": ["ghcr.io/astral-sh/uv"],
-      "versioning": "regex:^python(?<major>\\d+)\\.(?<minor>\\d+)-(?<compatibility>.+)$"
     }
   ]
 }

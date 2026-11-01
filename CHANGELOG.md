@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.1](https://github.com/chiva/labelito/compare/v1.0.0...v1.0.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **compose:** read secrets from env_file so a shell-exported API_TOKEN cannot override .env ([#157](https://github.com/chiva/labelito/issues/157)) ([6f43658](https://github.com/chiva/labelito/commit/6f4365863d3e7b65db048bf0e03baf2b8b8eafe0))
+* **deps:** update dependency pillow to v13 ([#151](https://github.com/chiva/labelito/issues/151)) ([32a0cfc](https://github.com/chiva/labelito/commit/32a0cfcb4e88c6f824135077b06ce25916e4dc76))
+* **deps:** update icon collections ([#147](https://github.com/chiva/labelito/issues/147)) ([1f7624e](https://github.com/chiva/labelito/commit/1f7624e5bf9ce6d4e054496fc25e7c2cf41e59af))
+* **deps:** update non-major dependencies ([#144](https://github.com/chiva/labelito/issues/144)) ([661a1c2](https://github.com/chiva/labelito/commit/661a1c20092e21ad9a1eef3fe054403130dc68f9))
+
 ## [1.0.0](https://github.com/chiva/labelito/compare/v0.19.0...v1.0.0) (2026-09-27)
 
 

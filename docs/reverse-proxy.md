@@ -131,8 +131,10 @@ labelito container.
 services:
   labelito:
     image: ghcr.io/…/labelito:latest
+    env_file:  # API_TOKEN=… (${API_TOKEN} would let the shell override it)
+      - path: .env
+        format: raw  # literal: `$` kept, quotes not stripped
     environment:
-      API_TOKEN: ${API_TOKEN}
       # Trust Traefik's forwarded headers. Use YOUR shared Docker network's subnet
       # (`docker network inspect <network>` → Subnet), scoped as tightly as possible.
       FORWARDED_ALLOW_IPS: "172.18.0.0/16"

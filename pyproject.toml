@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
     "fastapi==0.162.0",
     "uvicorn[standard]==0.54.0",
-    "pydantic==2.14.2",
+    "pydantic==2.14.3",
     "pydantic-settings==2.16.2",
     "Pillow==13.0.0",
     "cairosvg==2.9.1",
@@ -34,7 +34,7 @@ dependencies = [
     "brother_ql_next==0.12.0",
     "PyYAML==6.0.3",
     "Jinja2==3.1.6",
-    "python-multipart==0.0.32",
+    "python-multipart==0.0.33",
     "prometheus-client==0.26.0",
     # 2.1.1 is the release whose server API this code targets: 2.x renamed FastMCP to MCPServer and
     # moved every transport setting off the constructor, so 1.x cannot run it. No ceiling — every
@@ -56,9 +56,9 @@ Issues = "https://github.com/chiva/labelito/issues"
 
 [dependency-groups]
 # httpx2 is the backend starlette.testclient is built for (TestClient does `import httpx2 as httpx`).
-test = ["pytest==9.2.0", "pytest-cov==7.1.0", "pytest-asyncio==1.4.1", "httpx2==2.16.0"]
-lint = ["ruff==0.17.3"]
-typing = ["mypy==2.4.1", "types-PyYAML==6.0.12.20260906", "types-Pillow==10.2.0.20240822"]
+test = ["pytest==9.2.0", "pytest-cov==7.1.0", "pytest-asyncio==1.4.1.post1", "httpx2==2.16.0"]
+lint = ["ruff==0.17.4"]
+typing = ["mypy==2.4.1", "types-PyYAML==6.0.12.20261103", "types-Pillow==10.2.0.20240822"]
 license = ["pip-licenses==5.5.5"]
 # End-to-end harness: drives a real uvicorn process with a real browser. Opt-in (the e2e suite is
 # deselected by default via `-m "not e2e"`), and needs a one-time `uv run playwright install

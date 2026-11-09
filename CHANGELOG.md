@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.2](https://github.com/chiva/labelito/compare/v1.0.1...v1.0.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **deps:** update dependency pydantic to v2.14.2 ([#161](https://github.com/chiva/labelito/issues/161)) ([4e959bc](https://github.com/chiva/labelito/commit/4e959bcc72ab61f7dce9eb304b6f58567d546deb))
+* **deps:** update non-major dependencies ([#166](https://github.com/chiva/labelito/issues/166)) ([68fb285](https://github.com/chiva/labelito/commit/68fb285a5c374f911c62f22e582ba7aae7a46683))
+
 ## [1.0.1](https://github.com/chiva/labelito/compare/v1.0.0...v1.0.1) (2026-11-01)
 
 

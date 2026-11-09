@@ -6,7 +6,7 @@ ARG YQ_VERSION=v4.48.1
 ARG NODE_MAJOR=24
 
 # uv from the official distroless image — same source the production builder stage uses.
-COPY --from=ghcr.io/astral-sh/uv:latest@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:latest@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 /uv /uvx /usr/local/bin/
 
 # CLI tool belt for day-to-day development, plus the system libraries labelito needs
 # (mirroring the production Dockerfile):

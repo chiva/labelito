@@ -9,8 +9,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
@@ -23,9 +22,19 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
 
     steps:
+      # A GitHub App token, not GITHUB_TOKEN: GitHub starts no workflows for events made with
+      # GITHUB_TOKEN, so the release PR it opened never got its required checks.
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
         with:
+          token: ${{ steps.app-token.outputs.token }}
           release-type: python
 
   # release-please bumps pyproject.toml's version but never regenerates uv.lock, so the lockfile's
@@ -37,8 +46,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Pushing with the App token (not GITHUB_TOKEN) starts CI on the release PR's new head.
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          token: ${{ steps.app-token.outputs.token }}
           ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
@@ -53,11 +70,10 @@ jobs:
           git diff --staged --quiet || git commit -m "chore: sync uv.lock for release"
           git push
 
-  # When release-please publishes a release, build and push the image in the SAME run. The default
-  # GITHUB_TOKEN cannot trigger a separate release-triggered workflow (GitHub suppresses events from
-  # the built-in token to prevent loops), but it CAN push to GHCR — so building here needs no PAT or
-  # App token. metadata-action is fed the release tag explicitly because this job runs on a push to
-  # `main`, where the ref carries no tag to derive the version from.
+  # When release-please publishes a release, build and push the image in the SAME run, gated on
+  # release_created; GITHUB_TOKEN's packages: write is enough for GHCR. metadata-action is fed the
+  # release tag explicitly because this job runs on a push to `main`, where the ref carries no tag
+  # to derive the version from.
   docker:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}

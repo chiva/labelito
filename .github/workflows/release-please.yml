@@ -35,7 +35,8 @@ jobs:
         id: release
         with:
           token: ${{ steps.app-token.outputs.token }}
-          release-type: python
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   # release-please bumps pyproject.toml's version but never regenerates uv.lock, so the lockfile's
   # own package entry drifts behind the release. Re-lock on the release PR branch so the version bump

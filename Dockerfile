@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:6ff812e34a0e14b4b8bc9ddf25e77b3e16bac6e0c4d9b67641f40366fa382d4c AS builder
+FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:9a9f205ad2f9aaf63597afef4042c455392f9253937028264b98226e91c09518 AS builder
 
 LABEL org.opencontainers.image.title="labelito"
 LABEL org.opencontainers.image.description="Self-hosted label printing for Brother QL printers"
@@ -46,7 +46,7 @@ RUN bash scripts/fetch-icons.sh /icons
 # the image bakes exactly the reviewed bytes; the running app never downloads a font. The fetcher
 # is standard-library Python, so the stage reuses the runtime base image and needs no project deps.
 # $BUILDPLATFORM: font files are arch-independent, so this never needs to run under QEMU.
-FROM --platform=$BUILDPLATFORM python:3.13-slim-trixie@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb AS label-fonts
+FROM --platform=$BUILDPLATFORM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS label-fonts
 WORKDIR /build
 COPY app/render/font_manifest.json ./app/render/font_manifest.json
 COPY scripts/fetch_label_fonts.py ./scripts/fetch_label_fonts.py
@@ -57,7 +57,7 @@ RUN python scripts/fetch_label_fonts.py /label-fonts
 # the venv is built against the builder's glibc, so builder and runtime must not drift apart.
 # A bare `python:3.13-slim` floats to whatever Debian is current, silently diverging from the
 # builder on the next Debian release. Renovate's dockerfile manager bumps both tag and digest.
-FROM python:3.13-slim-trixie@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
 # libcairo2 is the runtime backing cairosvg (icon-collection SVG rasterization).
 # libfribidi0 completes Pillow's raqm text layout: the wheel bundles raqm and HarfBuzz but loads

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/chiva/labelito/compare/v1.0.2...v1.0.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **deps:** update non-major dependencies ([#169](https://github.com/chiva/labelito/issues/169)) ([536c6e9](https://github.com/chiva/labelito/commit/536c6e97ff7e95ea16c5525dc015b2e261bcaed1))
+
 ## [1.0.2](https://github.com/chiva/labelito/compare/v1.0.1...v1.0.2) (2026-11-09)
 
 

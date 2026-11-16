@@ -20,7 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "fastapi==0.162.0",
+    "fastapi==0.162.5",
     "uvicorn[standard]==0.54.0",
     "pydantic==2.14.3",
     "pydantic-settings==2.16.2",
@@ -30,7 +30,7 @@ dependencies = [
     # Pure-Python 2D symbologies (QR, DataMatrix, Aztec, PDF417) and ITF-14. Every encoder exposes
     # its module matrix, which the renderer draws itself on whole device dots — no native library,
     # so the Docker/HA images need nothing beyond Pillow.
-    "pyStrich==0.20",
+    "pyStrich==0.21",
     "brother_ql_next==0.12.0",
     "PyYAML==6.0.3",
     "Jinja2==3.1.6",
@@ -56,9 +56,9 @@ Issues = "https://github.com/chiva/labelito/issues"
 
 [dependency-groups]
 # httpx2 is the backend starlette.testclient is built for (TestClient does `import httpx2 as httpx`).
-test = ["pytest==9.2.0", "pytest-cov==7.1.0", "pytest-asyncio==1.4.1.post1", "httpx2==2.16.0"]
-lint = ["ruff==0.17.4"]
-typing = ["mypy==2.4.1", "types-PyYAML==6.0.12.20261103", "types-Pillow==10.2.0.20240822"]
+test = ["pytest==9.2.0", "pytest-cov==7.1.0", "pytest-asyncio==1.5.0", "httpx2==2.16.0"]
+lint = ["ruff==0.17.5"]
+typing = ["mypy==2.4.1", "types-PyYAML==6.0.12.20261113", "types-Pillow==10.2.0.20240822"]
 license = ["pip-licenses==5.5.5"]
 # End-to-end harness: drives a real uvicorn process with a real browser. Opt-in (the e2e suite is
 # deselected by default via `-m "not e2e"`), and needs a one-time `uv run playwright install

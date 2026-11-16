@@ -4,7 +4,7 @@
   "private": true,
   "description": "Build-time-only manifest for labelito's bundled icon collections (FontAwesome Free, Material Symbols, Octicons), consumed by the `icon` element's `collection` attribute. NOT part of the Python package. Caret ranges allow minor/patch updates; the committed pnpm-lock.yaml pins exact versions so image builds are reproducible, and Renovate raises bump PRs.",
   "license": "GPL-3.0-or-later",
-  "packageManager": "pnpm@12.18.0+sha512.9d7882d5dc82147ecfc4e062aa34834e0ad0296710a1837a1115ae012127d36b7109e321ac1598a1dd0a65597681b1e99917e12ed0d749eae91187943363beb3",
+  "packageManager": "pnpm@12.20.0+sha512.6ccc74997ccef4e67999788e18dbfbfa583e2a849668668db4707b6a8306662f47156e650232a985bd3ec24cf9364c1aa154d37e51ed7aac62c1cd1e3afc80c3",
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.0.0",
     "@material-symbols/svg-400": "^0.48.0",

@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 # Renovate's dockerfile manager bumps the tag and digest together.
 # $BUILDPLATFORM keeps this stage on the build host's native arch in multi-arch builds: its SVG
 # output is arch-independent, and running pnpm under QEMU would multiply the build time for nothing.
-FROM --platform=$BUILDPLATFORM node:26-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS icons
+FROM --platform=$BUILDPLATFORM node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS icons
 # Node 25+ no longer bundles corepack, so it is installed from npm at a pinned version.
 # renovate: datasource=npm depName=corepack
 ARG COREPACK_VERSION=0.36.0

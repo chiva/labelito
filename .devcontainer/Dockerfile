@@ -1,12 +1,12 @@
 # Dev container image. Base matches production (python:3.13 on Debian trixie — same
 # glibc, same Python), full variant so common build tooling and headers are present.
-FROM python:3.13-trixie@sha256:ecbe213fb818d557fd19db4078244339e2e2e52874f9c81052d3094ea114d797
+FROM python:3.13-trixie@sha256:9ffe84122ce74ebdffe2e0e6b946c9dd95d0bf3463f6eb1006b4dc6fefe36d01
 
 ARG YQ_VERSION=v4.48.1
 ARG NODE_MAJOR=24
 
 # uv from the official distroless image — same source the production builder stage uses.
-COPY --from=ghcr.io/astral-sh/uv:latest@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:latest@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d /uv /uvx /usr/local/bin/
 
 # CLI tool belt for day-to-day development, plus the system libraries labelito needs
 # (mirroring the production Dockerfile):

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.4](https://github.com/chiva/labelito/compare/v1.0.3...v1.0.4) (2026-11-23)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @material-symbols/svg-400 to ^0.49.0 ([#174](https://github.com/chiva/labelito/issues/174)) ([07394e5](https://github.com/chiva/labelito/commit/07394e59d09a619ce6df3c52650c3a5126a37693))
+* **deps:** update non-major dependencies ([#175](https://github.com/chiva/labelito/issues/175)) ([372e441](https://github.com/chiva/labelito/commit/372e441ef63b6578faa908613fd3cb4c733a2ae0))
+
 ## [1.0.3](https://github.com/chiva/labelito/compare/v1.0.2...v1.0.3) (2026-11-16)
 
 

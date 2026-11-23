@@ -7,7 +7,7 @@
   "packageManager": "pnpm@12.21.0+sha512.66fd8278ee28935ce951792d34367ff3af5c432a2756445823029533835b8da529bbe0be5130afd56ed0713fb8789e47bad82d93bd5ae2fe54b15562d6276ef0",
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.0.0",
-    "@material-symbols/svg-400": "^0.48.0",
+    "@material-symbols/svg-400": "^0.49.0",
     "@primer/octicons": "^19.15.1"
   }
 }
